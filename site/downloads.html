@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Downloads &mdash; Dekaron Online</title>
+<link rel="stylesheet" href="css/site.css">
+</head>
+<body>
+
+<header class="site-header"><div class="header-inner">
+<a class="brand" href="index.html"><span class="brand-mark" aria-hidden="true">D</span><span>Dekaron <small>ONLINE</small></span></a>
+<nav class="site-nav" aria-label="Main navigation"><a href="index.html">Discover</a><a href="forums.html">Community</a><a href="downloads.html">Downloads</a><a href="rankings.html">Rankings</a></nav>
+<div class="header-auth" id="headerAuth"></div><a class="btn btn-play" href="/">Play Now <span aria-hidden="true">↗</span></a>
+</div></header>
+
+<main id="main-content">
+  <section class="wrap">
+    <div class="section-head">
+      <div><span class="eyebrow">PREPARE FOR THE JOURNEY</span><h2>Your gateway to Dekaron.</h2></div>
+      <span class="sub">Everything you need to launch Dekaron Online</span>
+    </div>
+
+    <div class="panel download-card">
+      <div class="file-icon" aria-hidden="true">↓</div>
+      <div class="info">
+        <div class="fname">Client.exe</div>
+        <div class="fmeta">Windows launcher only &middot; requires the complete engine tool and your own client files</div>
+      </div>
+      <a class="btn btn-gold" href="/Client.exe" download>Get launcher</a>
+    </div>
+  </section>
+
+  <section class="wrap">
+    <div class="section-head">
+      <h2>Setup Guide</h2>
+    </div>
+    <div class="panel panel-pad">
+      <ol class="steps">
+        <li><b>Dependencies are automatic.</b> The complete engine release includes Three.js. If Node.js is missing,
+          the launcher downloads and verifies a private runtime from <a href="https://nodejs.org" target="_blank" rel="noopener">nodejs.org</a> without changing system settings.</li>
+        <li><b>Supply your own compatible game client.</b> Place the complete engine tool folder beside its
+          <code>data</code> and <code>bin</code> folders. This download replaces only the launcher inside
+          <code>engine</code>; it does not contain the engine or original game files.</li>
+        <li><b>Open engine\Client.exe.</b> Review the exact game folder and removal list, then click <b>Install &amp; Play</b> once.
+          After preparation succeeds it permanently removes the listed root extras, retaining <code>data</code>,
+          <code>bin</code>, <code>engine</code> and <code>Client.exe</code>. There is no backup or second confirmation.
+          <b>Sign Up</b> inside the launcher creates your account without cleanup. Later launches use <b>Start</b>.</li>
+        <li><b>Let preparation finish.</b> Supported packs are unpacked and indexed automatically before cleanup
+          or play. First preparation can take several minutes and about 9 GiB of additional space. Later launches
+          check your local files for updates. No separate unpacker is required.</li>
+        <li><b>Log in.</b> Enter the account ID and password you registered in the launcher. Website
+          <a href="signup.html">Sign Up</a> creates the same kind of account. Unregistered accounts cannot log in.</li>
+        <li><b>Create a character and play.</b> Account progress is saved on this private host and returns when
+          you sign in to the same server. A registered account is required; existing signed-in website sessions can be restored automatically.</li>
+      </ol>
+    </div>
+  </section>
+
+  <section class="wrap">
+    <div class="section-head">
+      <h2>Troubleshooting</h2>
+    </div>
+    <div class="card-grid">
+      <div class="feature-card">
+        <span class="icon">&#9888;</span>
+        <h3>Nothing opens</h3>
+        <p>Keep the complete engine release together and use Windows PowerShell. Internet access is needed only
+          when a missing private runtime must be downloaded. Open Client.exe from your normal Windows account.</p>
+      </div>
+      <div class="feature-card">
+        <span class="icon">&#128274;</span>
+        <h3>Preparation stopped</h3>
+        <p>Read the error in the client window. Incomplete or unsupported source files stop installation before
+          cleanup. Keep the original files and finish copying an update before trying again.</p>
+      </div>
+      <div class="feature-card">
+        <span class="icon">&#127760;</span>
+        <h3>Port already in use</h3>
+        <p>The launcher reuses a matching engine server. An older data generation needs a restart; unrelated
+          programs using the port are left alone.</p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="site-footer"><div class="wrap"><a class="brand" href="index.html">DEKARON <small>ONLINE</small></a><p>A fan-made recreation for personal use.<br>Original artwork belongs to its respective owners.</p><div class="foot-links"><a href="forums.html">Community</a><a href="downloads.html">Downloads</a><a href="account.html">My Account</a></div></div></footer>
+
+<script type="module" src="js/site.js"></script>
+</body>
+</html>

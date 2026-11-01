@@ -1,0 +1,9 @@
+import {RemoteSystem} from '../skills/remotes.js';
+// Approved native remote visuals. The adapter cannot calculate impacts or statuses.
+export class ApprovedGroundEffects {
+ constructor(game,data,fx){this.game=game;this.data=data;this.fx=fx;this.handles=new Set();this.generation=0;this.remotes=new RemoteSystem({game,data,fx:{play:(owner,ref,opts)=>owner?.kind||owner?.group||owner?.instance?null:this.effect(owner,ref,opts)},unitsNear:()=>[],applyImpact:()=>false});}
+ effect(owner,ref,opts={}){const generation=this.generation,record={handle:null,cancelled:false};this.handles.add(record);const proxy={stop:(force)=>{record.cancelled=true;this.handles.delete(record);try{record.handle?.stop?.(force);}catch(error){console.warn('[skills] cosmetic effect stop failed',error);}},get done(){return record.cancelled||record.handle?.done;}};const retain=handle=>{record.handle=handle;if(record.cancelled||generation!==this.generation)proxy.stop(true);else if(!handle)this.handles.delete(record);};try{const handle=this.fx?.play(owner,ref,{...opts,onEnd:()=>{this.handles.delete(record);opts.onEnd?.();}});if(handle?.then)void Promise.resolve(handle).then(retain).catch(()=>this.handles.delete(record));else retain(handle);}catch(error){this.handles.delete(record);console.warn('[skills] cosmetic remote failed',error);}return proxy;}
+ play(ctx,result){if(result?.family!=='projectile')return false;const launch=Number(result.launch)||Number(String(result.resultCode).slice(-1));if(![1,5,6,7,8].includes(launch))return false;const native=this.data.remote(result.remoteIndex);if(!native||!native.effect&&!native.warningEffect)return false;this.remotes.launch(ctx,result);return true;}
+ update(dt){this.remotes.update(dt);}
+ clear(){this.generation++;this.remotes.clear();for(const record of this.handles){record.cancelled=true;try{record.handle?.stop?.(true);}catch(error){console.warn('[skills] cosmetic remote stop failed',error);}}this.handles.clear();}
+}

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>My Account &mdash; Dekaron Online</title>
+<link rel="stylesheet" href="css/site.css">
+</head>
+<body>
+<header class="site-header"><div class="header-inner">
+<a class="brand" href="index.html"><span class="brand-mark" aria-hidden="true">D</span><span>Dekaron <small>ONLINE</small></span></a>
+<nav class="site-nav" aria-label="Main navigation"><a href="index.html">Discover</a><a href="forums.html">Community</a><a href="downloads.html">Downloads</a><a href="rankings.html">Rankings</a></nav>
+<div class="header-auth" id="headerAuth"></div><a class="btn btn-play" href="/">Play Now <span aria-hidden="true">↗</span></a>
+</div></header>
+<main id="main-content">
+  <section class="wrap">
+    <div class="section-head"><div><span class="eyebrow">YOUR PERSONAL REALM</span><h2>My account.</h2></div><span class="sub" id="accountIdentity">Loading account&hellip;</span></div>
+    <div class="account-summary"><div class="account-stat"><span>CHARACTERS</span><strong id="accountCharacterCount">—</strong></div><div class="account-stat"><span>LOCAL CHARACTERS</span><strong id="localCharacterCount">—</strong></div><div class="account-stat"><span>SAVE LOCATION</span><strong>Private host</strong></div></div><div class="panel panel-pad">
+      <p>Account characters are saved on the private server you are connected to. This is your own host's storage; it is not a public cloud account.</p>
+      <p>Create and select characters through <a href="/">Play Now</a>. A registered account is required; create one inside the launcher or on the website. An existing signed-in session is restored automatically.</p>
+      <div id="accountMsg" class="form-msg" role="status" aria-live="polite"></div>
+      <div id="charactersHost"><div class="skeleton">Loading characters&hellip;</div></div>
+      <div class="account-actions">
+        <button class="btn btn-gold" id="importLocal" disabled>Archive this browser's local characters</button>
+        <button class="btn btn-ghost" id="localBackup">Download local backup</button>
+        <button class="btn btn-ghost" id="accountBackup" disabled>Download account backup</button>
+      </div>
+      <p class="hint">Archiving is optional. Imported local characters are backup snapshots and cannot enter the shared world or trusted rankings. Create a new character after signing in to play. Existing account characters are skipped and browser originals are kept.</p>
+    </div>
+  </section>
+</main>
+<footer class="site-footer"><div class="wrap"><a class="brand" href="index.html">DEKARON <small>ONLINE</small></a><p>A fan-made recreation for personal use.<br>Original artwork belongs to its respective owners.</p><div class="foot-links"><a href="forums.html">Community</a><a href="downloads.html">Downloads</a><a href="account.html">My Account</a></div></div></footer>
+<script type="module" src="js/site.js"></script>
+<script type="module" src="js/account.js"></script>
+</body>
+</html>

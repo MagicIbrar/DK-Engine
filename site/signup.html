@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<title>Sign Up &mdash; Dekaron Online</title>
+<link rel="stylesheet" href="css/site.css">
+</head>
+<body class="account-auth-page">
+
+<header class="site-header"><div class="header-inner">
+<a class="brand" href="index.html"><span class="brand-mark" aria-hidden="true">D</span><span>Dekaron <small>ONLINE</small></span></a>
+<nav class="site-nav" aria-label="Main navigation"><a href="index.html">Discover</a><a href="forums.html">Community</a><a href="downloads.html">Downloads</a><a href="rankings.html">Rankings</a></nav>
+<div class="header-auth" id="headerAuth"></div><a class="btn btn-play" href="/">Play Now <span aria-hidden="true">↗</span></a>
+</div></header>
+
+<main id="main-content">
+  <div class="auth-shell"><aside class="auth-story"><span class="eyebrow">YOUR LEGEND STARTS HERE</span><h2>A world awaits.</h2><p>One account for the website and the game. Choose your class, create your character and take the first step.</p></aside>
+    <div class="panel panel-pad">
+      <h1 style="text-align:center;font-size:24px;">Create Account</h1>
+      <p style="text-align:center;">Create your account on this server.</p>
+      <div class="server-account-context" role="note"><strong id="accountServerName">This server</strong><span id="accountServerAddress"></span><small>This account and its characters belong only to this server. Other servers have separate accounts.</small></div>
+      <div id="formMsg" class="form-msg" role="status" aria-live="polite"></div>
+      <form id="signupForm" novalidate>
+        <div class="field">
+          <label for="id">Account ID</label>
+          <input id="id" name="id" type="text" autocomplete="username" minlength="3" maxlength="32" required>
+          <div class="hint">3–32 letters, numbers, underscores or dashes.</div>
+        </div>
+        <div class="field">
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" autocomplete="new-password" minlength="6" maxlength="128" required>
+          <div class="hint">6–128 characters. Use a unique password.</div>
+        </div>
+        <div class="field">
+          <label for="confirm">Confirm Password</label>
+          <input id="confirm" name="confirm" type="password" autocomplete="new-password" minlength="6" maxlength="128" required>
+        </div>
+        <button type="submit" class="btn btn-gold btn-block">Sign Up</button>
+      </form><span class="auth-security">Your account is stored on this host.<br>Website and game login use the same ID.</span>
+      <div class="form-foot">Already have an account? <a href="login.html">Log in</a></div>
+    </div>
+  </div>
+</main>
+
+<footer class="site-footer"><div class="wrap"><a class="brand" href="index.html">DEKARON <small>ONLINE</small></a><p>A fan-made recreation for personal use.<br>Original artwork belongs to its respective owners.</p><div class="foot-links"><a href="forums.html">Community</a><a href="downloads.html">Downloads</a><a href="account.html">My Account</a></div></div></footer>
+
+<script type="module" src="js/site.js"></script>
+<script type="module" src="js/auth-pages.js"></script>
+</body>
+</html>

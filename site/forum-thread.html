@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Thread &mdash; Dekaron Online</title>
+<link rel="stylesheet" href="css/site.css">
+</head>
+<body>
+
+<header class="site-header"><div class="header-inner">
+<a class="brand" href="index.html"><span class="brand-mark" aria-hidden="true">D</span><span>Dekaron <small>ONLINE</small></span></a>
+<nav class="site-nav" aria-label="Main navigation"><a href="index.html">Discover</a><a href="forums.html">Community</a><a href="downloads.html">Downloads</a><a href="rankings.html">Rankings</a></nav>
+<div class="header-auth" id="headerAuth"></div><a class="btn btn-play" href="/">Play Now <span aria-hidden="true">↗</span></a>
+</div></header>
+
+<main id="main-content">
+  <section class="wrap">
+    <div class="breadcrumb">
+      <a href="forums.html">Forums</a> &rsaquo;
+      <a id="categoryLink" href="forums.html">&hellip;</a> &rsaquo;
+      <span id="threadTitleCrumb">&hellip;</span>
+    </div>
+    <h2 id="threadTitle">&hellip;</h2>
+
+    <div id="postList" style="margin-bottom:24px;">
+      <div class="skeleton">Loading thread&hellip;</div>
+    </div>
+
+    <div id="replyPanel" class="panel panel-pad" style="display:none;">
+      <h3 style="font-size:16px;">Post a Reply</h3>
+      <div id="formMsg" class="form-msg"></div>
+      <form id="replyForm" novalidate>
+        <div class="field">
+          <textarea id="replyBody" name="body" maxlength="8000" placeholder="Write a reply&hellip;" required></textarea>
+        </div>
+        <button type="submit" class="btn btn-gold">Reply</button>
+      </form>
+    </div>
+
+    <div id="loginPrompt" class="panel panel-pad" style="display:none; text-align:center;">
+      <p style="margin:0;"><a href="login.html">Log in</a> or <a href="signup.html">sign up</a> to reply.</p>
+    </div>
+  </section>
+</main>
+
+<footer class="site-footer"><div class="wrap"><a class="brand" href="index.html">DEKARON <small>ONLINE</small></a><p>A fan-made recreation for personal use.<br>Original artwork belongs to its respective owners.</p><div class="foot-links"><a href="forums.html">Community</a><a href="downloads.html">Downloads</a><a href="account.html">My Account</a></div></div></footer>
+
+<script type="module" src="js/site.js"></script>
+<script type="module" src="js/forum-thread.js"></script>
+</body>
+</html>

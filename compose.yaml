@@ -1,0 +1,18 @@
+services:
+  world:
+    build: .
+    ports:
+      - "127.0.0.1:7778:7778"
+    environment:
+      DEKARON_HOST_MODE: ${DEKARON_HOST_MODE:-invite}
+      DEKARON_HOST_ACCOUNT: ${DEKARON_HOST_ACCOUNT:-}
+      DEKARON_HOST_PASSWORD: ${DEKARON_HOST_PASSWORD:-}
+      DEKARON_INVITE_PASSWORD: ${DEKARON_INVITE_PASSWORD:-}
+      DEKARON_SERVER_NAME: ${DEKARON_SERVER_NAME:-My Dekaron World}
+      DEKARON_EXP_RATE: ${DEKARON_EXP_RATE:-}
+      DEKARON_DIL_RATE: ${DEKARON_DIL_RATE:-}
+      DEKARON_DROP_RATE: ${DEKARON_DROP_RATE:-}
+    volumes:
+      - ./private-host:/state
+    stop_grace_period: 60s
+    restart: unless-stopped

@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Dekaron model viewer</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!--
+  Model viewer / future GM-dev tool. Open through server.mjs: http://localhost:7777/tools/viewer.html
+  URL parameters (all optional, handy for automation):
+    ?monster=102 | ?npc=101 | ?class=0 | ?object=house/a_cityhall_01 | ?mesh=mesh/object/x.mesh[&tpack=..][&skel=..][&anim=..]
+    &clip=<state name, clip index or anim key>   &speed=1   &yaw=<deg>   &rm=1 (root-motion preview)   &cam=<dist>,<heightFrac>,<azimuthDeg>
+    &tgt=x,y,z (FILE-frame look-at point)   &t=<seconds> (seek the clip and pause: deterministic captures)
+    &sink=7778 (Save PNG POSTs to http://localhost:<sink>/save?name=..)   &ui=0 (hide panels)   &grid=0   &axes=0
+  The orange arrow is FILE -Z, the direction every model faces at yaw 0 (it must lead the walk/run cycle).
+  Frames are driven by requestAnimationFrame with a timer fallback, so background / non-composited tabs still animate.
+  Everything sits under a mirror root (scale z = -1) exactly as in the game (docs/ARCHITECTURE.md §1).
+-->
+<script type="importmap">
+  { "imports": { "three": "/vendor/three.module.js", "three/addons/": "/vendor/jsm/" } }
+</script>
+<style>
+  :root { --bg: #14171c; --panel: #1d222a; --line: #2e3540; --text: #d8dde6; --dim: #8a94a3; --acc: #e0b050; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 12px/1.4 system-ui, Segoe UI, sans-serif; overflow: hidden; }
+  #wrap { display: flex; height: 100%; }
+  #side { width: 330px; min-width: 330px; display: flex; flex-direction: column; background: var(--panel); border-right: 1px solid var(--line); }
+  #tabs { display: flex; border-bottom: 1px solid var(--line); }
+  #tabs button { flex: 1; background: none; border: 0; color: var(--dim); padding: 8px 2px; cursor: pointer; font: inherit; border-bottom: 2px solid transparent; }
+  #tabs button.on { color: var(--acc); border-bottom-color: var(--acc); }
+  #pick { padding: 8px; display: flex; flex-direction: column; gap: 6px; min-height: 0; flex: 1 1 50%; }
+  #pick input, #pick select { width: 100%; background: #11151a; color: var(--text); border: 1px solid var(--line); padding: 5px 6px; font: inherit; border-radius: 3px; }
+  #list { flex: 1; overflow: auto; border: 1px solid var(--line); border-radius: 3px; background: #11151a; }
+  #list div { padding: 3px 6px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #list div:hover { background: #252c36; }
+  #list div.on { background: #3a3220; color: var(--acc); }
+  #list .n { color: var(--dim); display: inline-block; min-width: 42px; }
+  #anims { flex: 1 1 50%; display: flex; flex-direction: column; padding: 8px; border-top: 1px solid var(--line); min-height: 0; }
+  #clips { flex: 1; overflow: auto; border: 1px solid var(--line); border-radius: 3px; background: #11151a; }
+  #clips div { padding: 3px 6px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #clips div:hover { background: #252c36; }
+  #clips div.on { background: #203a2c; color: #8fe0a8; }
+  #clips .t { color: var(--dim); float: right; margin-left: 6px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 4px 0; }
+  .row label { display: flex; gap: 3px; align-items: center; color: var(--dim); cursor: pointer; }
+  .row input[type=range] { flex: 1; }
+  button.b { background: #2a313c; color: var(--text); border: 1px solid var(--line); padding: 4px 8px; border-radius: 3px; cursor: pointer; font: inherit; }
+  button.b:hover { border-color: var(--acc); }
+  h4 { margin: 0 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); font-weight: 600; }
+  #view { flex: 1; position: relative; min-width: 0; }
+  #view canvas { display: block; width: 100%; height: 100%; }
+  #info { position: absolute; left: 8px; top: 8px; max-width: 60%; background: rgba(12,14,18,.72); padding: 6px 8px; border-radius: 4px; white-space: pre-wrap; font: 11px/1.35 Consolas, monospace; pointer-events: none; }
+  #status { position: absolute; right: 8px; bottom: 8px; background: rgba(12,14,18,.72); padding: 4px 8px; border-radius: 4px; font: 11px Consolas, monospace; }
+  body.noui #side, body.noui #info, body.noui #status { display: none; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="side">
+    <div id="tabs">
+      <button data-tab="monster" class="on">Monster</button><button data-tab="npc">NPC</button><button data-tab="class">Class</button><button data-tab="object">Object</button><button data-tab="mesh">Mesh</button>
+    </div>
+    <div id="pick">
+      <div id="pickExtra"></div>
+      <input id="search" placeholder="search name or index…" autocomplete="off">
+      <div id="list"></div>
+    </div>
+    <div id="anims">
+      <h4>Animations</h4>
+      <div id="clips"></div>
+      <div class="row">
+        <label><input type="checkbox" id="loop" checked>loop</label>
+        <label><input type="checkbox" id="rm">root motion</label>
+        <label><input type="checkbox" id="skelHelp">skeleton</label>
+        <label><input type="checkbox" id="wire">wire</label>
+        <label><input type="checkbox" id="bbox">bbox</label>
+      </div>
+      <div class="row"><span style="color:var(--dim)">speed</span><input type="range" id="speed" min="0" max="3" step="0.05" value="1"><span id="speedv">1.00</span></div>
+      <div class="row"><span style="color:var(--dim)">yaw</span><input type="range" id="yaw" min="-180" max="180" step="1" value="0"><span id="yawv">0°</span></div>
+      <div class="row"><button class="b" id="pause">pause</button><button class="b" id="frame">reset cam</button><button class="b" id="shot">save PNG</button></div>
+    </div>
+  </div>
+  <div id="view"><canvas id="c"></canvas><div id="info">loading…</div><div id="status"></div></div>
+</div>
+<script type="module" src="./viewer.js"></script>
+</body>
+</html>

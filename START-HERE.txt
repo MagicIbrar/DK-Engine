@@ -1,0 +1,24 @@
+DK ENGINE 4.1.0 - COMMAND CENTER
+
+1. Open Client.exe for DK Command Center.
+   If assets are not installed, keep the downloaded Global folder next to this engine.
+   Client checks runtimes and prepares or updates your dedicated installation.
+2. Create your own account. This copy includes no development accounts or saved passwords.
+3. For SQL, stop the world and open Options > SQL / Storage.
+   Choose Local world or Hosted world, then Prepare SQL automatically.
+   For missing SQL, review and accept Microsoft terms; approve Windows UAC.
+   Setup runs in the background and selects SQL storage after successful world setup.
+4. On Home, review your world settings and click Start world.
+   Choose DX11 Client (windowed 1280x720) or adjacent DX11 Fullscreen (borderless).
+   Sign in when prompted. Local DX11 loads in the same native GameWindow.exe:
+   installed-byte verification first, then frontend/graphics readiness before login.
+   Host friends, Connect and Hosting options remain available.
+5. Read docs/README.md, docs/SQL-SETUP.md and docs/UPDATE-4.1.0.md.
+6. Update checks run on opening and every five minutes. Click the notice to install;
+   close this world/game/launcher when asked, then reopen Client.exe.
+
+Keep account/database backups before changing storage. Local and hosted accounts stay separate.
+Use Client.exe for setup, updates and Command Center. Setup-DK.cmd is an alias.
+If Command Center cannot open, Client.exe falls back to the classic launcher. Use Settings > Launcher to choose the classic launcher at the next start.
+Updates preserve existing accounts, settings and SQL progress; back up your own saves first.
+This engine reads Global assets; it does not run the original Global executable. A clean-Windows installation is not proven.

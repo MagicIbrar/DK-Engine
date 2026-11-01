@@ -1,0 +1,6 @@
+// Only server-selected native catalog references reach normal scene recipients.
+import {sameScene} from './scene.mjs';
+export function skillImpactEmitter(world,player){return {
+// Point lifecycle FX remain in client summon/totem playback; this channel carries actor impacts only.
+playAt(){return null;},
+play(owner,ref){const record=owner?._record||owner;if(!owner?.kind||!record?.id||!sameScene(player,record))return null;const cate=Number(ref?.cate??100),id=Number(ref?.id),scene=Number(ref?.scene??1),timeMs=Number(ref?.timeMs)||1000;if(![cate,id,scene].every(n=>Number.isInteger(n)&&n<=2147483647)||cate<0||id<=0||scene<0||!(timeMs>0&&timeMs<=120000))return null;const index=Number(player.profile.classIndex);if(!Number.isInteger(index)||index<0||index>14)return null;const key=cate+':'+id,book=world.data.skillPacks?.[index]?.effects?.scenes?.[key]||world.data.skillCommon?.effects?.scenes?.[key];const selected=book?.scenes?.[scene]?scene:Number(Object.keys(book?.scenes||{})[0]);if(!Number.isInteger(selected)||!book?.scenes?.[selected])return null;world.emit(player.map,{type:'skillimpact',instanceId:player.instanceId||null,sourceId:player.id,actorId:record.id,classIndex:index,effect:{cate,id,scene:selected,timeMs},issuedAt:world.now()});return null;}};}

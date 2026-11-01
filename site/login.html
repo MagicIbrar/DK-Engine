@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<title>Log In &mdash; Dekaron Online</title>
+<link rel="stylesheet" href="css/site.css">
+</head>
+<body class="account-auth-page">
+
+<header class="site-header"><div class="header-inner">
+<a class="brand" href="index.html"><span class="brand-mark" aria-hidden="true">D</span><span>Dekaron <small>ONLINE</small></span></a>
+<nav class="site-nav" aria-label="Main navigation"><a href="index.html">Discover</a><a href="forums.html">Community</a><a href="downloads.html">Downloads</a><a href="rankings.html">Rankings</a></nav>
+<div class="header-auth" id="headerAuth"></div><a class="btn btn-play" href="/">Play Now <span aria-hidden="true">↗</span></a>
+</div></header>
+
+<main id="main-content">
+  <div class="auth-shell"><aside class="auth-story"><span class="eyebrow">WELCOME BACK</span><h2>Continue your<br>story.</h2><p>Your characters. Your journey. Sign in with the same account you use in the game.</p></aside>
+    <div class="panel panel-pad">
+      <h1 style="text-align:center;font-size:24px;">Log In</h1>
+      <p style="text-align:center;">Sign in to manage your characters and return to the game.</p>
+      <div id="formMsg" class="form-msg" role="status" aria-live="polite"></div>
+      <form id="loginForm" novalidate>
+        <div class="field">
+          <label for="id">Account ID</label>
+          <input id="id" name="id" type="text" autocomplete="username" required>
+        </div>
+        <div class="field">
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" autocomplete="current-password" required>
+        </div>
+        <button type="submit" class="btn btn-gold btn-block">Log In</button>
+      </form><span class="auth-security">Your account is stored on this host.<br>Website and game login use the same ID.</span>
+      <div class="form-foot">No account yet? <a href="signup.html">Sign up</a></div>
+    </div>
+  </div>
+</main>
+
+<footer class="site-footer"><div class="wrap"><a class="brand" href="index.html">DEKARON <small>ONLINE</small></a><p>A fan-made recreation for personal use.<br>Original artwork belongs to its respective owners.</p><div class="foot-links"><a href="forums.html">Community</a><a href="downloads.html">Downloads</a><a href="account.html">My Account</a></div></div></footer>
+
+<script type="module" src="js/site.js"></script>
+<script type="module" src="js/auth-pages.js"></script>
+</body>
+</html>

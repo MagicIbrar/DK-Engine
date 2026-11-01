@@ -1,0 +1,134 @@
+/* DK Command Center design tokens.
+   Night (default): a deep charcoal ground lit by a gilded aura, glass rail, cards with gradient edges, gold gradients
+   for the one thing that matters on each surface. Day: the reference's mint-grey ground, white cards and pastel
+   gradient tints with an ink-black primary. Same shapes, same rhythm, both themes designed rather than inverted. */
+:root {
+  color-scheme: dark;
+  --ground: #08090b;
+  --aura-1: rgba(214, 174, 104, .17);      /* gilded glow, top left */
+  --aura-2: rgba(88, 110, 255, .10);       /* indigo, bottom right */
+  --aura-3: rgba(52, 190, 160, .07);       /* teal, centre */
+  --rail: rgba(15, 16, 19, .78);
+  --rail-solid: #101114;
+  --rail-line: rgba(255, 255, 255, .06);
+  --canvas: transparent;
+  --surface: #17181c;
+  --surface-2: #1f2025;
+  --surface-3: #292a30;
+  --card-bg: linear-gradient(165deg, #1e1f24 0%, #17181c 48%, #131418 100%);
+  --card-edge: linear-gradient(150deg, rgba(255, 255, 255, .13), rgba(255, 255, 255, .035) 34%, rgba(255, 255, 255, .02) 66%, rgba(214, 174, 104, .20));
+  --card-shadow: 0 1px 0 rgba(255, 255, 255, .045) inset, 0 22px 44px -22px rgba(0, 0, 0, .75), 0 2px 6px -2px rgba(0, 0, 0, .35);
+  --glass: rgba(26, 27, 32, .66);
+  --line: rgba(255, 255, 255, .075);
+  --line-strong: rgba(255, 255, 255, .14);
+  --text: #f1ebdf;
+  --text-2: #bdb6a8;
+  --text-3: #8b8679;
+  --accent: #dcb46c;
+  --accent-strong: #f2d595;
+  --accent-ink: #1d1609;
+  --accent-soft: rgba(220, 180, 108, .15);
+  --accent-line: rgba(220, 180, 108, .42);
+  --accent-glow: rgba(220, 180, 108, .45);
+  --gold-grad: linear-gradient(135deg, #fbe7b6 0%, #e6c27c 38%, #c89a4d 72%, #a77a35 100%);
+  --primary-grad: var(--gold-grad);
+  --primary-bg: #e6c27c;
+  --primary-ink: #1d1609;
+  --primary-glow: rgba(220, 180, 108, .55);
+  --thumb-grad: var(--gold-grad);
+  --thumb-ink: #1d1609;
+  --thumb-glow: 0 8px 22px -8px rgba(220, 180, 108, .7), inset 0 1px 0 rgba(255, 255, 255, .55);
+  --seg-thumb: linear-gradient(180deg, #34353c, #26272d);
+  --chip: linear-gradient(160deg, #2b2c32, #1d1e22);
+  --chip-ink: #f1ebdf;
+  --input-bg: linear-gradient(180deg, #131418, #18191d);
+  /* Category tints: deep jewel gradients at night */
+  --mint: #18302b;   --mint-ink: #b6e8da;   --mint-line: rgba(140, 230, 205, .22);   --mint-grad: linear-gradient(150deg, #22463e 0%, #17302a 52%, #121e1b 100%);   --mint-glow: rgba(110, 230, 195, .22);
+  --rose: #321f28;   --rose-ink: #f3bfd1;   --rose-line: rgba(245, 170, 200, .22);   --rose-grad: linear-gradient(150deg, #4a2635 0%, #2f1c25 52%, #1d1418 100%);   --rose-glow: rgba(250, 140, 185, .22);
+  --amber: #332a17;  --amber-ink: #f4d995;  --amber-line: rgba(245, 210, 130, .24);  --amber-grad: linear-gradient(150deg, #4c3d1b 0%, #312814 52%, #1e1a10 100%);  --amber-glow: rgba(250, 205, 110, .24);
+  --violet: #241f37; --violet-ink: #d2c5fb; --violet-line: rgba(200, 180, 255, .22); --violet-grad: linear-gradient(150deg, #352c5a 0%, #231e3a 52%, #171425 100%); --violet-glow: rgba(170, 145, 255, .24);
+  --sky: #182536;    --sky-ink: #b6d3f3;    --sky-line: rgba(160, 200, 245, .22);    --sky-grad: linear-gradient(150deg, #213a58 0%, #172638 52%, #111a26 100%);    --sky-glow: rgba(130, 185, 250, .22);
+  /* Status */
+  --ok: #7fd3a0; --ok-soft: rgba(127, 211, 160, .14);
+  --warn: #ecc06a; --warn-soft: rgba(236, 192, 106, .14);
+  --err: #f08c78; --err-soft: rgba(240, 140, 120, .15);
+  --info: #98c2ef; --info-soft: rgba(152, 194, 239, .14);
+  --idle: #8b8679; --idle-soft: rgba(139, 134, 121, .15);
+  --focus: #f2d595;
+  --shadow: var(--card-shadow);
+  --shadow-pop: 0 30px 70px -20px rgba(0, 0, 0, .8), 0 0 0 1px rgba(255, 255, 255, .06);
+  --scrim: rgba(4, 5, 7, .58);
+  --code-bg: #0c0d10;
+  --hero-bg: radial-gradient(520px 260px at 88% 28%, rgba(220, 180, 108, .26), transparent 70%), radial-gradient(420px 240px at 8% 120%, rgba(88, 110, 255, .14), transparent 70%), linear-gradient(135deg, #24211a 0%, #191a1e 46%, #121317 100%);
+  /* Type */
+  --font-text: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-display: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  --font-figure: "Bahnschrift", "Segoe UI Variable Display", "Segoe UI", sans-serif;
+  --font-mono: "Cascadia Mono", "Cascadia Code", Consolas, "Courier New", monospace;
+  --scale: 1;
+  /* Shape & rhythm: generous rounding everywhere */
+  --r-xs: 10px; --r-sm: 14px; --r-md: 18px; --r-lg: 26px; --r-xl: 32px; --r-pill: 999px;
+  --gap: 16px; --pad: 22px;
+  --rail-w: 220px;
+  --speed: 170ms;
+  --ease: cubic-bezier(.2, .8, .2, 1);
+}
+@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) {
+  color-scheme: light;
+  --ground: #e4ece9; --aura-1: rgba(120, 205, 182, .40); --aura-2: rgba(255, 196, 150, .34); --aura-3: rgba(186, 166, 255, .26);
+  --rail: rgba(255, 255, 255, .74); --rail-solid: #ffffff; --rail-line: rgba(22, 23, 26, .06);
+  --surface: #ffffff; --surface-2: #f4f5f2; --surface-3: #e9eae6;
+  --card-bg: linear-gradient(165deg, #ffffff 0%, #fdfdfb 55%, #f8f9f6 100%);
+  --card-edge: linear-gradient(150deg, rgba(255, 255, 255, 1), rgba(22, 23, 26, .06) 40%, rgba(22, 23, 26, .07) 70%, rgba(155, 116, 50, .22));
+  --card-shadow: 0 1px 0 rgba(255, 255, 255, .9) inset, 0 20px 40px -24px rgba(30, 50, 45, .30), 0 2px 6px -3px rgba(30, 50, 45, .12);
+  --glass: rgba(255, 255, 255, .72);
+  --line: rgba(22, 23, 26, .08); --line-strong: rgba(22, 23, 26, .16);
+  --text: #15161a; --text-2: #4a4d55; --text-3: #737681;
+  --accent: #9b7432; --accent-strong: #7b5a20; --accent-ink: #ffffff; --accent-soft: rgba(155, 116, 50, .12); --accent-line: rgba(155, 116, 50, .36); --accent-glow: rgba(155, 116, 50, .30);
+  --gold-grad: linear-gradient(135deg, #e9c983 0%, #c99b50 45%, #9b7432 100%);
+  --primary-grad: linear-gradient(135deg, #34353b 0%, #1a1b1f 55%, #0b0c0e 100%); --primary-bg: #17181b; --primary-ink: #ffffff; --primary-glow: rgba(15, 16, 19, .40);
+  --thumb-grad: linear-gradient(135deg, #34353b 0%, #18191c 60%, #0b0c0e 100%); --thumb-ink: #ffffff; --thumb-glow: 0 8px 20px -8px rgba(15, 16, 19, .55), inset 0 1px 0 rgba(255, 255, 255, .18);
+  --seg-thumb: linear-gradient(180deg, #ffffff, #f6f6f3);
+  --chip: linear-gradient(160deg, #ffffff, #f1f2ee); --chip-ink: #15161a;
+  --input-bg: linear-gradient(180deg, #f7f8f5, #ffffff);
+  --mint: #d8efe7; --mint-ink: #12312a; --mint-line: rgba(20, 90, 70, .12); --mint-grad: linear-gradient(150deg, #e6f7f1 0%, #cdebe1 60%, #bfe3d6 100%); --mint-glow: rgba(255, 255, 255, .9);
+  --rose: #fbdde8; --rose-ink: #3a1626; --rose-line: rgba(140, 40, 80, .12); --rose-grad: linear-gradient(150deg, #fff0f5 0%, #fbd7e5 60%, #f6c6d8 100%); --rose-glow: rgba(255, 255, 255, .9);
+  --amber: #fbe6a9; --amber-ink: #3a2b07; --amber-line: rgba(140, 100, 20, .14); --amber-grad: linear-gradient(150deg, #fff6d8 0%, #fbe4a4 60%, #f6d685 100%); --amber-glow: rgba(255, 255, 255, .9);
+  --violet: #e2d7f6; --violet-ink: #24183f; --violet-line: rgba(70, 40, 140, .12); --violet-grad: linear-gradient(150deg, #f3eeff 0%, #ddd0f3 60%, #cfbfee 100%); --violet-glow: rgba(255, 255, 255, .9);
+  --sky: #d9e8f8; --sky-ink: #122a45; --sky-line: rgba(20, 70, 130, .12); --sky-grad: linear-gradient(150deg, #eef6ff 0%, #d6e6f7 60%, #c5dbf3 100%); --sky-glow: rgba(255, 255, 255, .9);
+  --ok: #23804b; --ok-soft: rgba(35, 128, 75, .12); --warn: #9c6608; --warn-soft: rgba(156, 102, 8, .12);
+  --err: #bb3f29; --err-soft: rgba(187, 63, 41, .10); --info: #2a66aa; --info-soft: rgba(42, 102, 170, .10); --idle: #737681; --idle-soft: rgba(115, 118, 129, .12);
+  --focus: #9b7432; --shadow-pop: 0 30px 70px -24px rgba(30, 50, 45, .45), 0 0 0 1px rgba(22, 23, 26, .07);
+  --scrim: rgba(30, 40, 38, .30); --code-bg: #f6f7f4;
+  --hero-bg: radial-gradient(520px 260px at 88% 28%, rgba(255, 214, 150, .55), transparent 70%), radial-gradient(420px 240px at 6% 120%, rgba(120, 205, 182, .45), transparent 70%), linear-gradient(135deg, #ffffff 0%, #f7f8f4 50%, #eef3f0 100%);
+} }
+:root[data-theme="light"] {
+  color-scheme: light;
+  --ground: #e4ece9; --aura-1: rgba(120, 205, 182, .40); --aura-2: rgba(255, 196, 150, .34); --aura-3: rgba(186, 166, 255, .26);
+  --rail: rgba(255, 255, 255, .74); --rail-solid: #ffffff; --rail-line: rgba(22, 23, 26, .06);
+  --surface: #ffffff; --surface-2: #f4f5f2; --surface-3: #e9eae6;
+  --card-bg: linear-gradient(165deg, #ffffff 0%, #fdfdfb 55%, #f8f9f6 100%);
+  --card-edge: linear-gradient(150deg, rgba(255, 255, 255, 1), rgba(22, 23, 26, .06) 40%, rgba(22, 23, 26, .07) 70%, rgba(155, 116, 50, .22));
+  --card-shadow: 0 1px 0 rgba(255, 255, 255, .9) inset, 0 20px 40px -24px rgba(30, 50, 45, .30), 0 2px 6px -3px rgba(30, 50, 45, .12);
+  --glass: rgba(255, 255, 255, .72);
+  --line: rgba(22, 23, 26, .08); --line-strong: rgba(22, 23, 26, .16);
+  --text: #15161a; --text-2: #4a4d55; --text-3: #737681;
+  --accent: #9b7432; --accent-strong: #7b5a20; --accent-ink: #ffffff; --accent-soft: rgba(155, 116, 50, .12); --accent-line: rgba(155, 116, 50, .36); --accent-glow: rgba(155, 116, 50, .30);
+  --gold-grad: linear-gradient(135deg, #e9c983 0%, #c99b50 45%, #9b7432 100%);
+  --primary-grad: linear-gradient(135deg, #34353b 0%, #1a1b1f 55%, #0b0c0e 100%); --primary-bg: #17181b; --primary-ink: #ffffff; --primary-glow: rgba(15, 16, 19, .40);
+  --thumb-grad: linear-gradient(135deg, #34353b 0%, #18191c 60%, #0b0c0e 100%); --thumb-ink: #ffffff; --thumb-glow: 0 8px 20px -8px rgba(15, 16, 19, .55), inset 0 1px 0 rgba(255, 255, 255, .18);
+  --seg-thumb: linear-gradient(180deg, #ffffff, #f6f6f3);
+  --chip: linear-gradient(160deg, #ffffff, #f1f2ee); --chip-ink: #15161a;
+  --input-bg: linear-gradient(180deg, #f7f8f5, #ffffff);
+  --mint: #d8efe7; --mint-ink: #12312a; --mint-line: rgba(20, 90, 70, .12); --mint-grad: linear-gradient(150deg, #e6f7f1 0%, #cdebe1 60%, #bfe3d6 100%); --mint-glow: rgba(255, 255, 255, .9);
+  --rose: #fbdde8; --rose-ink: #3a1626; --rose-line: rgba(140, 40, 80, .12); --rose-grad: linear-gradient(150deg, #fff0f5 0%, #fbd7e5 60%, #f6c6d8 100%); --rose-glow: rgba(255, 255, 255, .9);
+  --amber: #fbe6a9; --amber-ink: #3a2b07; --amber-line: rgba(140, 100, 20, .14); --amber-grad: linear-gradient(150deg, #fff6d8 0%, #fbe4a4 60%, #f6d685 100%); --amber-glow: rgba(255, 255, 255, .9);
+  --violet: #e2d7f6; --violet-ink: #24183f; --violet-line: rgba(70, 40, 140, .12); --violet-grad: linear-gradient(150deg, #f3eeff 0%, #ddd0f3 60%, #cfbfee 100%); --violet-glow: rgba(255, 255, 255, .9);
+  --sky: #d9e8f8; --sky-ink: #122a45; --sky-line: rgba(20, 70, 130, .12); --sky-grad: linear-gradient(150deg, #eef6ff 0%, #d6e6f7 60%, #c5dbf3 100%); --sky-glow: rgba(255, 255, 255, .9);
+  --ok: #23804b; --ok-soft: rgba(35, 128, 75, .12); --warn: #9c6608; --warn-soft: rgba(156, 102, 8, .12);
+  --err: #bb3f29; --err-soft: rgba(187, 63, 41, .10); --info: #2a66aa; --info-soft: rgba(42, 102, 170, .10); --idle: #737681; --idle-soft: rgba(115, 118, 129, .12);
+  --focus: #9b7432; --shadow-pop: 0 30px 70px -24px rgba(30, 50, 45, .45), 0 0 0 1px rgba(22, 23, 26, .07);
+  --scrim: rgba(30, 40, 38, .30); --code-bg: #f6f7f4;
+  --hero-bg: radial-gradient(520px 260px at 88% 28%, rgba(255, 214, 150, .55), transparent 70%), radial-gradient(420px 240px at 6% 120%, rgba(120, 205, 182, .45), transparent 70%), linear-gradient(135deg, #ffffff 0%, #f7f8f4 50%, #eef3f0 100%);
+}
+:root[data-density="compact"] { --gap: 12px; --pad: 16px; }

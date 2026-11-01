@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Map Builder — isolated preview</title><link rel="stylesheet" href="/src/ui/style.css"><script type="importmap">{"imports":{"three":"/vendor/three.module.js","three/addons/":"/vendor/jsm/"}}</script></head>
+<body><canvas id="game"></canvas><div id="ui"></div><aside style="position:fixed;top:8px;left:50%;transform:translateX(-50%);z-index:10000;background:#10151fee;border:1px solid #a98750;color:#ecdcbf;padding:8px 16px;font:12px sans-serif">LOCAL MAP PREVIEW · Progress is temporary · <a href="/tools/mapbuilder.html" style="color:#efc885">Map Builder</a></aside>
+<script type="module">
+// Separate sandbox realm: no account configuration, world API or browser character writes.
+const originalStorage=globalThis.localStorage,settings=originalStorage.getItem('dekaron-solo:settings:v1');
+const memory=new Map(settings?[['dekaron-solo:settings:v1',settings]]:[]);
+Object.defineProperty(globalThis,'localStorage',{value:{getItem:key=>memory.get(String(key))??null,setItem:(key,value)=>memory.set(String(key),String(value)),removeItem:key=>memory.delete(String(key)),clear:()=>memory.clear()}});
+try{
+ const {isCustomIndex}=await import('/src/systems/mapbuilder/format.js');
+ const {loadByIndex}=await import('/src/systems/mapbuilder/store.js');
+ const map=Number(new URLSearchParams(location.search).get('map'));
+ if(!isCustomIndex(map)||!await loadByIndex(map))throw new Error('Save a custom map in this browser before opening its preview.');
+ const character={id:`map_preview_${Date.now()}`,name:'Map Preview',classIndex:0,className:'',authority:'sandbox-preview',level:1,exp:0,dil:0,hp:null,mp:null,stats:null,statPoints:0,skillPoints:0,map,pos:null,inventory:[],equipment:{},hotbar:[],skills:{},kills:0,deaths:0,playSeconds:0};
+ const {Game}=await import('/src/game/game.js');const game=new Game({canvas:document.getElementById('game'),ui:document.getElementById('ui'),character});
+ game.persist=()=>{};globalThis.dekaron=game;await game.start();
+}catch(error){const message=document.createElement('pre');message.textContent=error.message;message.style.cssText='position:fixed;top:70px;left:25px;color:#ffb7a1;background:#10151f;padding:20px;z-index:10001';document.body.append(message);console.error('[map preview]',error);}
+</script></body></html>

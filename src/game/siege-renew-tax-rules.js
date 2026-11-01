@@ -1,0 +1,8 @@
+// Native TAX_* and Global guide 32; shared fixed UTC+1 calendar.
+// ENGINE-CHOSEN: literal TAX_RATIO per castle, no division; unowned shares are not collected.
+import {serverDate,serverTimestamp,serverDayKey} from './server-time.js';
+const DAY=86400000;
+export function renewTaxCycleStart(now,cfg){const d=serverDate(now),weekday=(Number(cfg.startWeekday)+7)%7;let start=serverTimestamp(d.getUTCFullYear(),d.getUTCMonth(),d.getUTCDate()-(d.getUTCDay()-weekday+7)%7,Number(cfg.startHour)||0);if(start>now)start-=7*DAY;return start;}
+export function resetRenewTax(state,start){state.siegeRenew||={castles:{}};if(state.siegeRenew.tax?.cycleStart===start)return false;state.siegeRenew.tax={cycleStart:start,brokerage:{},collected:{}};return true;}
+export function recordRenewBrokerage(state,now,cfg,fee){if(!cfg||!Number.isFinite(cfg.taxRatio)||cfg.taxRatio<0||!Number.isSafeInteger(fee)||fee<0)return false;const cycle=renewTaxCycleStart(now,cfg);resetRenewTax(state,cycle);const tax=state.siegeRenew.tax,key=serverDayKey(now),next=(tax.brokerage[key]||0)+fee;if(!Number.isSafeInteger(next))throw Error('Castle brokerage ledger overflow.');tax.brokerage[key]=next;return true;}
+export function renewTaxDays(state,map,cfg,now){const cycle=renewTaxCycleStart(now,cfg),stored=state?.siegeRenew?.tax,tax=stored?.cycleStart===cycle?stored:null,d=serverDate(cycle);return Array.from({length:7},(_,day)=>{const start=serverTimestamp(d.getUTCFullYear(),d.getUTCMonth(),d.getUTCDate()+day),key=serverDayKey(start),publishedAt=start+DAY+(cfg.taxHour*60+cfg.taxMinute)*60000;return {day,key,publishedAt,published:now>=publishedAt,amount:Math.floor((tax?.brokerage?.[key]||0)*cfg.taxRatio),collected:!!tax?.collected?.[map]?.[day]};});}

@@ -1,0 +1,51 @@
+/* Front-end screens (login / character select / character create) and the loading screen.
+   Every window is the original window script built by the UI platform (src/ui/uiwin, docs/UIWIN.md); these rules
+   only add the scene fade (scenefadein/out.txt), the screen-window fades, the busy cursor and the loading layer. */
+
+/* style.css gives every direct child of #ui the mouse (#ui > * { pointer-events: auto }): the scene fade, the busy
+   overlay and the UI platform's layer (.uw-layer, pointer-events none by design; its windows' controls take the
+   mouse themselves) must let clicks and drags through to the 3D scene. */
+#ui > .fe-fade, #ui > .fe-busy, #ui > .uw-layer { pointer-events: none; }
+
+/* scene fade (scenefadein/out.txt: 500 ms): below the windows (z 15) or over them (z 45) */
+.fe-fade { position: fixed; inset: 0; background: #000; opacity: 1; pointer-events: none; z-index: 15; transition: opacity .5s linear; }
+.fe-busy { display: none; }
+body.fe-wait, body.fe-wait * { cursor: progress !important; }
+
+/* screen windows fade in / out with the scene */
+.uw-win.fe-screen-win { opacity: 0; transition: opacity .45s ease; }
+.uw-win.fe-screen-win.fe-in { opacity: 1; }
+
+/* loading screen (ui_loadwnd.txt): over the world and the in-game windows */
+.fe-loading { position: fixed; inset: 0; background: #000; z-index: 60; overflow: hidden; pointer-events: auto; transition: opacity .25s linear; }
+.fe-loading.out { opacity: 0; }
+.fe-preload { position: fixed; inset: 0; z-index: 90; background-color: #000; background-position: center; background-size: 100% 100%; background-repeat: no-repeat; pointer-events: auto; transition: opacity .25s linear; }
+.fe-preload.out { opacity: 0; }
+.fe-preload-count { position: absolute; left: 50%; bottom: 9%; transform: translateX(-50%); color: #fff; font: 16px Tahoma, Verdana, sans-serif; text-shadow: 0 1px 3px #000; }
+.fe-account-links { position: fixed; right: 52px; top: 18px; z-index: 50; display: flex; gap: 10px; font: 600 12px Tahoma, Verdana, sans-serif; }
+.fe-account-links a { color: #efe0c2; padding: 11px 16px; border: 1px solid #8d7148; background: #16151ce8; border-radius: 4px; text-decoration: none; }
+.fe-account-line { position: fixed; right: 52px; top: 18px; z-index: 50; padding: 8px 14px; font: 600 12px Tahoma, Verdana, sans-serif; color: #efe0c2; border: 1px solid #8d7148; background: #16151ce8; border-radius: 4px; pointer-events: none; }
+.fe-account-links a:hover, .fe-account-links a:focus-visible { background: #3b3023; outline: 2px solid #d8af6a; outline-offset: 2px; }
+
+/* Server branding only: the existing wordmark stays still inside a warm ember halo.
+   Confined to its native selected-server slot; it never intercepts selection. */
+.fe-server-badge { position:absolute; left:0; top:28px; width:100%; height:calc(100% - 30px); pointer-events:none; isolation:isolate; overflow:hidden; }
+.fe-server-badge::before, .fe-server-badge::after { content:""; position:absolute; left:50%; top:50%; width:84px; height:84px; border-radius:50%; pointer-events:none; z-index:-1; animation-play-state:paused; }
+.fe-server-badge::before { background:radial-gradient(ellipse, #ee3c2029 20%, #ff7c2766 48%, #ffb95c19 64%, transparent 72%); box-shadow:inset 0 0 12px #e84b3333; animation:fe-badge-pulse 3.2s ease-in-out infinite paused; }
+.fe-server-badge::after { width:104px; height:104px; z-index:1; background:conic-gradient(from 0deg, transparent 5%, #ffcf8555 18%, #ffdfae 24%, transparent 34%, transparent 53%, #ec502c99 68%, #ff9a51cc 73%, transparent 84%); mask:radial-gradient(transparent 60%, #000 63%, #000 67%, transparent 70%); animation:fe-badge-orbit 6s linear infinite paused; }
+.fe-server-badge[data-animate="true"]::before, .fe-server-badge[data-animate="true"]::after { animation-play-state:running; }
+.fe-server-badge .fe-server-logo { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; pointer-events:none; filter:drop-shadow(0 0 3px #ff713454); }
+/* Breathing logo: compositor-only (transform/opacity), shares the 3.2s halo cycle. */
+.fe-server-badge .fe-server-logo { transform-origin:50% 55%; will-change:transform; animation:fe-logo-breathe 3.2s ease-in-out infinite paused; }
+.fe-server-badge .fe-server-logo-glow { filter:blur(3px) brightness(1.35); mix-blend-mode:screen; opacity:0; will-change:transform,opacity; animation:fe-logo-breathe 3.2s ease-in-out infinite paused, fe-logo-glow 3.2s ease-in-out infinite paused; }
+.fe-server-badge[data-animate="true"] .fe-server-logo { animation-play-state:running; }
+.fe-server-badge .fe-server-particles { position:absolute; inset:0; z-index:2; width:100%; height:100%; pointer-events:none; }
+@keyframes fe-logo-breathe { 0%,100% { transform:scale(.97); } 50% { transform:scale(1.03); } }
+@keyframes fe-logo-glow { 0%,100% { opacity:0; } 50% { opacity:.45; } }
+@keyframes fe-badge-pulse { 0%,100% { transform:translate(-50%,-50%) scale(.9); opacity:.5; } 50% { transform:translate(-50%,-50%) scale(1.08); opacity:1; } }
+@keyframes fe-badge-orbit { from { transform:translate(-50%,-50%) rotate(0deg); } to { transform:translate(-50%,-50%) rotate(360deg); } }
+@media (prefers-reduced-motion:reduce) { .fe-server-badge::before, .fe-server-badge::after { animation:none; transform:translate(-50%,-50%); opacity:.65; } .fe-server-badge .fe-server-logo { animation:none; transform:none; } .fe-server-badge .fe-server-logo-glow { opacity:0; } }
+
+/* Current Global select/create references use regular face weights. Keep authored
+   font sizes/families and scope this presentation correction to these windows. */
+.fe-global-front .uw-t { font-weight: 400 !important; }

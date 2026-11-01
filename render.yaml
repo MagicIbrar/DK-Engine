@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: dekaron-world
+    runtime: docker
+    plan: standard
+    numInstances: 1
+    healthCheckPath: /api/friends/status
+    disk:
+      name: private-world
+      mountPath: /state
+      sizeGB: 50
+    envVars:
+      - key: DEKARON_HOST_ACCOUNT
+        sync: false
+      - key: DEKARON_HOST_MODE
+        value: "invite"
+      - key: DEKARON_HOST_PASSWORD
+        sync: false
+      - key: DEKARON_INVITE_PASSWORD
+        sync: false
+      - key: DEKARON_SERVER_NAME
+        sync: false
+      - key: DEKARON_EXP_RATE
+        value: "1"
+      - key: DEKARON_DIL_RATE
+        value: "1"
+      - key: DEKARON_DROP_RATE
+        value: "1"
