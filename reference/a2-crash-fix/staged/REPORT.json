@@ -1,0 +1,330 @@
+{
+ "00_braiken_castle/mon_00_braiken_castle.csv": {
+  "rows_dropped": 32,
+  "rows_total": 551,
+  "by_index": {
+   "3510": {
+    "count": 32,
+    "lines": "520-551"
+   }
+  }
+ },
+ "01_north_ares/mon_01_north_ares.csv": {
+  "rows_dropped": 45,
+  "rows_total": 1136,
+  "by_index": {
+   "3510": {
+    "count": 20,
+    "lines": "1092-1111"
+   },
+   "3511": {
+    "count": 16,
+    "lines": "1112-1127"
+   },
+   "3512": {
+    "count": 9,
+    "lines": "1128-1136"
+   }
+  }
+ },
+ "02_norak/mon_02_norak.csv": {
+  "rows_dropped": 77,
+  "rows_total": 614,
+  "by_index": {
+   "3513": {
+    "count": 23,
+    "lines": "538-560"
+   },
+   "3514": {
+    "count": 9,
+    "lines": "561-569"
+   },
+   "3515": {
+    "count": 8,
+    "lines": "570-577"
+   },
+   "3516": {
+    "count": 6,
+    "lines": "609-614"
+   },
+   "3517": {
+    "count": 23,
+    "lines": "578-608"
+   },
+   "3518": {
+    "count": 4,
+    "lines": "588-591"
+   },
+   "3519": {
+    "count": 4,
+    "lines": "584-587"
+   }
+  }
+ },
+ "03_deneb/mon_03_deneb.csv": {
+  "rows_dropped": 56,
+  "rows_total": 618,
+  "by_index": {
+   "3512": {
+    "count": 26,
+    "lines": "550-575"
+   },
+   "3513": {
+    "count": 25,
+    "lines": "576-600"
+   },
+   "3514": {
+    "count": 5,
+    "lines": "601-605"
+   }
+  }
+ },
+ "05_haihaff/mon_05_haihaff.csv": {
+  "rows_dropped": 110,
+  "rows_total": 699,
+  "by_index": {
+   "2073": {
+    "count": 35,
+    "lines": "631-689"
+   },
+   "2074": {
+    "count": 28,
+    "lines": "626-684"
+   },
+   "3515": {
+    "count": 36,
+    "lines": "579-625"
+   },
+   "3516": {
+    "count": 11,
+    "lines": "614-624"
+   }
+  }
+ },
+ "06_parca_temple/mon_06_parca_temple.csv": {
+  "rows_dropped": 65,
+  "rows_total": 235,
+  "by_index": {
+   "2071": {
+    "count": 18,
+    "lines": "196-235"
+   },
+   "2072": {
+    "count": 14,
+    "lines": "221-234"
+   },
+   "3517": {
+    "count": 7,
+    "lines": "180-186"
+   },
+   "3518": {
+    "count": 10,
+    "lines": "160-169"
+   },
+   "3519": {
+    "count": 6,
+    "lines": "187-192"
+   },
+   "3520": {
+    "count": 10,
+    "lines": "170-179"
+   }
+  }
+ },
+ "07_loa_castle/mon_07_loa_castle.csv": {
+  "rows_dropped": 33,
+  "rows_total": 490,
+  "by_index": {
+   "3510": {
+    "count": 33,
+    "lines": "458-490"
+   }
+  }
+ },
+ "08_north_morte/mon_08_north_morte.csv": {
+  "rows_dropped": 38,
+  "rows_total": 686,
+  "by_index": {
+   "3510": {
+    "count": 17,
+    "lines": "649-665"
+   },
+   "3511": {
+    "count": 13,
+    "lines": "674-686"
+   },
+   "3512": {
+    "count": 8,
+    "lines": "666-673"
+   }
+  }
+ },
+ "10_castor_dungeon/mon_10_castor_dungeon.csv": {
+  "rows_dropped": 68,
+  "rows_total": 476,
+  "by_index": {
+   "3513": {
+    "count": 11,
+    "lines": "409-419"
+   },
+   "3514": {
+    "count": 8,
+    "lines": "420-427"
+   },
+   "3515": {
+    "count": 13,
+    "lines": "428-440"
+   },
+   "3516": {
+    "count": 7,
+    "lines": "441-447"
+   },
+   "3517": {
+    "count": 15,
+    "lines": "448-476"
+   },
+   "3518": {
+    "count": 5,
+    "lines": "460-464"
+   },
+   "3519": {
+    "count": 9,
+    "lines": "465-473"
+   }
+  }
+ },
+ "11_crevasse/mon_11_crevasse.csv": {
+  "rows_dropped": 48,
+  "rows_total": 499,
+  "by_index": {
+   "3517": {
+    "count": 33,
+    "lines": "452-484"
+   },
+   "3518": {
+    "count": 15,
+    "lines": "485-499"
+   }
+  }
+ },
+ "12_crespo/mon_12_crespo.csv": {
+  "rows_dropped": 51,
+  "rows_total": 412,
+  "by_index": {
+   "3520": {
+    "count": 2,
+    "lines": "362-363"
+   },
+   "3521": {
+    "count": 14,
+    "lines": "364-403"
+   },
+   "3522": {
+    "count": 15,
+    "lines": "373-412"
+   },
+   "3523": {
+    "count": 20,
+    "lines": "379-398"
+   }
+  }
+ },
+ "14_norak_2nd/mon_14_norak_2nd.csv": {
+  "rows_dropped": 74,
+  "rows_total": 673,
+  "by_index": {
+   "3519": {
+    "count": 9,
+    "lines": "600-608"
+   },
+   "3520": {
+    "count": 14,
+    "lines": "609-622"
+   },
+   "3521": {
+    "count": 26,
+    "lines": "623-648"
+   },
+   "3522": {
+    "count": 19,
+    "lines": "649-667"
+   },
+   "3523": {
+    "count": 6,
+    "lines": "668-673"
+   }
+  }
+ },
+ "15_castor_2nd/mon_15_castor_2nd.csv": {
+  "rows_dropped": 63,
+  "rows_total": 580,
+  "by_index": {
+   "3519": {
+    "count": 11,
+    "lines": "481-491"
+   },
+   "3520": {
+    "count": 20,
+    "lines": "492-511"
+   },
+   "3521": {
+    "count": 17,
+    "lines": "512-528"
+   },
+   "3522": {
+    "count": 10,
+    "lines": "529-538"
+   },
+   "3523": {
+    "count": 5,
+    "lines": "539-543"
+   }
+  }
+ },
+ "17_requies/mon_17_requies.csv": {
+  "rows_dropped": 68,
+  "rows_total": 436,
+  "by_index": {
+   "2070": {
+    "count": 36,
+    "lines": "357-436"
+   },
+   "3515": {
+    "count": 21,
+    "lines": "178-198"
+   },
+   "3516": {
+    "count": 11,
+    "lines": "199-209"
+   }
+  }
+ },
+ "27_conscript_a/mon_27_conscript_a.csv": {
+  "rows_dropped": 10,
+  "rows_total": 123,
+  "by_index": {
+   "2064": {
+    "count": 10,
+    "lines": "14-23"
+   }
+  }
+ },
+ "28_conscript_m/mon_28_conscript_m.csv": {
+  "rows_dropped": 10,
+  "rows_total": 123,
+  "by_index": {
+   "2064": {
+    "count": 10,
+    "lines": "14-23"
+   }
+  }
+ },
+ "46_aquirai_ruins/mon_46_aquirai_ruins.csv": {
+  "skipped": "every row is server-only content; map is not in the 2007 client, left unchanged",
+  "rows_total": 349
+ },
+ "47_plane_of_pilgrimage/mon_47_plane_of_pilgrimage.csv": {
+  "skipped": "every row is server-only content; map is not in the 2007 client, left unchanged",
+  "rows_total": 471
+ }
+}

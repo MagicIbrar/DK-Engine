@@ -16,6 +16,9 @@ Each release has two packages:
 - **Dashboard + Client (Host and Join)**: the full engine. Open `Client.exe` to host your own world or join one.
 - **Join Only Client**: `GameWindow.exe` only, for players who join a hosted world. It is the `join-only-client`
   folder of this repository.
+- **Decompiled Source + Opcodes**: reference only, nothing to run. Every packet opcode of Dekaron Global and 2Moons
+  Action 2 explained, with the scrubbed decompiled source they were read from. It is the `reference` folder; start
+  with `reference/MANIFEST.md`.
 
 Start with `START-HERE.txt`, then `docs/UPDATE-4.2.0.md`, `docs/README.md`, `docs/SQL-SETUP.md` and `docs/HOSTING.md`.
 

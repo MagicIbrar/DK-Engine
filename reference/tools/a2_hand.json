@@ -1,0 +1,2253 @@
+{
+ "0x00010000": {
+  "name": "INT_CONNECT_REQ",
+  "description": "Internal event (never on the wire): connect request to ip:port.",
+  "layout": [
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "IPv4 address",
+    "seen_as": "hand analysis",
+    "evidence": "decompile"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "u16",
+    "meaning": "port",
+    "seen_as": "hand analysis",
+    "evidence": "decompile"
+   }
+  ],
+  "direction": "internal"
+ },
+ "0x00010001": {
+  "name": "INT_DISCONNECT",
+  "description": "Internal event (never on the wire): disconnect.",
+  "layout": [],
+  "direction": "internal"
+ },
+ "0x00010002": {
+  "name": "INT_CONNECTED",
+  "description": "Internal event (never on the wire): session established.",
+  "layout": [],
+  "direction": "internal"
+ },
+ "0x00010003": {
+  "name": "INT_CLOSED",
+  "description": "Internal event (never on the wire): session closed.",
+  "layout": [],
+  "direction": "internal"
+ },
+ "0x00010004": {
+  "name": "INT_CONNECT_FAILED",
+  "description": "Internal event (never on the wire): connect failed or 7000 ms timeout.",
+  "layout": [],
+  "direction": "internal"
+ },
+ "0x00010005": {
+  "name": "INT_LATENCY",
+  "description": "Internal event (never on the wire): latency statistics (4 x u32).",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32[4]",
+    "meaning": "latency stats",
+    "seen_as": "hand analysis",
+    "evidence": "decompile"
+   }
+  ],
+  "direction": "internal"
+ },
+ "0x00020080": {
+  "name": "CON",
+  "description": "Client hello, first packet after TCP connect; cipher key still 0x0F.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32 BE",
+    "meaning": "client tick (ms)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "C>S"
+ },
+ "0x00020081": {
+  "name": "CON_ACK",
+  "description": "Server hello. Sets the cipher key (key0^key1) and session blob.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32 BE",
+    "meaning": "server time",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32 BE",
+    "meaning": "echoed client tick (RTT)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "u8",
+    "meaning": "key0",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x1c",
+    "body_off": "0xc",
+    "type": "u8",
+    "meaning": "key1",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x20",
+    "body_off": "0x10",
+    "type": "u8[64]",
+    "meaning": "copied to session+0x35; purpose unknown (zeros seen)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x00020082": {
+  "name": "CON_CONFIRM",
+  "description": "Client confirms handshake; session becomes Established.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32 BE",
+    "meaning": "echoed server time",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "C>S"
+ },
+ "0x00020083": {
+  "name": "PING",
+  "description": "Keepalive; either side sends after idle (client: >20000 ms).",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32 BE",
+    "meaning": "sender tick",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "both"
+ },
+ "0x00020084": {
+  "name": "PONG",
+  "description": "Reply to PING, echoes the tick.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32 BE",
+    "meaning": "echoed tick",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "both"
+ },
+ "0x00020005": {
+  "name": "SESSION_ACK",
+  "description": "Reliable-layer ACK for a sequenced packet.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u16 BE",
+    "meaning": "acked sequence number",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "both"
+ },
+ "0x0002008a": {
+  "name": "GG_AUTH_QUERY",
+  "description": "GameGuard CS-auth query (server -> client). The no-GG client path answers nothing.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32[4]",
+    "meaning": "auth query words",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x0002008b": {
+  "name": "GG_AUTH_ANSWER",
+  "description": "GameGuard CS-auth answer.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u8[64]",
+    "meaning": "GameGuard answer blob",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "C>S"
+ },
+ "0x03000000": {
+  "name": "LOGIN",
+  "description": "Login request (default type). 52 bytes.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "char[17]",
+    "meaning": "account id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x21",
+    "body_off": "0x11",
+    "type": "char[17]",
+    "meaning": "password (never logged)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "C>S"
+ },
+ "0x03000004": {
+  "name": "LOGIN_V4",
+  "description": "Login request, type 1 (long password). 100 bytes. Used by the test client.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "char[17]",
+    "meaning": "account id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x21",
+    "body_off": "0x11",
+    "type": "char[65]",
+    "meaning": "password (never logged)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "C>S"
+ },
+ "0x03000005": {
+  "name": "LOGIN_V5",
+  "description": "Login request, type 2.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "char[65]",
+    "meaning": "account id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x51",
+    "body_off": "0x41",
+    "type": "char[65]",
+    "meaning": "password",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "C>S"
+ },
+ "0x03000006": {
+  "name": "LOGIN_V6",
+  "description": "Login request, type 3.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "char[129]",
+    "meaning": "account id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x91",
+    "body_off": "0x81",
+    "type": "char[65]",
+    "meaning": "password",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "C>S"
+ },
+ "0x03000007": {
+  "name": "LOGIN_V7",
+  "description": "Login request, region 3 default.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "char[33]",
+    "meaning": "account id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x31",
+    "body_off": "0x21",
+    "type": "char[65]",
+    "meaning": "password",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "C>S"
+ },
+ "0x03000008": {
+  "name": "LOGIN_V8",
+  "description": "Login request, type 4.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "char[33]",
+    "meaning": "account id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x31",
+    "body_off": "0x21",
+    "type": "char[65]",
+    "meaning": "password",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "C>S"
+ },
+ "0x03000001": {
+  "name": "LOGIN_ACK",
+  "description": "Login result. 0 = OK; otherwise error code (600 = login fail UI).",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "serial/session key (reused in PCLIST and LOCK)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "i32",
+    "meaning": "result (0 = OK)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "u32",
+    "meaning": "session-server id (reused in LOCK)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x1c",
+    "body_off": "0xc",
+    "type": "char[15]",
+    "meaning": "User NO string",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x2b",
+    "body_off": "0x1b",
+    "type": "u8",
+    "meaning": "flag (1 = clear an option bit; region dependent)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x03000002": {
+  "name": "LOGOUT",
+  "description": "Logout request (empty body).",
+  "layout": [],
+  "direction": "C>S"
+ },
+ "0x03000003": {
+  "name": "LOGOUT_ACK",
+  "description": "Logout result.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "i32",
+    "meaning": "result",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x03010000": {
+  "name": "CHECKOUT",
+  "description": "Pick character and leave the login server for the channel.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "char[25]",
+    "meaning": "character name",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "C>S"
+ },
+ "0x03010001": {
+  "name": "CHECKOUT_ACK",
+  "description": "Checkout result; on success the client connects to the channel server.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "i32",
+    "meaning": "result (0 = OK)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "char[]",
+    "meaning": "string, \"NODATA\" seen; meaning unknown",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x1c",
+    "body_off": "0xc",
+    "type": "u32",
+    "meaning": "unknown",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x03010002": {
+  "name": "CHECKIN",
+  "description": "Session transfer to the game server.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "serial key",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "session-server id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "char[25]",
+    "meaning": "character name",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x31",
+    "body_off": "0x21",
+    "type": "char[]",
+    "meaning": "character no (string)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "C>S"
+ },
+ "0x03010003": {
+  "name": "CHECKIN_ACK",
+  "description": "Check-in result.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "i32",
+    "meaning": "result",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x03020000": {
+  "name": "CHAR_CREATE",
+  "description": "Create character.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "char[25]",
+    "meaning": "name",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x29",
+    "body_off": "0x19",
+    "type": "u8",
+    "meaning": "class",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x2a",
+    "body_off": "0x1a",
+    "type": "u8",
+    "meaning": "slot/index",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "C>S"
+ },
+ "0x03020001": {
+  "name": "CHAR_CREATE_ACK",
+  "description": "Create result: >=0 OK; -1,-2,-3,-11,-12 errors.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "i32",
+    "meaning": "result",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x03020002": {
+  "name": "CHAR_DELETE",
+  "description": "Delete character.",
+  "layout": [],
+  "direction": "C>S"
+ },
+ "0x03020003": {
+  "name": "CHAR_DELETE_ACK",
+  "description": "Delete result (\"Destroy Character OK/Fail\").",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "i32",
+    "meaning": "result",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x02060000": {
+  "name": "PCLIST_REQ",
+  "description": "Request the character list.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "serial key from LOGIN_ACK",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "C>S"
+ },
+ "0x02060001": {
+  "name": "PCLIST_BEGIN",
+  "description": "Character list begins.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "serial key echo",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "account/char key (unknown exact meaning)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x02060002": {
+  "name": "PCLIST_NAME",
+  "description": "Per-character name record.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "unknown",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "character id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "char[]",
+    "meaning": "character name",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x02060003": {
+  "name": "PCLIST_END",
+  "description": "End of list; client builds up to 6 slots and the Create button.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "key echo",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "unknown",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x02040000": {
+  "name": "PC_OBJECT",
+  "description": "Open one PC record; creates the PC object and parses it (115 bytes on wire).",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "unknown key",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "character id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "bytes",
+    "meaning": "PC info record parsed via vtbl+0x1c; field map not recovered",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x02040001": {
+  "name": "PC_SUIT",
+  "description": "Per-PC equipment appearance (\"suit\") blob; bytes from +0x18 to end.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "unknown key",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "character id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "bytes",
+    "meaning": "suit blob",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x02040002": {
+  "name": "PC_INFO_02",
+  "description": "Per-PC info sub-record (sent in a fixed sequence after PC_OBJECT on channel entry). Exact meaning of this sub-type not recovered.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "unknown key",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "character id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "bytes",
+    "meaning": "sub-record payload (count/flags seen: 0x0002..0x0004)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x02040003": {
+  "name": "PC_INFO_03",
+  "description": "Per-PC info sub-record (sent in a fixed sequence after PC_OBJECT on channel entry). Exact meaning of this sub-type not recovered.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "unknown key",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "character id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "bytes",
+    "meaning": "sub-record payload (count/flags seen: 0x0002..0x0004)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x02040004": {
+  "name": "PC_INFO_04",
+  "description": "Per-PC info sub-record (sent in a fixed sequence after PC_OBJECT on channel entry). Exact meaning of this sub-type not recovered.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "unknown key",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "character id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "bytes",
+    "meaning": "sub-record payload (count/flags seen: 0x0002..0x0004)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x02040005": {
+  "name": "PC_INFO_05",
+  "description": "Per-PC info sub-record (sent in a fixed sequence after PC_OBJECT on channel entry). Exact meaning of this sub-type not recovered.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "unknown key",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "character id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "bytes",
+    "meaning": "sub-record payload (count/flags seen: 0x0002..0x0004)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x02040006": {
+  "name": "PC_INFO_06",
+  "description": "Per-PC info sub-record (sent in a fixed sequence after PC_OBJECT on channel entry). Exact meaning of this sub-type not recovered.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "unknown key",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "character id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "bytes",
+    "meaning": "sub-record payload (count/flags seen: 0x0002..0x0004)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x02040007": {
+  "name": "PC_INFO_07",
+  "description": "Per-PC info sub-record (sent in a fixed sequence after PC_OBJECT on channel entry). Exact meaning of this sub-type not recovered.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "unknown key",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "character id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "bytes",
+    "meaning": "sub-record payload (count/flags seen: 0x0002..0x0004)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x02040008": {
+  "name": "PC_INFO_08",
+  "description": "Per-PC info sub-record (sent in a fixed sequence after PC_OBJECT on channel entry). Exact meaning of this sub-type not recovered.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "unknown key",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "character id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "bytes",
+    "meaning": "sub-record payload (count/flags seen: 0x0002..0x0004)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x02040009": {
+  "name": "PC_INFO_09",
+  "description": "Per-PC info sub-record (sent in a fixed sequence after PC_OBJECT on channel entry). Exact meaning of this sub-type not recovered.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "unknown key",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "character id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "bytes",
+    "meaning": "sub-record payload (count/flags seen: 0x0002..0x0004)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x0204000a": {
+  "name": "PC_INFO_0A",
+  "description": "Per-PC info sub-record (sent in a fixed sequence after PC_OBJECT on channel entry). Exact meaning of this sub-type not recovered.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "unknown key",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "character id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "bytes",
+    "meaning": "sub-record payload (count/flags seen: 0x0002..0x0004)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x0204000b": {
+  "name": "PC_INFO_0B",
+  "description": "Per-PC info sub-record (sent in a fixed sequence after PC_OBJECT on channel entry). Exact meaning of this sub-type not recovered.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "unknown key",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "character id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "bytes",
+    "meaning": "sub-record payload (count/flags seen: 0x0002..0x0004)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x0204000c": {
+  "name": "PC_INFO_0C",
+  "description": "Per-PC info sub-record (sent in a fixed sequence after PC_OBJECT on channel entry). Exact meaning of this sub-type not recovered.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "unknown key",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "character id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "bytes",
+    "meaning": "sub-record payload (count/flags seen: 0x0002..0x0004)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x0204000d": {
+  "name": "PC_INFO_0D",
+  "description": "Per-PC info sub-record (sent in a fixed sequence after PC_OBJECT on channel entry). Exact meaning of this sub-type not recovered.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "unknown key",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "character id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "bytes",
+    "meaning": "sub-record payload (count/flags seen: 0x0002..0x0004)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x0204000e": {
+  "name": "PC_INFO_0E",
+  "description": "Per-PC info sub-record (sent in a fixed sequence after PC_OBJECT on channel entry). Exact meaning of this sub-type not recovered.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "unknown key",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "character id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "bytes",
+    "meaning": "sub-record payload (count/flags seen: 0x0002..0x0004)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x0204000f": {
+  "name": "PC_INFO_0F",
+  "description": "Per-PC info sub-record (sent in a fixed sequence after PC_OBJECT on channel entry). Exact meaning of this sub-type not recovered.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "unknown key",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "character id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "bytes",
+    "meaning": "sub-record payload (count/flags seen: 0x0002..0x0004)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x02040010": {
+  "name": "PC_INFO_10",
+  "description": "Per-PC info sub-record (sent in a fixed sequence after PC_OBJECT on channel entry). Exact meaning of this sub-type not recovered.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "unknown key",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "character id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "bytes",
+    "meaning": "sub-record payload (count/flags seen: 0x0002..0x0004)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x02040011": {
+  "name": "PC_INFO_11",
+  "description": "Per-PC info sub-record (sent in a fixed sequence after PC_OBJECT on channel entry). Exact meaning of this sub-type not recovered.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "unknown key",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "character id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "bytes",
+    "meaning": "sub-record payload (count/flags seen: 0x0002..0x0004)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x02040012": {
+  "name": "PC_INFO_12",
+  "description": "Per-PC info sub-record (sent in a fixed sequence after PC_OBJECT on channel entry). Exact meaning of this sub-type not recovered.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "unknown key",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "character id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "bytes",
+    "meaning": "sub-record payload (count/flags seen: 0x0002..0x0004)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x02040013": {
+  "name": "PC_INFO_13",
+  "description": "Per-PC info sub-record (sent in a fixed sequence after PC_OBJECT on channel entry). Exact meaning of this sub-type not recovered.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "unknown key",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "character id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "bytes",
+    "meaning": "sub-record payload (count/flags seen: 0x0002..0x0004)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x02040014": {
+  "name": "PC_INFO_14",
+  "description": "Per-PC info sub-record (sent in a fixed sequence after PC_OBJECT on channel entry). Exact meaning of this sub-type not recovered.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "unknown key",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "character id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "bytes",
+    "meaning": "sub-record payload (count/flags seen: 0x0002..0x0004)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x02040015": {
+  "name": "PC_INFO_15",
+  "description": "Per-PC info sub-record (sent in a fixed sequence after PC_OBJECT on channel entry). Exact meaning of this sub-type not recovered.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "unknown key",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "character id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "bytes",
+    "meaning": "sub-record payload (count/flags seen: 0x0002..0x0004)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x02040016": {
+  "name": "PC_INFO_16",
+  "description": "Per-PC info sub-record (sent in a fixed sequence after PC_OBJECT on channel entry). Exact meaning of this sub-type not recovered.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "unknown key",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "character id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "bytes",
+    "meaning": "sub-record payload (count/flags seen: 0x0002..0x0004)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x02040017": {
+  "name": "PC_INFO_17",
+  "description": "Per-PC info sub-record (sent in a fixed sequence after PC_OBJECT on channel entry). Exact meaning of this sub-type not recovered.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "unknown key",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "character id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "bytes",
+    "meaning": "sub-record payload (count/flags seen: 0x0002..0x0004)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x02040018": {
+  "name": "PC_INFO_18",
+  "description": "Per-PC info sub-record (sent in a fixed sequence after PC_OBJECT on channel entry). Exact meaning of this sub-type not recovered.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "unknown key",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "character id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "bytes",
+    "meaning": "sub-record payload (count/flags seen: 0x0002..0x0004)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x02040019": {
+  "name": "PC_INFO_19",
+  "description": "Per-PC info sub-record (sent in a fixed sequence after PC_OBJECT on channel entry). Exact meaning of this sub-type not recovered.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "unknown key",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "character id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "bytes",
+    "meaning": "sub-record payload (count/flags seen: 0x0002..0x0004)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x0204001a": {
+  "name": "PC_INFO_1A",
+  "description": "Per-PC info sub-record (sent in a fixed sequence after PC_OBJECT on channel entry). Exact meaning of this sub-type not recovered.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "unknown key",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "character id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "bytes",
+    "meaning": "sub-record payload (count/flags seen: 0x0002..0x0004)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x0204001b": {
+  "name": "PC_INFO_1B",
+  "description": "Per-PC info sub-record (sent in a fixed sequence after PC_OBJECT on channel entry). Exact meaning of this sub-type not recovered.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "unknown key",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "character id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "bytes",
+    "meaning": "sub-record payload (count/flags seen: 0x0002..0x0004)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x0204001c": {
+  "name": "PC_INFO_1C",
+  "description": "Per-PC info sub-record (sent in a fixed sequence after PC_OBJECT on channel entry). Exact meaning of this sub-type not recovered.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "unknown key",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "character id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "bytes",
+    "meaning": "sub-record payload (count/flags seen: 0x0002..0x0004)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x0204001d": {
+  "name": "PC_INFO_1D",
+  "description": "Per-PC info sub-record (sent in a fixed sequence after PC_OBJECT on channel entry). Exact meaning of this sub-type not recovered.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "unknown key",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "character id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "bytes",
+    "meaning": "sub-record payload (count/flags seen: 0x0002..0x0004)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x04000000": {
+  "name": "LOCK",
+  "description": "Lock the account onto this game server.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "session-server id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "serial key",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "char[15]",
+    "meaning": "User NO",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x27",
+    "body_off": "0x17",
+    "type": "char[25]",
+    "meaning": "client version string (\"USA-18.0.1\" seen)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "C>S"
+ },
+ "0x04000002": {
+  "name": "LOCK_ACK_START",
+  "description": "Lock accepted; character data follows.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "i32",
+    "meaning": "result",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u8[3]",
+    "meaning": "flags",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x04000003": {
+  "name": "LOCK_ACK_END",
+  "description": "Character data finished.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "player object id (matches later 050d0000 actor id)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u8",
+    "meaning": "flag",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x04000006": {
+  "name": "UNLOCK",
+  "description": "Release the account lock (empty).",
+  "layout": [],
+  "direction": "C>S"
+ },
+ "0x04000007": {
+  "name": "UNLOCK_ACK",
+  "description": "Unlock reply.",
+  "layout": [],
+  "direction": "S>C"
+ },
+ "0x050d0007": {
+  "name": "ENTER_WORLD",
+  "description": "Server tells the client which map to load. Handler FUN_0050a520 immediately sends ENTER_DONE 0x09020000.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u8",
+    "meaning": "map index (7 = 07_loa_castle in the session captured)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x11",
+    "body_off": "0x1",
+    "type": "bytes",
+    "meaning": "unknown (07 00 00 a8 00 b7 00 00 seen)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x09020000": {
+  "name": "ENTER_DONE",
+  "description": "Client finished loading the map (empty body). Server then starts sending world objects.",
+  "layout": [],
+  "direction": "C>S"
+ },
+ "0x05040000": {
+  "name": "MONSTER_APPEAR",
+  "description": "A monster enters view. Handler FUN_005394f0 (\"New Enter : Monster(%08X)\"). Creates a Monster actor from the client monster table using the index at +0x14.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "object id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u16",
+    "meaning": "monster index (share/creature/monster.csv Index; 701 Blaverus, 3510 Akris seen)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x16",
+    "body_off": "0x6",
+    "type": "u16",
+    "meaning": "unknown (0 seen)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "u32",
+    "meaning": "current HP (equals server monster.csv MaxHP: 258 for 701, 1079 for 3510)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x1c",
+    "body_off": "0xc",
+    "type": "u32",
+    "meaning": "stored to actor state +4 (0 seen)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x20",
+    "body_off": "0x10",
+    "type": "bytes[28]",
+    "meaning": "position/movement block passed whole to the actor (bytes seen 36 26 00 00 00 ca 80 73 c8 2c 00 01 ...)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x3c",
+    "body_off": "0x2c",
+    "type": "u32",
+    "meaning": "copied to Monster state +0x44",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x40",
+    "body_off": "0x30",
+    "type": "u8[8]",
+    "meaning": "effect/buff ids; each non-zero entry is applied",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x48",
+    "body_off": "0x38",
+    "type": "u8",
+    "meaning": "copied to Monster state +0x40",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x05050000": {
+  "name": "NPC_APPEAR",
+  "description": "An NPC enters view. Handler FUN_00538a70 (\"New Enter : NPC(%08X)\").",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "object id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u16",
+    "meaning": "NPC index (share/creature/npc.csv; 727 = Emily, 721 = Audrey, 732 = Pluto seen)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x16",
+    "body_off": "0x6",
+    "type": "bytes[6]",
+    "meaning": "position/direction (handler copies +0x16 hi word and +0x1a); exact split unknown",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x1c",
+    "body_off": "0xc",
+    "type": "u8",
+    "meaning": "passed with the object id to the NPC icon/state setter",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x05050001": {
+  "name": "NPC_DIALOG_OPEN",
+  "description": "Click/talk to an NPC.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "NPC object id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "C>S"
+ },
+ "0x05050002": {
+  "name": "NPC_DIALOG_OPEN_ACK",
+  "description": "Opens the NPC dialog (pCreature/pDialog checks in FUN_0076ce70).",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "NPC object id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u8",
+    "meaning": "unknown (1 seen)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x16",
+    "body_off": "0x6",
+    "type": "u16",
+    "meaning": "unknown (1 seen)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "u32",
+    "meaning": "unknown (tick-like)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x05050003": {
+  "name": "NPC_DIALOG_SELECT",
+  "description": "Choose a dialog entry/job of the NPC.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "NPC object id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "job/entry index (0 seen)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "C>S"
+ },
+ "0x05050005": {
+  "name": "NPC_ICON_REQ",
+  "description": "Ask for the NPC overhead icon/state, sent for every NPC that appears.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "NPC object id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "C>S"
+ },
+ "0x05050006": {
+  "name": "NPC_ICON",
+  "description": "NPC icon/state (\"Receive NPC Icon %u(%s)\").",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "NPC object id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u8",
+    "meaning": "icon id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x15",
+    "body_off": "0x5",
+    "type": "bytes[3]",
+    "meaning": "unknown",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x050d0000": {
+  "name": "ACTOR_ACTION",
+  "description": "Movement/action of an actor. Client sends it for its own character and for monsters it controls; the server echoes it back. Handler FUN_0053a340 switches on +0x1f.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "actor object id (player or controlled monster)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "client time (ms, increasing)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "bytes[4]",
+    "meaning": "position-related (changes every step); unknown packing",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x1c",
+    "body_off": "0xc",
+    "type": "bytes[3]",
+    "meaning": "unknown",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x1f",
+    "body_off": "0xf",
+    "type": "u8",
+    "meaning": "action kind (handler switch; 0x02 = move seen most; 0x11 reads +0x20)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x20",
+    "body_off": "0x10",
+    "type": "u8",
+    "meaning": "action argument",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x21",
+    "body_off": "0x11",
+    "type": "bytes[15]",
+    "meaning": "action data; for some kinds a string from +0x30 when len >= 0x31",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "both"
+ },
+ "0x050d0001": {
+  "name": "SECTOR_REPORT",
+  "description": "Client reports its current sector/cell index when it changes (builder FUN_00524500).",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u16",
+    "meaning": "sector/cell index",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x12",
+    "body_off": "0x2",
+    "type": "bytes[2]",
+    "meaning": "uninitialised buffer bytes (not a field)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "C>S"
+ },
+ "0x050d0002": {
+  "name": "ACTOR_SECTOR_CHANGE",
+  "description": "A controlled actor moved between sectors (\"%u sector -> %u sector\").",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "actor object id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u16",
+    "meaning": "new sector",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x16",
+    "body_off": "0x6",
+    "type": "u16",
+    "meaning": "unknown",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "C>S"
+ },
+ "0x050d0004": {
+  "name": "MONSTER_CONTROL",
+  "description": "Server hands control (AI/movement) of a monster to this client (\"%X Controlled by %X\"; unknown id -> \"Unhandled Monster Control Packet\").",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "controller (player) object id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "monster object id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "u16",
+    "meaning": "unknown (0x01d9..0x021a seen)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x1a",
+    "body_off": "0xa",
+    "type": "u8",
+    "meaning": "stored to control state [3] (100 seen)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x1b",
+    "body_off": "0xb",
+    "type": "u8",
+    "meaning": "stored to control state [4] (100 seen)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x050d0005": {
+  "name": "OBJECTS_DISAPPEAR",
+  "description": "Remove objects from view. List of object ids (length 20 = 1 id, 24 = 2 ids). INFERRED from ids matching earlier APPEAR packets.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32[]",
+    "meaning": "object ids",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x05260000": {
+  "name": "ENTER_WORLD_BLOCK_0526",
+  "description": "Large block sent right after ENTER_WORLD (280 bytes). Content not decoded.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "bytes[264]",
+    "meaning": "unknown (starts 07 00 ...)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x050a0000": {
+  "name": "NPC_SHOP_OPEN",
+  "description": "Shop/job window open reply after NPC_DIALOG_SELECT. INFERRED.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "NPC object id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "unknown (0x11 seen)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x050a0001": {
+  "name": "NPC_SHOP_REQ",
+  "description": "Shop/job request. INFERRED.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "u32",
+    "meaning": "NPC object id",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x14",
+    "body_off": "0x4",
+    "type": "u32",
+    "meaning": "unknown (0x11 seen)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   },
+   {
+    "pkt_off": "0x18",
+    "body_off": "0x8",
+    "type": "bytes[4]",
+    "meaning": "unknown (08 00 01 00 seen)",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "C>S"
+ },
+ "0x050a0002": {
+  "name": "NPC_SHOP_DATA",
+  "description": "Shop/job data (60 bytes). Content not decoded.",
+  "layout": [
+   {
+    "pkt_off": "0x10",
+    "body_off": "0x0",
+    "type": "bytes[44]",
+    "meaning": "unknown",
+    "seen_as": "hand analysis",
+    "evidence": "decompile+wire"
+   }
+  ],
+  "direction": "S>C"
+ },
+ "0x050a0005": {
+  "name": "NPC_SHOP_CLOSE",
+  "description": "Close the shop/job window (empty).",
+  "layout": [],
+  "direction": "C>S"
+ },
+ "0x050a0006": {
+  "name": "NPC_SHOP_CLOSE_ACK",
+  "description": "Close reply (empty).",
+  "layout": [],
+  "direction": "S>C"
+ }
+}
