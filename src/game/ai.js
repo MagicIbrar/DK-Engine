@@ -4,12 +4,12 @@
 // src/game/monster-rules.js, which the authoritative server (server/world/core.mjs) uses as well; the engine-chosen
 // constants (fallbacks, paddings, the explore anchor) are in src/config/engine-chosen-monster-ai.js.
 //
-// States:  idle ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬(explore delay)ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬> wander ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬(arrived / timeout)ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬> idle          (idle + wander = the table's mode EXPLORE)
-//            ÃƒÂ¢Ã¢â‚¬ÂÃ¢â‚¬Å¡  aggressive & player within `sight` (and within `pursuit` of home), or hit (any pattern: UNDER_ATTACK -> RAGE)
+// States:  idle ──(explore delay)──> wander ──(arrived / timeout)──> idle          (idle + wander = the table's mode EXPLORE)
+//            │  aggressive & player within `sight` (and within `pursuit` of home), or hit (any pattern: UNDER_ATTACK -> RAGE)
 //            v
-//          chase (run) ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬(within attack reach)ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬ÃƒÂ¢Ã¢â‚¬ÂÃ¢â€šÂ¬> attack (swing every attack delay, damage at clip timing)
-//            ÃƒÂ¢Ã¢â‚¬ÂÃ¢â‚¬Å¡  beyond `pursuit` from home, target dead / gone, or stuck = PERSUIT_OUT: the table's NEXT_STATE
-//            ÃƒÂ¢Ã¢â‚¬ÂÃ¢â‚¬Å¡  (FEAR / UNCARING, `tableState`) + mode EXPLORE = back to idle / wander
+//          chase (run) ──(within attack reach)──> attack (swing every attack delay, damage at clip timing)
+//            │  beyond `pursuit` from home, target dead / gone, or stuck = PERSUIT_OUT: the table's NEXT_STATE
+//            │  (FEAR / UNCARING, `tableState`) + mode EXPLORE = back to idle / wander
 //            v
 //          idle
 // There is NO "return home" state: share/ai lists none. PERSUIT_OUT only ends the chase; the monster then does its ordinary
@@ -28,7 +28,7 @@ import { clearHate } from './hate.js';
 import { FollowBook, followLimit, hatedAlternatives } from './follow-cap.js';
 import { MONSTER_AI_ENGINE_CHOSEN as C } from '../config/engine-chosen-monster-ai.js';
 
-const DEFAULT_DELAYS = [2000, 2000, 1200, 1000]; // exploreStand, exploreMove, stand, move (ms) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â monsters.json defaults
+const DEFAULT_DELAYS = [2000, 2000, 1200, 1000]; // exploreStand, exploreMove, stand, move (ms) — monsters.json defaults
 const ATTACK_INDEX = R.ATTACK_INDEX;
 const STEER_ANGLES = [0, 0.45, -0.45, 0.9, -0.9, 1.35, -1.35];
 const STUCK_GIVEUP = C.chaseStuckGiveUpSec;   // seconds without progress before a chase / wander gives up
@@ -321,7 +321,7 @@ export class MonsterBrain {
     if (this.flinch > 0) this.flinch -= dt;
 
     // skill statuses: stunned / asleep (move + attack lock) stand still; a root (move only) still swings at a target in
-    // reach; an attack lock (e.g. status 2221) still follows but never swings ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â shared monster-rules.js statusFlags
+    // reach; an attack lock (e.g. status 2221) still follows but never swings — shared monster-rules.js statusFlags
     const F = R.statusFlags(m.statuses);
     this._moveLocked = F.move;
     if (F.lock || (F.move && F.attack)) { this.swing = null; playLoop(m, 'idleCombat', {}, now); return; }

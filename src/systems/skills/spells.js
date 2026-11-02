@@ -24,7 +24,7 @@ import { resolveAttack, applyDamage, isAlive, rand } from '../../game/combat.js'
 const num = v => (Number.isFinite(+v) ? +v : 0);
 const OFFENSIVE = new Set([4200001, 4200002, 4200005]);
 const PARTY = new Set([4200002, 4200004, 4200005, 4200006]);
-const SPELL_LIFE = 600;              // s
+const SPELL_LIFE = 600;              // s - JUDGMENT (lane70c): "or after 10 minutes" is not stated by spell.csv or any Global file
 
 export class SpellSystem {
   constructor(engine) {
@@ -92,7 +92,10 @@ export class SpellSystem {
     };
     L.push(entry);
     const aura = this.engine.data.modelEffects?.spell?.[row.icon];
-    if (aura) { const h = this.engine.fx?.play(unit, { ...aura, timeMs: SPELL_LIFE * 1000 }, { loop: true }); if (h) this.handles.set(entry, h); }
+    // lane70c: the aura scene runs on its own Global eff_time (modeleffect 41: 1000 / 2000 / 4000 ms). It used to be
+    // stretched to SPELL_LIFE (600 000 ms), which slowed its authored timeline 150-600x. JUDGMENT: all 12 modeleffect 41
+    // rows say eff_loop 1 yet are described "keep"; the aura keeps looping for the spell's life as before.
+    if (aura) { const h = this.engine.fx?.play(unit, aura, { loop: true }); if (h) this.handles.set(entry, h); }
     this.game.events?.emit('status', { actor: unit, status: entry, on: true });
   }
 

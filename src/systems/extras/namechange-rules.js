@@ -40,7 +40,7 @@ export const NAME_STRINGS = {
   charLine: [170, 6], charPrompt: [170, 8], conditions: [170, 10], redirect: [170, 11],
   sameName: [170, 40], friends: [170, 41], guild: [170, 42], party: [170, 43], expedition: [170, 44], map: [170, 46],
   guildLine: [170, 88], guildPrompt: [170, 89],
-  guildNameTaken: [130, 7], guildNameInvalid: [130, 8], noGuild: [130, 23], guildRetyped: [130, 310], guildLeaderOnly: [130, 315],
+  guildNameTaken: [130, 7], guildNameInvalid: [130, 8], guildNameWord: [275, 330], nameRestricted: [30, 90], noGuild: [130, 23], guildRetyped: [130, 310], guildLeaderOnly: [130, 315],
   guildCount: [130, 318], guildChangeAsk: [130, 313], guildChanged: [130, 314], guildZeroChanges: [130, 316], guildLimit: [130, 317],
   guildResetAsk: [170, 14],
   nameEmpty: [30, 51], nameWord: [30, 52], nameChars: [30, 54], nameTaken: [30, 59],
@@ -55,6 +55,8 @@ export const NAME_TEXT = {
   expedition: 'The character is in an Expedition.',
   guildNameTaken: 'The guild name is already in use.',
   guildNameInvalid: 'The guild name cannot be used.',
+  guildNameWord: '%s contains prohibited words and therefore cannot be used.',
+  nameRestricted: 'This name contains restricted words.',
   noGuild: 'You are not in a guild.',
   guildLeaderOnly: 'Only the Guild Leader can use this menu.',
   guildZeroChanges: 'The Guild Name has changed 0 times.',
@@ -96,10 +98,29 @@ export function checkNewCharacterName(value, { current = '', filter = [] } = {})
   return { name };
 }
 
-/** Validate a new guild name: 1..20 characters (20:1864 / edt_name maxlength 20), no control characters, not taken. */
-export function checkNewGuildName(value, { taken = () => false } = {}) {
+/** GLOBAL restricted-word list for guild / alliance names (LANE-61): Filter::Provider (decompile FUN_01372bc0) loads
+ *  script/filter/namefilter.txt (UTF-16LE, one entry per line), and Guild::UIHandler (FUN_0138d950 / FUN_0138dcd0) checks the typed
+ *  name against it before sending (packets 0x9000000 / 0x9000017), refusing with 275:330 "%s contains prohibited words and therefore
+ *  cannot be used." (the entry) or 30:90. The match is a plain, case-sensitive substring find of each entry (UIString FUN_013731a0 /
+ *  FUN_013732d0: wstring::find per entry; no pattern syntax, which is why the list spells out its case variants). */
+export const NAME_FILTER_FILE = 'script/filter/namefilter.txt';
+export function parseNameFilter(text) {
+  return String(text ?? '').replace(/^\uFEFF/, '').split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+}
+/** The first restricted entry `name` contains (case-sensitive substring, as Global), or null. */
+export function restrictedWord(name, words = []) {
+  const s = String(name ?? '');
+  for (const w of words || []) if (w && s.includes(w)) return w;
+  return null;
+}
+
+/** Validate a new guild name: 1..20 characters (20:1864 / edt_name maxlength 20), no control characters, not taken, no Global
+ *  restricted word (`words` = parseNameFilter of NAME_FILTER_FILE; omitted = not checked, e.g. on a host without the file). */
+export function checkNewGuildName(value, { taken = () => false, words = [] } = {}) {
   const name = typeof value === 'string' ? value.normalize('NFC').trim() : '';
   if (!name || [...name].length > NAME_MAX || /[\p{Cc}\p{Cf}\p{Cs}]/u.test(name)) return { error: 'guildNameInvalid' };
+  const word = restrictedWord(name, words);
+  if (word) return { error: 'guildNameWord', word };
   if (taken(name.toLowerCase())) return { error: 'guildNameTaken' };
   return { name };
 }

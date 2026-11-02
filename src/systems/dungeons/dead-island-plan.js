@@ -1,11 +1,11 @@
-// ENGINE-CHOSEN composition of map551's authored three calls and native boss family.
+﻿// ENGINE-CHOSEN composition of map551's authored three calls and native boss family.
 // The absent server director does not establish boss multiplicity/order/placement.
 // Use every native family boss once in stage4, inside the arena toward each
 // boss's gate (the Helion anchors are outside the arena wall); never alter stats.
 // In-run mechanics (abilities, totems, gates, curses) are host services; their
 // native rows and engine choices are in src/config/engine-chosen-dead-island.js.
-import {DEAD_ISLAND_BOSS_GATES,DEAD_ISLAND_BOSS_RADIUS,DEAD_ISLAND_ARENA_CENTRE} from '../../config/engine-chosen-dead-island.js';
-const RESETS=[10000000,20000000,40000000,80000000,160000000];
+import {DEAD_ISLAND_BOSS_GATES,DEAD_ISLAND_BOSS_RADIUS,DEAD_ISLAND_ARENA_CENTRE,DEAD_ISLAND_RESET_PRICES} from '../../config/engine-chosen-dead-island.js';
+const RESETS=DEAD_ISLAND_RESET_PRICES; // NATIVE stringtable_dungeon_06 21000..21400
 const TYPES={13001:{page:13100,menu:[14001,14002,14009]},13002:{page:13200,menu:[14003,14008,14010]},13003:{page:13300,menu:[14004,14005,14006,14007]}};
 const TOTEMS=new Set([5537,5538,5539,5540,5541,5545]),GATES=new Set([5660,5661,5662]),HELIONS=new Set([5533,5534,5535]);
 const label=(d,code)=>String(d.text(code)||'').split('<')[0].replace(/^\[message\]\s*/,'').trim();
@@ -47,3 +47,4 @@ export function deadIslandPlan(){
   open(20000,[menu(20001,async()=>{await service.start();d.sys.dialog.close();}),menu(20002,resetPage),menu(20003,()=>d.sys.leave(d,'exit'))]);return true;
  }};
 }
+

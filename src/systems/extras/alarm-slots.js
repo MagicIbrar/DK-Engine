@@ -2,21 +2,35 @@
 // Their compiled client's collision rule is unknown. The six common icons sit in
 // two rows of three, with Deka Pass beneath and reception clear on the left. Conditional alarms
 // keep their original controls/actions and use free columns beside that reserved block.
+import { gfxC } from '../../ui/gfx-parity-c.js';
 export const ALARM_PITCH = 40;
 export const POPULATION_ROW_PITCH = 19;
 
 // Compact alarm block. Keep original controls, art, sizes and actions.
 // The crossed-swords lobby icon belongs LEFT of the gift box (connect reward), lined up with
-// the other five - the Training Camp icon (tc_active) was drawn in a free column far right instead. The lobby icons share
+// the other five. The DK Square lobby icons share
 // that one slot: the first open keeps it, a second one uses the next free column (no overlap).
-const HUD_ALARM_POSITIONS = Object.fromEntries(Object.entries({
-  hud_helpalarm: [50, 60], tc_active: [90, 60], dk_active: [90, 60], dk_alarm: [90, 60], connectreward_alarm: [130, 60],
+// gfxC3 'topleft': Global 43.19 layout. Every alarm sits on its own script rect (game2/*alarm*.txt btn rects:
+// qnotice 10 60, helpalarm 50 60, connectreward 90 60, supplymachine 10 100, privatesupply 50 100, autohunt 90 100,
+// dekapass 10 140, attendance 50 60) as the recording shows (quest alert / calendar / gift at x 10/50/90, y 60; supply / private supply /
+// auto hunt at x 10/50/90, y 100). The DK Square lobby icons (dksquare 130 60) overlap the gift slot in the
+// scripts; they take the next free slot of the same 40 px grid (130 60). helpalarm shares 50 60 with attendance in the
+// scripts and Global shows the calendar there (no guide button): it yields that slot when attendance is open.
+// Only offset: the owner's online-count row (+19 y).
+const GLOBAL_ALARM_POSITIONS = {
+  qnotice_alarm: [10, 60], attendance_alarm: [50, 60], hud_helpalarm: [50, 60], connectreward_alarm: [90, 60], dk_active: [130, 60], dk_alarm: [130, 60],
+  'shops.supply_alarm': [10, 100], 'shops.orbis_alarm': [50, 100], autohunt_alarm: [90, 100], dekapassalarm: [10, 140],
+};
+const GLOBAL_RESERVED = [[10, 60, 30, 30], [50, 60, 30, 31], [90, 60, 30, 30], [10, 100, 30, 30], [50, 100, 30, 30], [90, 100, 30, 30], [10, 140, 111, 28]];
+const TOPLEFT_GLOBAL = gfxC('topleft');
+const HUD_ALARM_POSITIONS = TOPLEFT_GLOBAL ? Object.fromEntries(Object.entries(GLOBAL_ALARM_POSITIONS).map(([n, [x, y]]) => [n, [x, y + POPULATION_ROW_PITCH]])) : Object.fromEntries(Object.entries({
+  hud_helpalarm: [50, 60], dk_active: [90, 60], dk_alarm: [90, 60], connectreward_alarm: [130, 60],
   'shops.supply_alarm': [50, 100], 'shops.orbis_alarm': [90, 100], autohunt_alarm: [130, 100],
   dekapassalarm: [50, 140],
 }).map(([name,[x,y]])=>[name,[x,y+POPULATION_ROW_PITCH]]));
-const HUD_RESERVED = [[0, 60, 50, 40], [50, 60, 30, 31], [90, 60, 30, 30], [130, 60, 30, 30],
+const HUD_RESERVED = TOPLEFT_GLOBAL ? GLOBAL_RESERVED.map(([x, y, w, h]) => [x, y + POPULATION_ROW_PITCH, w, h]) : [[0, 60, 50, 40], [50, 60, 30, 31], [90, 60, 30, 30], [130, 60, 30, 30],
   [50, 100, 30, 30], [90, 100, 30, 30], [130, 100, 30, 30], [50, 140, 111, 28]].map(([x,y,w,h])=>[x,y+POPULATION_ROW_PITCH,w,h]);
-const SHARED_LOBBY_SLOT = new Set(['tc_active', 'dk_active', 'dk_alarm']);
+const SHARED_LOBBY_SLOT = new Set(['dk_active', 'dk_alarm', ...(TOPLEFT_GLOBAL ? ['hud_helpalarm'] : [])]);
 function fixedAlarmRect(win, button, ui = null) {
   const p = HUD_ALARM_POSITIONS[win?.name], r = button?.spec?.rect;
   if (!(p && r && ['btn_alarm', 'btn_active'].includes(button.id))) return null;
@@ -44,6 +58,19 @@ export function installHudAlarmLayout(ui) {
     }
     for (const win of ui.openWindows()) {
       if (!win.opts.hud) continue;
+      if (TOPLEFT_GLOBAL && win.name === 'hud_reception') {
+        // Global: ui_receptionwnd.txt rect 0 42 (bars pan_reception 16 4 33 11, lbl_ping 82 2 66 18) under the clock;
+        // the clock is one row lower here (online-count row), so +19.
+        win.setPosition(0, 42 + POPULATION_ROW_PITCH, false);
+        win.control('pan_reception').setRect(16, 4, 33, 11);
+        win.control('lbl_ping').setRect(82, 2, 66, 18);
+        continue;
+      }
+      if (TOPLEFT_GLOBAL && win.name === 'qnotice_alarm') {
+        // ui_qnoticealarm.txt: window rect 10 60, button 0 0 -> the first slot of the grid (+19 for the online-count row)
+        win.setPosition(10, 60 + POPULATION_ROW_PITCH, false);
+        continue;
+      }
       if (win.name === 'hud_reception') {
         // Pin to the alarm row instead of proportional screen placement. The value stays
         // below its bars in the clear left strip, using the original font and height.

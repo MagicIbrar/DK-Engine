@@ -11,6 +11,7 @@
 //   save), reward grants (one atomic profile save per member with a battle-id receipt, profile.zuto.receipts).
 import {randomUUID,randomBytes} from 'node:crypto';
 import {registerPvpMode} from './pvp.mjs';
+import {grantModeSafeTime} from './wanted.mjs';
 import {sameScene} from './scene.mjs';
 import {nearbyNpc,offersOriginalJob,npcPlacements} from './npc-services.mjs';
 import {commitFieldTravel,boundReturnTarget} from './travel.mjs';
@@ -447,14 +448,16 @@ export async function reviveZuto(world,p,authorize=()=>{}){
     const at=zutoReviveAt(world,p);if(!p.dead||!at)fail('The Zuto revival scope is no longer available.',403);
     const scene=await world.map(Z.battlefield,null,at.channel),point=scene.nearest(at.x,at.z);if(!point)fail('No safe revive point is available.',503);
     const beforeRevision=p.revision??0,transition=p.sceneTransition;
-    const candidate={...p,x:point.x,z:point.z,path:[],dead:false,hp:p.maxHp,mp:p.stats?.maxMp||0};
+    const rules=world.data?.pvpRules||{reviveHpRatio:100,reviveMpRatio:100};const rh=Math.max(1,Math.round(p.maxHp*(rules.reviveHpRatio??100)/100)),rm=Math.round((p.stats?.maxMp||0)*(rules.reviveMpRatio??100)/100);
+    const candidate={...p,x:point.x,z:point.z,path:[],dead:false,hp:rh,mp:rm};
     world.changed(candidate);p.sceneTransition=true;
     try{
       await world.persist(candidate);
       const intervening=(p.revision??0)-beforeRevision;
       for(const key of ['x','z','path','dead'])p[key]=candidate[key];
       p.revision=(candidate.revision??0)+intervening;p.dirty=!!candidate.dirty||intervening!==0;p.saveError=candidate.saveError||null;
-      p.hp=p.maxHp;p.mp=p.stats?.maxMp||0;p.maxShield=Math.max(0,Number(p.stats?.maxShield)||0);p.shield=p.maxShield;delete p.respawnReadyAt;
+      p.hp=rh;p.mp=rm;p.maxShield=Math.max(0,Number(p.stats?.maxShield)||0);p.shield=p.maxShield;delete p.respawnReadyAt;
+      grantModeSafeTime(world,p,'urban');
       world.emit(p.map,{type:'revive',actorId:p.id});
     }finally{p.sceneTransition=transition;}
     return true;

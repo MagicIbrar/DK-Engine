@@ -41,10 +41,13 @@ import {assertNoInstallUpdate} from './server/update-guard.mjs';
 import {createNpcProfiles} from './server/world/npc-profiles.mjs';
 import {createGlobalUpdateWatch} from './server/global-update-watch.mjs';
 import {createLogger} from './server/logger.mjs';
+import {startPingWorker} from './server/ping-worker.mjs';
+import {pipelineClient} from './server/pipeline/client.mjs'; // PIPELINE-SPLIT: null unless started by server/pipeline/serveron.mjs
 const log=createLogger({context:{component:'server'}}); // structured JSON-lines (DEKARON_LOG_LEVEL, opt-in DEKARON_LOG_FILE)
 import {prepareNpcNamesBeforeWorld,assertNpcStartupPortAvailable} from './server/world/npc-name-startup.mjs';
 import {npcCapacityPolicy} from './server/world/npc-capacity-policy.mjs';
 import {createNpcAutoPopulation,createNpcHostSampler,npcInterestMode,npcEventLoopDelay} from './server/world/npc-auto-population.mjs';
+import {reconcileMapFolderBindings} from './src/world/map-folder-bindings.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 assertNoInstallUpdate(HERE);
@@ -61,9 +64,23 @@ const CLIENT_SOURCE = clientSource(HERE);
 const GLOBAL_WATCH_ROOT = process.env.DEKARON_GLOBAL_WATCH === '0' ? null : path.resolve(process.env.DEKARON_GLOBAL_WATCH_ROOT || process.env.DEKARON_DATA || path.join(HERE, '..', 'data'));
 const globalUpdate = createGlobalUpdateWatch({ root: GLOBAL_WATCH_ROOT && fs.existsSync(GLOBAL_WATCH_ROOT) ? GLOBAL_WATCH_ROOT : null, appliedDataRoot: CLIENT_SOURCE.dataRoot,
   intervalMs: Number(process.env.DEKARON_GLOBAL_WATCH_MS) || 5000, debounceMs: Number(process.env.DEKARON_GLOBAL_WATCH_DEBOUNCE_MS) || 15000, log: m => log.child({subsystem:'global-update-watch'}).info(String(m)) });
-const CLIENT_STATUS = clientStatus(HERE, CLIENT_SOURCE.version);
+// PIPELINE-SPLIT: under ServerOn the launcher-visible process is the hub; it owns the public port and stops with this process.
+const CLIENT_STATUS = clientStatus(HERE, CLIENT_SOURCE.version, Number(process.env.DEKARON_PIPELINE_HUB_PID)||process.pid);
 const DATA_ROOT = CLIENT_SOURCE.dataRoot;
 const GAMEDATA_ROOT = CLIENT_SOURCE.gamedataRoot;
+// Lane 34: /gamedata/monsters.json and npcs.json must match host folder-reconcile (maps 27/28/4/9/201...).
+// Portable baked tables still mis-bind conscript to Aquarius and omit folder-only maps; loadWorldData already
+// reconciles for authority. Serving the same reconcile here keeps the browser GameData offline/online tables aligned.
+let _reconciledSpawnNpcTables = null;
+function reconciledSpawnNpcTables() {
+  if (_reconciledSpawnNpcTables) return _reconciledSpawnNpcTables;
+  const monsters = JSON.parse(fs.readFileSync(path.join(GAMEDATA_ROOT, 'monsters.json'), 'utf8'));
+  const npcs = JSON.parse(fs.readFileSync(path.join(GAMEDATA_ROOT, 'npcs.json'), 'utf8'));
+  reconcileMapFolderBindings(monsters, npcs, DATA_ROOT);
+  _reconciledSpawnNpcTables = { monsters, npcs };
+  return _reconciledSpawnNpcTables;
+}
+
 const SOUND_ROOTS = [path.join(DATA_ROOT, 'sound'), ...(CLIENT_SOURCE.looseSoundRoot?[CLIENT_SOURCE.looseSoundRoot]:[]), path.join(GAME_ROOT, 'data', 'sound')];
 const SITE_ROOT = path.join(HERE, 'site');
 const PORT = Number(process.env.PORT || 7777);
@@ -84,6 +101,9 @@ const ASSET_SESSION_REQUIRED=!!friendsConfig||!isLoopbackHost(HOST);
 CLIENT_STATUS.relayEnabled = !!RELAY_SECRET;
 CLIENT_STATUS.localDemo = (await localDemoInfo({file:ACCOUNT_STORE,host:HOST})).localDemo;
 CLIENT_STATUS.hostMode = friendsConfig ? (friendsConfig.mode === 'open' ? 'open' : 'friends') : LAN_CONNECTOR?'open':'local';
+// This is a requested launch mode, not server-verified anti-cheat attestation.
+function readGameGuardRequest(){try{const preferred=path.join(HERE,'runtime','server-gameguard.enabled'),legacy=path.join(HERE,'runtime','gameguard.enabled'),p=fs.existsSync(preferred)?preferred:legacy;if(!fs.existsSync(p))return true;const v=String(fs.readFileSync(p,'utf8')).trim().toLowerCase();return v!=='0'&&v!=='false'&&v!=='off';}catch{return true;}}
+CLIENT_STATUS.gameGuardRequired=readGameGuardRequest();
 if (RELAY_SECRET && CLIENT_STATUS.localDemo) throw new Error('Demo credentials cannot be published through an online relay.');
 for(const [key,variable]of [['exp','DEKARON_EXP_RATE'],['dil','DEKARON_DIL_RATE'],['drop','DEKARON_DROP_RATE']]) {
   if(process.env[variable]===undefined&&friendsConfig?.rates?.[key]!==undefined)process.env[variable]=String(friendsConfig.rates[key]);
@@ -101,7 +121,7 @@ let world;
 const CAPACITY_FILE = PHONE_PREVIEW?.capacity??capacityFile(HERE);
 let capacitySettings = await readCapacitySettings(CAPACITY_FILE);
 const npcAutoPopulation=npcInterest?createNpcAutoPopulation({uploadMbps:capacitySettings.uploadMbps}):null;
-const friendsGate = await createFriendsGate({ engine: HERE, enabled: process.env.DEKARON_FRIENDS_GATE === '1', lan:LAN_CONNECTOR, info:()=>({...serverSettings.metadata(),...playerPopulation(world?.world,{isNpc:p=>npcProfiles.own(p.account)})}), players:()=>playerPopulation(world?.world,{isNpc:p=>npcProfiles.own(p.account)}).players });
+const friendsGate = await createFriendsGate({ engine: HERE, enabled: process.env.DEKARON_FRIENDS_GATE === '1', lan:LAN_CONNECTOR, info:()=>({...serverSettings.metadata(),...playerPopulation(world?.world,{isNpc:p=>npcProfiles.own(p.account)}),gameGuardRequired:CLIENT_STATUS.gameGuardRequired}), players:()=>playerPopulation(world?.world,{isNpc:p=>npcProfiles.own(p.account)}).players });
 const freshOwnerRoster=createFreshOwnerRoster({dataRoot:DATA_ROOT,gamedataRoot:GAMEDATA_ROOT,customItemsFile:WORLD_STORAGE.customItemsFile});
 const LOGIN_VERSION_GATE = createLoginVersionGate({ dataRoots: [DATA_ROOT], appliedVersion: () => globalUpdate.getAppliedGlobalVersion() });
 const accounts = createAccountsApi({ loginVersionGate: LOGIN_VERSION_GATE, engineSqlStore:SQL?.store, initialOwnerCharacters:freshOwnerRoster, onOwnerPrepared:()=>requestOwnerGuildPreparation(world), file: ACCOUNT_STORE, cookieName: accountCookieName(HERE, ACCOUNT_STORE), gamedataRoot: GAMEDATA_ROOT, launchAccess:req=>friendsGate.launchAccess(req), launchInvite:(req,proof)=>friendsGate.launchInvite(req,proof), isAccountOnline:id=>!!world?.world?.players?.has(id), onInvalidate:id=>world?.disconnectAccount(id), onAuthenticated:id=>launcher.authenticated(id) });
@@ -121,7 +141,7 @@ const npcAutoTimer=npcAutoPopulation?setInterval(()=>{
   finally{npcLoopDelay.reset();}
 },1000):null;
 npcAutoTimer?.unref?.();
-const launcher = createLauncherControl({characters:async()=>Promise.all((await accounts.listWorldCharacters()).map(async row=>{const c=await accounts.inspectWorldCharacter(row.ref);return {...row,className:c?.className||String(row.classIndex)};})),engine:HERE,storageMode:SQL?'sqlserver':'json',storageDetails:SQL?{instance:SQL.sql.instance,database:SQL.database}:null,file:PHONE_PREVIEW?.launcher??launcherControlFile(HERE, PORT),status:{...CLIENT_STATUS,get realPlayers(){return playerPopulation(world?.world,{isNpc:p=>npcProfiles.own(p.account)}).realPlayers},get botPlayers(){return playerPopulation(world?.world,{isNpc:p=>npcProfiles.own(p.account)}).botPlayers}},players:()=>playerPopulation(world?.world,{isNpc:p=>npcProfiles.own(p.account)}).players,
+const launcher = createLauncherControl({characters:async()=>Promise.all((await accounts.listWorldCharacters()).map(async row=>{const c=await accounts.inspectWorldCharacter(row.ref);return {...row,className:c?.className||String(row.classIndex)};})),engine:HERE,storageMode:SQL?'sqlserver':'json',storageDetails:SQL?{instance:SQL.sql.instance,database:SQL.database}:null,file:PHONE_PREVIEW?.launcher??launcherControlFile(HERE, Number(process.env.DEKARON_PUBLIC_PORT)||PORT),status:{...CLIENT_STATUS,get realPlayers(){return playerPopulation(world?.world,{isNpc:p=>npcProfiles.own(p.account)}).realPlayers},get botPlayers(){return playerPopulation(world?.world,{isNpc:p=>npcProfiles.own(p.account)}).botPlayers}},players:()=>playerPopulation(world?.world,{isNpc:p=>npcProfiles.own(p.account)}).players,
   settings:{...serverSettings,set:async input=>{const before={npcPlayers:serverSettings.npcPlayers(),npcPopulation:serverSettings.npcPopulation()},saved=await serverSettings.set(input);if(Object.hasOwn(input,'npcPlayers')||Object.hasOwn(input,'npcPopulation')){try{await world.syncNpcPlayers();}catch(error){for(const key of ['npcPlayers','npcPopulation'])if(Object.hasOwn(input,key))await serverSettings.set({[key]:before[key]});await world.syncNpcPlayers();throw error;}}return saved;}},
   capacity:{
     read:()=>({settings:capacitySettings,live:{...world.capacity(),botAuto:npcAutoPopulation?.state()||null},memoryRange:memoryRange()}),
@@ -165,7 +185,15 @@ function listDir(res, dir) {
   });
 }
 
-const server = http.createServer({ noDelay: true }, (req, res) => { let releaseMutation;void (async () => {
+const server = http.createServer({ noDelay: true }, (req, res) => {
+  // PERF-NET ping fast path: answered synchronously before URL parsing and every awaited gate (launcher/friends/asset/world).
+  // Same 204 no-store reply as /api/world/ping in server/world/api.mjs.
+  if (req.method === 'GET' && (req.url === '/api/world/ping' || req.url.startsWith('/api/world/ping?'))) { res.writeHead(204, { 'Cache-Control': 'no-store' }); res.end(); return; }
+ 
+  // PING-SRV: answer the HUD ping synchronously in the request callback, before URL parsing and the awaited handler chain,
+  // so it never waits extra microtask/handler turns behind other work. It does no game work and returns no data.
+  if ((req.url === '/api/world/ping' || req.url.startsWith('/api/world/ping?')) && (req.method === 'GET' || req.method === 'HEAD') && req.headers['sec-fetch-site'] !== 'cross-site') { res.writeHead(204, { 'Cache-Control': 'no-store' }); res.end(); return; }
+  let releaseMutation;void (async () => {
   const url = new URL(req.url, 'http://localhost');
   const p = url.pathname;
   if (req.headers['x-dekaron-relay-secret'] || req.headers['x-dekaron-relay-client']) {
@@ -186,11 +214,34 @@ const server = http.createServer({ noDelay: true }, (req, res) => { let releaseM
   }
   if (p === '/join' && ['GET','HEAD'].includes(req.method)) return sendFile(req,res,path.join(HERE,'join.html'));
   if (p === '/api/server/info' && req.method === 'GET') { res.writeHead(200,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(serverSettings.metadata()));return; }
-  if (p === '/api/client/status') return handleClientStatus(req, res, CLIENT_STATUS);
+if (p === '/api/client/status') return handleClientStatus(req, res, CLIENT_STATUS);
   if (await globalUpdate.handle(req, res, p, { isLocal: isLoopbackHost(String(req.socket.remoteAddress||'').replace(/^::ffff:/i,'')) })) return;
   if (await shutdown.handle(req,res,p)) return;
   if (await world.handle(req, res, p)) return;
   if (await accounts.handle(req, res, p)) return;
+  // Loopback-only: client fatal dump -> run/crashes + optional notepad open (load/crash UX).
+  if (p === '/api/client-crash' && req.method === 'POST') {
+    const remote = String(req.socket.remoteAddress || '').replace(/^::ffff:/i, '');
+    if (!isLoopbackHost(remote)) { res.writeHead(403, {'Content-Type':'application/json','Cache-Control':'no-store'}); res.end(JSON.stringify({error:'loopback only'})); return; }
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    let body = {};
+    try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); } catch { res.writeHead(400, {'Content-Type':'application/json'}); res.end(JSON.stringify({error:'bad json'})); return; }
+    const rawName = String(body.filename || 'dk-crash.txt').replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120) || 'dk-crash.txt';
+    const text = String(body.text || '').slice(0, 512 * 1024);
+    if (!text) { res.writeHead(400, {'Content-Type':'application/json'}); res.end(JSON.stringify({error:'empty'})); return; }
+    const crashDir = path.join(HERE, 'run', 'crashes');
+    await fs.promises.mkdir(crashDir, { recursive: true });
+    const outPath = path.join(crashDir, rawName.endsWith('.txt') ? rawName : rawName + '.txt');
+    await fs.promises.writeFile(outPath, text, 'utf8');
+    let opened = false;
+    if (body.open !== false && process.platform === 'win32') {
+      try { exec('notepad.exe "' + outPath.replace(/"/g, '') + '"', { windowsHide: false }); opened = true; } catch (e) { console.error('[client-crash] open failed', e); }
+    }
+    res.writeHead(200, {'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});
+    res.end(JSON.stringify({ ok: true, path: outPath, opened }));
+    return;
+  }
   if (!['GET', 'HEAD'].includes(req.method) && !p.startsWith('/api/forum/')) {
     res.writeHead(405, { Allow: 'GET, HEAD' }); return res.end();
   }
@@ -227,6 +278,16 @@ const server = http.createServer({ noDelay: true }, (req, res) => { let releaseM
   }
   if (await handleSkillRootMotion(req, res, p, { dataRoot: DATA_ROOT, gamedataRoot: GAMEDATA_ROOT })) return;
   if (p.startsWith('/gamedata/')) {
+    if (p === '/gamedata/monsters.json' || p === '/gamedata/npcs.json') {
+      try {
+        const tables = reconciledSpawnNpcTables();
+        const body = Buffer.from(JSON.stringify(p === '/gamedata/monsters.json' ? tables.monsters : tables.npcs));
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'private, no-store', 'Content-Length': body.length });
+        return res.end(body);
+      } catch (err) {
+        log.error('[server] reconciled gamedata serve failed; falling back to disk', { err });
+      }
+    }
     const data = safeJoin(GAMEDATA_ROOT, p.slice('/gamedata/'.length));
     return data ? sendFile(req, res, data) : (res.writeHead(404), res.end('not found'));
   }
@@ -251,6 +312,20 @@ const server = http.createServer({ noDelay: true }, (req, res) => { let releaseM
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => {
   shutdown.stopNow().catch(error=>log.error('[server] shutdown save failed; process remains running',{err:error}));
 });
+// STABILITY crash guard: a stray exception or promise rejection is logged and the server keeps serving (before: any one of
+// them killed the process and every connected player). A storm (20 within 60 s) means the state is no longer trustworthy:
+// save and stop through the normal shutdown, exit code 1, so the launcher/supervisor starts a clean process.
+{
+  const recent=[];let storm=false;
+  const guard=(kind,error)=>{
+    try{log.error(`[crash-guard] ${kind}; server kept running`,{err:error});}catch{try{console.error('[crash-guard]',kind,error);}catch{}}
+    const now=Date.now();recent.push(now);while(recent.length&&now-recent[0]>60000)recent.shift();
+    if(recent.length>=20&&!storm){storm=true;process.exitCode=1;try{log.error('[crash-guard] error storm; saving and stopping',{count:recent.length});}catch{}
+      Promise.resolve().then(()=>shutdown.stopNow()).catch(error=>{try{log.error('[crash-guard] shutdown save failed',{err:error});}catch{}});}
+  };
+  process.on('uncaughtException',(error,origin)=>guard(origin==='unhandledRejection'?'unhandled rejection':'uncaught exception',error));
+  process.on('unhandledRejection',reason=>guard('unhandled rejection',reason));
+}
 
 
 // Network game traffic and private administration use separate listeners.
@@ -264,8 +339,14 @@ const controlServer=LAN_CONNECTOR?http.createServer((req,res)=>{
 try{
   if(controlServer)await new Promise((resolve,reject)=>{controlServer.once('error',reject);controlServer.listen(0,'127.0.0.1',resolve);});
   await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(PORT,HOST,resolve);});
+  if(process.env.DEKARON_PING_WORKER!=='0'){const pw=await startPingWorker({host:HOST,port:Number(process.env.DEKARON_PING_PORT)||PORT+1});if(!pw.ok)log.warn('ping worker unavailable; HUD ping uses /api/world/ping',{error:pw.error});}
   globalUpdate.start();
-  const url='http://'+(HOST==='0.0.0.0'?'localhost':HOST)+':'+PORT+'/';
+  const url=process.env.DEKARON_PUBLIC_URL||('http://'+(HOST==='0.0.0.0'?'localhost':HOST)+':'+PORT+'/'); // PIPELINE-SPLIT: gateway URL under ServerOn
+  {const pc=pipelineClient();if(pc){ // PIPELINE-SPLIT: stats -> hub (coalesced), save+stop on request, stop if the hub disappears
+    const eld=monitorEventLoopDelay({resolution:10});eld.enable();const ms=v=>Math.round(v/1e4)/100;
+    setInterval(()=>{let cap={};try{for(const [k,v] of Object.entries(world.capacity()||{}))if(v===null||['number','boolean','string'].includes(typeof v))cap[k]=v;}catch{}pc.stats('stats.realm',{at:Date.now(),pid:process.pid,loop:{p50:ms(eld.percentile(50)),p99:ms(eld.percentile(99)),max:ms(eld.max)},capacity:cap,heapMB:Math.round(process.memoryUsage().heapUsed/1048576)});eld.reset();},1000).unref();
+    pc.on('ctl.Realm',d=>{if(d?.op==='stop')shutdown.stopNow().catch(error=>log.error('[pipeline] stop failed',{err:error}));});
+    pc.onHubLost=()=>{log.warn('[pipeline] hub disconnected; saving and stopping');shutdown.stopNow().catch(()=>{});};}}
   const controlUrl=controlServer?'http://127.0.0.1:'+controlServer.address().port+'/':url;
   await launcher.publish(url,controlUrl);
   console.log('Dekaron Online running at '+url);

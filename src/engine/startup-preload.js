@@ -1,4 +1,5 @@
 import { fetchJSON } from './assets.js';
+import { breathe } from './yield.js';
 import { STARTUP_JSON, DEFERRED_JSON, JSON_PREFETCH_LANES } from '../config/engine-chosen-loading.js';
 import { awaitLoadingStage } from './loading-deadline.js';
 import { warmWholeScene } from './warm-draw.js';
@@ -6,11 +7,11 @@ import { warmWholeScene } from './warm-draw.js';
 // actors are prepared by their scene loaders; this is not whole-game GPU residency.
 export const STARTUP_CATALOGS = Object.freeze([...new Set([...STARTUP_JSON, ...DEFERRED_JSON,
   'classes', 'frontend', 'sound', 'skills_effects', 'skills_status', 'dungeons', 'events'])]);
-export async function prepareStartupCatalogs({read=fetchJSON,onProgress=()=>{},names=STARTUP_CATALOGS}={}) {
+export async function prepareStartupCatalogs({read=fetchJSON,onProgress=()=>{},names=STARTUP_CATALOGS,yieldTask=breathe}={}) {
   let cursor=0,done=0;
   onProgress(done,names.length);
   await Promise.all(Array.from({length:JSON_PREFETCH_LANES},async()=>{
-    while(cursor<names.length){const name=names[cursor++];await read(`/gamedata/${name}.json`);onProgress(++done,names.length,name);}
+    while(cursor<names.length){const name=names[cursor++];await read(`/gamedata/${name}.json`);onProgress(++done,names.length,name);await yieldTask();}
   }));
   return {completed:done,total:names.length};
 }

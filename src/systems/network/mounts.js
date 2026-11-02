@@ -52,11 +52,22 @@ export function installSharedMounts(game,network){
    const facade=Object.create(game);facade.player=actor;Object.defineProperty(facade,'save',{get:()=>actor.save});facade.events={emit(){}};
    const riding=new Riding({game:facade,data:sys.data,setMenuChecked(){},onStatsChanged(){}});
    const wings=new WingVisual({game:facade,data:sys.data,riding});
-   const buildWing=wings._build.bind(wings);let wingQueued=false;
+   // Latest-wins: a mid-load equip change must not drop while wingQueued (pet-style generation).
+   const buildWing=wings._build.bind(wings);let wingQueued=false,wingPending=null;
    wings._build=(...args)=>{
-    if(wingQueued)return;wingQueued=true;
-    const work=new Promise((resolve,reject)=>{jobs.push({run:()=>actor.disposed||network.disposed||wings.equipped()!==args[1]?null:buildWing(...args),resolve,reject});drain();});
-    void work.catch(error=>console.warn('[network] remote wing',error)).finally(()=>{wingQueued=false;});
+    wingPending=args;
+    if(wingQueued)return;
+    wingQueued=true;
+    const pump=()=>{
+     const a=wingPending;wingPending=null;
+     if(!a||actor.disposed||network.disposed){wingQueued=false;return;}
+     const work=new Promise((resolve,reject)=>{jobs.push({run:()=>actor.disposed||network.disposed||wings.equipped()!==a[1]?null:buildWing(...a),resolve,reject});drain();});
+     void work.catch(error=>console.warn('[network] remote wing',error)).finally(()=>{
+      if(wingPending&&!actor.disposed&&!network.disposed)pump();
+      else wingQueued=false;
+     });
+    };
+    pump();
    };
    state=actor._sharedMount={riding,wings,item:null,generation:0};
    const update=actor.update.bind(actor),dispose=actor.dispose.bind(actor);

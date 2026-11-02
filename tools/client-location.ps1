@@ -1,4 +1,4 @@
-﻿# Exact adjacent installation only; cleanup requires the explicit first-install confirmation.
+# Exact adjacent installation only; cleanup requires the explicit first-install confirmation.
 function Assert-ClientFolder([string]$Root) {
  $rootPath=[IO.Path]::GetFullPath($Root).TrimEnd('\')
  if(-not (Test-Path -LiteralPath $rootPath -PathType Container)){throw 'Choose the Dekaron game folder containing data and bin.'}
@@ -32,7 +32,7 @@ function Find-ClientFolders([string]$Engine) {
 }
 function Get-ClientLocationPlan([string]$Root) {
  $target=Assert-ClientFolder $Root
- $extras=@(Get-ChildItem -LiteralPath $target -Force | Where-Object {$_.Name.ToLowerInvariant() -notin @('data','bin','engine','client.exe')} | Sort-Object Name | ForEach-Object {$_.Name})
+ $extras=@()
  return [pscustomobject]@{root=$target;engine=(Join-Path $target 'engine');remove=$extras;clientName='Client.exe';provisional=$true}
 }
 function Copy-ClientEngine([string]$Source,[string]$Root) {
@@ -55,7 +55,7 @@ function Copy-ClientEngine([string]$Source,[string]$Root) {
   $dirPath=Join-Path $sourcePath $dir
   if(Test-Path -LiteralPath $dirPath){foreach($entry in Get-ChildItem -LiteralPath $dirPath -Recurse -Force -File){if($entry.Extension -in @('.js','.cjs','.json') -or $entry.Name -eq 'LICENSE'){$relative.Add($entry.FullName.Substring($sourcePath.Length+1))}}}
  }
- foreach($file in @('node_modules\three\package.json','node_modules\three\LICENSE','client-assets\dk-engine-logo-v1.png','client-assets\launcher-background-v1.png','client-assets\dk-engine-emblem-v1.png','client-assets\dk-engine.ico','docs\DISTRIBUTION.md','docs\HOSTING.md','docs\MULTIPLAYER.md','docs\TODO.md','docs\CLIENT-UPDATES.md')){if(Test-Path -LiteralPath (Join-Path $sourcePath $file) -PathType Leaf){$relative.Add($file)}}
+ foreach($file in @('node_modules\three\package.json','node_modules\three\LICENSE','client-assets\dk-engine-logo-v1.png','client-assets\launcher-background-v1.png','client-assets\dk-engine-emblem-v1.png','client-assets\dk-engine.ico','client-assets\dekaron-client.ico','docs\DISTRIBUTION.md','docs\HOSTING.md','docs\MULTIPLAYER.md','docs\TODO.md','docs\CLIENT-UPDATES.md')){if(Test-Path -LiteralPath (Join-Path $sourcePath $file) -PathType Leaf){$relative.Add($file)}}
  foreach($required in @('Client.exe','server.mjs','tools\client-ui.ps1','tools\install-client.mjs','vendor\three.module.js')){if(-not (Test-Path -LiteralPath (Join-Path $sourcePath $required) -PathType Leaf)){throw "Incomplete engine download: missing $required"}}
  # Validate every input/output before the first write; existing private state is outside this allowlist.
  foreach($name in $relative){
@@ -72,9 +72,57 @@ function Copy-ClientEngine([string]$Source,[string]$Root) {
 }
 function New-ClientDesktopShortcut([string]$Root,[string]$Desktop=[Environment]::GetFolderPath('Desktop')) {
  $target=Assert-ClientFolder $Root
- $exe=Join-Path $target 'Client.exe';if(-not (Test-Path -LiteralPath $exe -PathType Leaf)){throw 'The installed launcher is missing.'};Assert-ClientPathUnlinked $exe
- $shortcutPath=Join-Path $Desktop 'DK Engine.lnk';Assert-ClientPathUnlinked $shortcutPath
+ $exeCandidates=@(
+  (Join-Path $target 'engine\Client.exe'),
+  (Join-Path $target 'Client.exe'),
+  (Join-Path $target 'DKCommandCenter.exe'),
+  (Join-Path $target 'tools\command-center\DKCommandCenter.exe'),
+  (Join-Path $target 'engine\tools\command-center\DKCommandCenter.exe'),
+  (Join-Path $target 'DK-Engine-Client.exe')
+ )
+ $exe=$null
+ foreach($candidate in $exeCandidates){if(Test-Path -LiteralPath $candidate -PathType Leaf){$exe=[IO.Path]::GetFullPath($candidate);break}}
+ if(-not $exe){throw 'The installed launcher is missing.'};Assert-ClientPathUnlinked $exe
+ $workdir=[IO.Path]::GetFullPath([IO.Path]::GetDirectoryName($exe))
+ $iconCandidates=@(
+  (Join-Path $target 'engine\client-assets\dekaron-client.ico'),
+  (Join-Path $target 'client-assets\dekaron-client.ico'),
+  (Join-Path $workdir 'dk-engine-transparent-4.1.1.ico'),
+  (Join-Path $target 'dk-engine-transparent-4.1.1.ico'),
+  (Join-Path $target 'tools\command-center\dk-engine-transparent-4.1.1.ico'),
+  (Join-Path $target 'DKCommandCenter.ico'),
+  (Join-Path $target 'client-assets\dk-engine.ico')
+ )
+ $icon=$exe+',0'
+ foreach($candidate in $iconCandidates){if(Test-Path -LiteralPath $candidate -PathType Leaf){$icon=[IO.Path]::GetFullPath($candidate)+',0';break}}
+ # New shortcuts are named 'Dekaron 4.2.0'; older 4.1.x / DK Engine names are still recognised and reused.
+ $names=@('Dekaron 4.2.0.lnk','Dekaron Engine 4.1.1.lnk','Dekaron Engine 4.1.0.lnk','DK Engine.lnk','DK Engine 4.1.1.lnk','DK Engine 4.1.0.lnk','Dekaron Engine.lnk')+(2..100|ForEach-Object{"Dekaron 4.2.0 ($_).lnk"})+(2..100|ForEach-Object{"Dekaron Engine 4.1.1 ($_).lnk"})
  $shell=New-Object -ComObject WScript.Shell
- try{$shortcut=$shell.CreateShortcut($shortcutPath);$shortcut.TargetPath=$exe;$shortcut.WorkingDirectory=$target;$shortcut.IconLocation=$exe+',0';$shortcut.Description='Dekaron Online';$shortcut.Save()}finally{if($shortcut){[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shortcut)};[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell)}
+ $shortcut=$null;$shortcutPath=$null
+ try{
+  foreach($name in $names){
+   $candidatePath=Join-Path $Desktop $name
+   Assert-ClientPathUnlinked $candidatePath
+   if(Test-Path -LiteralPath $candidatePath -PathType Leaf){
+    $existing=$shell.CreateShortcut($candidatePath)
+    if([string]::Equals($existing.TargetPath,$exe,[StringComparison]::OrdinalIgnoreCase) -and [string]::Equals($existing.WorkingDirectory,$workdir,[StringComparison]::OrdinalIgnoreCase)){
+     if(-not [string]::Equals(($existing.IconLocation+''),$icon,[StringComparison]::OrdinalIgnoreCase)){$existing.IconLocation=$icon;$existing.Save()}
+     return $candidatePath
+    }
+   }
+  }
+  foreach($name in @('Dekaron 4.2.0.lnk')+(2..100|ForEach-Object{"Dekaron 4.2.0 ($_).lnk"})){
+   $candidatePath=Join-Path $Desktop $name
+   Assert-ClientPathUnlinked $candidatePath
+   if(-not (Test-Path -LiteralPath $candidatePath)){$shortcutPath=$candidatePath;break}
+  }
+  if(-not $shortcutPath){throw 'No unused desktop shortcut name is available.'}
+  $shortcut=$shell.CreateShortcut($shortcutPath)
+  $shortcut.TargetPath=$exe
+  $shortcut.WorkingDirectory=$workdir
+  $shortcut.IconLocation=$icon
+  $shortcut.Description='Dekaron Engine'
+  $shortcut.Save()
+ }finally{if($shortcut){[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shortcut)};[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell)}
  return $shortcutPath
 }

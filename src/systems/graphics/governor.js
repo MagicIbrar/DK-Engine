@@ -16,20 +16,21 @@
 // step that drops the rate again within PROBE_SECONDS is undone and the next try waits twice as long (up to 2 min).
 // Idle while the tab is hidden, the game is paused / loading, and for SETTLE_SECONDS after a map load.
 export const LEVELS = [
-  // Lowering the render resolution made the screen look fuzzy. Stay at full resolution (rs 1) and
-  // cut shadows, bloom resolution, draw distance and secondary motion instead.
+  // Stay at full resolution (rs 1). Draw distance stays 1.0 at every level so Clip_Far x Options
+  // and fog (Global light fog_value x drawDistance) are never shortened — pop-in / Global hard-check
+  // (worker graphics REA). FPS under load comes from shadows, bloom size, and secondary motion.
   { rs: 1.0, shadow: 8192, draw: 1.0, bloom: 4, secondary: true },
   { rs: 1.0, shadow: 2048, draw: 1.0, bloom: 4, secondary: true },
-  { rs: 1.0, shadow: 2048, draw: 0.9, bloom: 8, secondary: true },
-  { rs: 1.0, shadow: 1024, draw: 0.8, bloom: 8, secondary: true },
-  { rs: 1.0, shadow: 1024, draw: 0.7, bloom: 8, secondary: false },
-  { rs: 1.0, shadow: 512, draw: 0.6, bloom: 8, secondary: false },
+  { rs: 1.0, shadow: 1024, draw: 1.0, bloom: 8, secondary: true },
+  { rs: 1.0, shadow: 1024, draw: 1.0, bloom: 8, secondary: false },
+  { rs: 1.0, shadow: 512, draw: 1.0, bloom: 8, secondary: false },
+  { rs: 1.0, shadow: 512, draw: 1.0, bloom: 8, secondary: false },
 ];
-const DOWN_SECONDS = 1.2;
+const DOWN_SECONDS = 1.2; // SMOOTH (2026-10-30): was 0.45 - a heavy camera angle for half a second flipped levels (render-target resize hitch)
 const UP_SECONDS = 6;
 const PROBE_SECONDS = 3;
 const SETTLE_SECONDS = 3;
-const COOLDOWN = 1.2;
+const COOLDOWN = 2; // SMOOTH: was 0.9 (FPS-10X); at most one level change every 2 s
 
 export class Governor {
   constructor() {

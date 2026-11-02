@@ -324,15 +324,26 @@ export class UIList extends UIControl {
     this.scroll?.on('change', v => { this.top = v; this.render(); });
     this.el.addEventListener('wheel', (e) => { e.preventDefault(); e.stopPropagation(); this.scrollBy(Math.sign(e.deltaY)); }, { passive: false });
   }
-  /** Show the row buttons on `row` (item i): right-aligned on the line itself, in list order (left to right). Re-attached after every render. */
-  _attachActions(row, i) {
+  /** Show row actions on `row` (item i). `interactive=false` keeps badge-only actions (Global world-map EVENT purple badge always far-right). */
+  _attachActions(row, i, interactive = true) {
     const acts = this.rowActions; if (!acts?.length || !row) return;
+    if (row.closest('.uw-map-npc-list')) {
+      const mode = interactive ? 'interactive' : 'badges';
+      if (row.dataset.uwMapActions === mode) return;
+      row.dataset.uwMapActions = mode;
+    }
     row.querySelector(':scope > .uw-rowactions')?.remove();
     const it = this.items[i], box = document.createElement('div'); box.className = 'uw-rowactions';
     for (const a of acts) {
       if (a.show && !a.show(i, it)) continue;
+      if (!interactive && !a.badge) continue;
       const b = document.createElement('div'), label = typeof a.label === 'function' ? a.label(i, it) : a.label;
       b.className = a.badge ? 'uw-rowbadge' : 'uw-rowaction'; b.textContent = label;
+      if(a.badge && a.sprite){
+        b.setAttribute('aria-label',label);b.classList.add('uw-rowbadge-sprite');
+        const [screen,index]=a.sprite;
+        spriteOf({screen,index},sprite=>{if(sprite){applySprite(b,sprite,37,14,'natural');b.textContent='';}});
+      }
       if (!a.badge) {
         b.addEventListener('pointerdown', (e) => e.stopPropagation());
         b.addEventListener('click', (e) => { e.stopPropagation(); this.win.mgr?.sound?.(0); this.select(i, false); a.onClick?.(i, this.items[i]); });
@@ -342,8 +353,16 @@ export class UIList extends UIControl {
     }
     if (box.childElementCount) row.appendChild(box);
   }
-  _detachActions(row, i) { if (i !== this.sel) row.querySelector(':scope > .uw-rowactions')?.remove(); }
-  get visibleRows() { return Math.max(1, Math.floor(this.box.h / this.rowH)); }
+  _detachActions(row, i) {
+    if (i === this.sel) return;
+    // Drop interactive buttons on leave, keep badges always visible (Global EVENT / siege badge).
+    if (this.rowActions?.some(a => a.badge)) this._attachActions(row, i, false);
+    else row.querySelector(':scope > .uw-rowactions')?.remove();
+  }
+  // Rows are laid out over the vscroll child's height when the script gives it one (Global ui_new_mapwnd.txt list_npclist:
+  // listbox 478 tall, vscroll 460 with its down button at 448 = 32 rows of 14; the 18 px under it belong to the
+  // Transparency row lbl_silde / pan_silde at y 530). Lists without a sized vscroll keep their own height.
+  get visibleRows() { const sh = this.scroll?.box?.h; const h = sh > 0 ? Math.min(this.box.h, sh) : this.box.h; return Math.max(1, Math.floor(h / this.rowH)); }
   scrollBy(d) { this.setTop(this.top + d); }
   setTop(t) {
     this.top = Math.max(0, Math.min(Math.max(0, this.items.length - this.visibleRows), t));
@@ -418,7 +437,8 @@ export class UIList extends UIControl {
       row.addEventListener('click', (e) => { e.stopPropagation(); this.win.mgr?.sound?.(0); this.select(i, false); });
       row.addEventListener('dblclick', (e) => { e.stopPropagation(); this.emit('dblclick', i, this.items[i]); });
       row.addEventListener('contextmenu', (e) => { e.preventDefault(); e.stopPropagation(); this.emit('rclick', i, this.items[i], e); });
-      if (this.rowActions && (i === this.hot || i === this.sel)) this._attachActions(row, i);   // hovered / selected row rebuilt (scroll, select): keep its buttons
+      // Badges always on; interactive rowActions only on hovered / selected (Global world-map EVENT badge).
+      if (this.rowActions) this._attachActions(row, i, i === this.hot || i === this.sel);
     }
   }
 }
@@ -619,8 +639,11 @@ export class UITree extends UIControl {
       if (this.checkSize && n.checked != null) {
         const c = div('uw-bg', row);
         c.style.left = `${x}px`; c.style.top = `${Math.round((this.rowH - this.checkSize) / 2)}px`; c.style.width = c.style.height = `${this.checkSize}px`; c.style.pointerEvents = 'auto';
-        c.style.boxShadow = 'inset 0 0 0 1px rgba(255,255,255,.6)';
-        if (n.checked) c.style.background = 'rgba(255,200,80,.7)';
+        // Global multitreectrl: images nonebox (etc_01#303) / checkbox (etc_01#304) — not CSS placeholders.
+        const boxImg = n.checked
+          ? (this.images.checkbox || this.images.check || this.images.nonebox)
+          : (this.images.nonebox || this.images.none);
+        paintBox(c, boxImg, this.checkSize, this.checkSize);
         c.addEventListener('click', (e) => { e.stopPropagation(); n.checked = !n.checked; this.render(); this.emit('check', n); });
         x += this.checkSize + 3;
       }

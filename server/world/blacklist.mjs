@@ -6,7 +6,7 @@
 //   63/70 "Cannot block/blacklist ... on this map", 68 "Cannot blacklist users from other servers."
 // Persisted on the character profile (profile.blacklist, names). Own module + own 'blacklist' message; it does not touch the
 // friend list, friend requests or ui_addfriend (lane-world). What a blacklisted name is barred from is NOT stated by the Global UI
-// or strings, so nothing is suppressed here; isBlacklisted() is exported for a single guarded caller (see REPORT.md).
+// or strings, Global UI/strings do not name the barred actions; secondary sources (fandom Interface; Chinese regional guide) say blacklisted players cannot contact via messenger or chat. Callers: friend-requests.mjs, messenger.mjs, social.mjs, megaphone.mjs (Lane 14).
 import {WorldError} from './core.mjs';
 export const BLACKLIST_SCHEMAS={blacklist:['token','type','operation','targetName']};
 // Cap 30: Global server per-PC blacklist map Segment<30, Coupler<String<25>, IBlackList*>> (audit/global-re/SERVER-RE.md §6,

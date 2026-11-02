@@ -9,7 +9,7 @@
 import {loadEventData} from '../events/data.js';
 import {cloneTemplate} from '../../ui/frontend/ui.js';
 import {atlas} from '../../ui/atlas.js';
-import {CLASS_CODES,roundTitleCode} from '../events/guild-tournament-rules.js';
+import {CLASS_CODES} from '../events/guild-tournament-rules.js';
 import {DKR_JOBS,DKR_GROUPS,DKR_STRINGS,DKR_SCRIPTS,DKR_NAME_MAX,dateLabel,groupCode} from '../events/dkr-pvp-rules.js';
 const DIR='game2/dkrpvpbattle/';
 const MARK_RANGE={bg:221,icon:783},MARK_PAGE=60,MARK_COLS=20; // = server/world/guilds.mjs GUILD_MARK_RANGE (guildbg / guildicon atlases)
@@ -36,7 +36,12 @@ export function installSharedDkrPvp(game,network,sys){
   const say=t=>{if(!t)return;if(game.chat?.system)game.chat.system(t);else game.hud?.log?.(t,'sys');};
   const send=intent=>network.action('dkr',{npcIndex:state.npc??undefined,...intent}).then(r=>{say(r?.dkrResult?.text);return r;}).catch(report);
   const team=id=>id?state.t?.teams?.[id]||null:null;
-  const matchName=m=>!m?'':m.kind==='league'?`${T(groupCode(m.group),`Group ${m.group}`)} ${m.order}`:m.match===3?`${T(530,'Tournament')} 3 / 4`:`${C360(roundTitleCode(m.match),m.match===2?'Final':`Round of ${m.match}`)}${m.match>2?` ${m.order}`:''}`;
+  // Lane 71: match names follow the Global client (64-bit decompile, DKR match label builder near 0x7ff6715cbc78 picks 2011|1000-1004
+  // and 1010): league rows 1000 'Group <GROUPNAME>', tournament rows 1001 'Round of <GROUPNAME>' (16 / 8), 1002 Semifinals (4),
+  // 1003 3rd Place Match (3), 1004 Finals (2), then 1010 'Match<ORDERNAME>' when the round has several matches (JUDGMENT: ORDERNAME = ' ' + order).
+  const fill=(s,k,v)=>String(s).split(k).join(String(v));
+  const roundLabel=m=>m.kind==='league'?fill(T(1000,'Group <GROUPNAME>'),'<GROUPNAME>',m.group):m.match>=8?fill(T(1001,'Round of <GROUPNAME>'),'<GROUPNAME>',m.match):m.match===4?T(1002,'Semifinals'):m.match===3?T(1003,'3rd Place Match'):T(1004,'Finals');
+  const matchName=m=>!m?'':roundLabel(m)+(m.kind==='league'||m.match>=4?' '+fill(T(1010,'Match<ORDERNAME>'),'<ORDERNAME>',' '+m.order):'');
   const when=ms=>ms?dateLabel(String(state.data?.txt?.(DKR_STRINGS.file,DKR_STRINGS.cate,117)||'<MONTH> / <DAY> <HOUR> : <MINUTE>'),ms):''; // 2011|117 keeps its <MONTH> / <DAY> tokens
   const win=async key=>{const w0=state.wins[key];if(w0&&!w0.disposed)return w0;const w=await game.uiwin?.create?.(DIR+DKR_SCRIPTS[key]+'.txt',{name:`ev_dkr_${key}`});if(!w)return null;state.wins[key]=w;wire(key,w);return w;};
   const show=async(key,fill)=>{const w=await win(key);if(!w)return null;fill?.(w,state.t);if(!w.isOpen)game.uiwin.openWindow(w);return w;};

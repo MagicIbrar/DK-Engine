@@ -17,10 +17,10 @@ export function poller(fn, {interval = 3000, maxBackoff = 8, active = () => true
   async function tick() {
     if (stopped || running) return;
     if (document.hidden || !active()) { schedule(); return; }
-    running = true; ctrl = new AbortController();
-    try { p.last = await fn(ctrl.signal, p.last); p.lastAt = Date.now(); p.error = null; failures = 0; }
-    catch (e) { if (!ctrl.signal.aborted) { p.error = e; failures = Math.min(failures + 1, 6); } }
-    finally { running = false; ctrl = null; schedule(); }
+    running = true; const own = ctrl = new AbortController();
+    try { p.last = await fn(own.signal, p.last); p.lastAt = Date.now(); p.error = null; failures = 0; }
+    catch (e) { if (!own.signal.aborted) { p.error = e; failures = Math.min(failures + 1, 6); } }
+    finally { running = false; if (ctrl === own) ctrl = null; schedule(); }
   }
   return p;
 }

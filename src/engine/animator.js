@@ -5,6 +5,7 @@
 // every frame the current action's weight rises and all others fall at 1/fade per second, and the weights are
 // renormalised to sum to 1. Faded-out actions are stopped. Root motion is ignored (the game moves actors itself).
 import * as THREE from 'three';
+import { crowdAdvance, crowdDemoteSync } from './crowd-skinning.js';
 
 export class Animator {
   /** @param {import('./models.js').SkinnedInstance} instance */
@@ -56,6 +57,7 @@ export class Animator {
       action.timeScale = speed;
       return;
     }
+    crowdDemoteSync(this.instance, 'play');   // a GPU crowd body returns to the CPU path before its actions change
     const prev = this.current;
     this._fade = Math.max(0, fade || 0);
     // (a one-shot, or a loop with an explicit restart / start time, that is still fading out from an earlier play() restarts
@@ -97,6 +99,7 @@ export class Animator {
 
   /** Stop everything (bones keep their last pose). */
   stop() {
+    crowdDemoteSync(this.instance, 'stop');
     this.mixer.stopAllAction();
     this._layers = [];
     this.current = null;
@@ -128,7 +131,7 @@ export class Animator {
       this._layers = keep;
       if (keep.length === 1) { keep[0].w = 1; keep[0].action.setEffectiveWeight(1); }
     }
-    this.mixer.update(dt);
+    crowdAdvance(this, dt);   // = this.mixer.update(dt), minus the pose evaluation for a GPU crowd body (engine/crowd-skinning.js)
     if (this._finished && this._onFinish) {
       const cb = this._onFinish;
       this._onFinish = null;

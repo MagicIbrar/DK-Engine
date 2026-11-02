@@ -101,7 +101,7 @@ export function tickAttackRoot(world, p, dt) {
   const to = sweepRoot(p.x, p.z, d.x, d.z, (x, z) => !!map?.isWalkable(x, z));
   const dx = to.x - p.x, dz = to.z - p.z;
   if (!(Math.abs(dx) > 1e-9 || Math.abs(dz) > 1e-9)) return null;
-  p.x = to.x; p.z = to.z; world.changed?.(p);
+  p.x = to.x; p.z = to.z; if (typeof world.poseChanged === 'function') world.poseChanged(p); else world.changed?.(p); // PING-FLAT / ROUND2: swing displacement is pose-only (noteSkillRootMotion also notifyPose); never durable-dirty/SQL
   return { x: dx, z: dz };
 }
 

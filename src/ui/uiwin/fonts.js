@@ -4,9 +4,10 @@
 // Korean) falls back to Malgun Gothic. Rule (ui.md): bold when weight >= 6, 1-px black drop shadow when shadow.
 // The builtin FONT_TABLE is font.csv verbatim (tools/test-uiwin.mjs checks it against the file); loadFonts()
 // re-reads the shipped file so an edited font.csv is honoured.
+import { gfxC } from '../gfx-parity-c.js'; // gfxC: Global 43.19 renders weight 6.4 rows (fontIndex 4 = HP/EXP text) regular
 import { fetchText } from '../../engine/assets.js';
 
-const T = (height, weight, shadow, face = 'Tahoma') => ({ height, weight, bold: weight >= 6, shadow, face });
+const T = (height, weight, shadow, face = 'Tahoma') => ({ height, weight, bold: weight >= (gfxC('fontweight') ? 7 : 6), shadow, face });
 /** font.csv as shipped. */
 export const FONT_TABLE = {
   1: T(8, 6.4, false), 2: T(11, 5.4, false), 3: T(11, 5.4, false), 4: T(11, 6.4, false), 5: T(11, 6.4, false),
@@ -38,7 +39,7 @@ export function parseFontCSV(text) {
     const shadow = /^true$/i.test(String(cells[3]).trim());
     let face = String(cells[4] || 'Tahoma').split(',')[0].trim();
     if (!/^[\x20-\x7e]+$/.test(face)) face = 'NanumBarunGothic';   // the Korean face name (EUC-KR)
-    out.set(idx, { height, weight, bold: weight >= 6, shadow, face });
+    out.set(idx, { height, weight, bold: weight >= (gfxC('fontweight') ? 7 : 6), shadow, face });
   }
   return out;
 }

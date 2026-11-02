@@ -1,5 +1,6 @@
 // Structured JSON-lines logger. Console sink always on; file sink opt-in (file option or DEKARON_LOG_FILE).
 import fs from 'node:fs';
+import { pipelineClient } from './pipeline/client.mjs'; // PIPELINE-SPLIT
 export const LEVELS = Object.freeze({ debug: 10, info: 20, warn: 30, error: 40 });
 const CONSOLE = { debug: 'debug', info: 'log', warn: 'warn', error: 'error' };
 export function formatRecord(level, msg, context, fields, now = new Date()) {
@@ -11,6 +12,8 @@ export function createLogger({ level = process.env.DEKARON_LOG_LEVEL || 'info', 
   if (!(level in LEVELS)) throw new Error(`Unknown log level: ${level}`);
   const min = LEVELS[level];
   const sinks = [(lvl, line) => out[CONSOLE[lvl]](line)];
+  const pc = pipelineClient(); // PIPELINE-SPLIT: under ServerOn every line also goes to the LogFiles service (bus BULK lane, async)
+  if (pc) sinks.push((_, line) => pc.log(line));
   if (file) sinks.push((_, line) => fs.appendFileSync(file, line + '\n'));
   const make = ctx => {
     const log = {};

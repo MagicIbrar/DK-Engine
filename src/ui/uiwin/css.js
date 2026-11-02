@@ -25,7 +25,11 @@ input.uw-edit[type=text],input.uw-edit[type=password],input.uw-edit[type=number]
 .uw-rowactions{position:absolute;right:2px;top:1px;bottom:1px;display:flex;align-items:stretch;gap:3px;z-index:3}
 .uw-rowaction{display:flex;align-items:center;padding:0 8px;box-sizing:border-box;border:1px solid #0b2a06;border-radius:3px;background:linear-gradient(#7fd63a,#2f8a14);color:#fff;font:bold 11px/1 Tahoma,Arial,sans-serif;text-shadow:0 1px 0 #1a4a0a;cursor:pointer}
 .uw-rowaction:hover{filter:brightness(1.15)}
-.uw-rowbadge{display:flex;align-items:center;padding:0 4px;font:italic bold 11px/1 Tahoma,Arial,sans-serif;color:#d05cff;text-shadow:0 1px 0 #000;pointer-events:none}
+.uw-rowbadge{display:flex;align-items:center;padding:0 4px;font:italic bold 11px/1 Tahoma,Arial,sans-serif;color:inherit;text-shadow:0 1px 0 #000;pointer-events:none}
+.uw-map-npc-list .uw-row{display:flex;align-items:center;box-sizing:border-box;padding-right:18px}
+.uw-map-npc-list .uw-row > span{position:relative!important;left:auto!important;right:auto!important;flex:1 1 auto;min-width:0;padding-left:2px;overflow:hidden;text-overflow:ellipsis}
+.uw-map-npc-list .uw-rowactions{position:relative;right:auto;top:auto;bottom:auto;align-self:stretch;flex:0 0 auto}
+.uw-rowbadge-sprite{width:37px;height:14px;padding:0;flex:0 0 auto;background-repeat:no-repeat;background-size:100% 100%}
 .uw-drop{position:absolute;pointer-events:auto;z-index:100000}
 .uw-drop .uw-row:hover{background:rgba(255,255,255,.12)}
 .uw-icon{position:absolute;pointer-events:none;background-repeat:no-repeat;background-size:100% 100%;image-rendering:auto}

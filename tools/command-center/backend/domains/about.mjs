@@ -7,7 +7,7 @@ import {define, v} from '../core/rpc.mjs';
 import {readText, readJson, redact} from '../core/util.mjs';
 import {shellInfo, hasShell} from '../core/shell.mjs';
 
-export const CONTRIBUTORS = ['Franky', 'DEV ShadoW', 'CYBER', 'Magic Ibrar'];
+export const CONTRIBUTORS = ['DEV ShadoW', 'CYBER', 'Magic Ibrar'];
 const version = dir => { try { return JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')).version; } catch { return null; } };
 async function docs() {
   const out = [];

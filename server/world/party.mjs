@@ -60,12 +60,19 @@ export function leaveParty(world,p){const party=group(world,p);world.partyInvite
 /** Party Warp lookup: {inParty, expedition, member} - member = the online party member with that id (never p itself), or null. */
 export function partyWarpMember(world,p,memberId){const party=group(world,p);if(!party)return{inParty:false,expedition:false,member:null};return{inParty:true,expedition:!!partyBelongsToExpedition(party),member:memberId!==p.id&&party.members.includes(memberId)?online(world,memberId)||null:null};}
 export function partySnapshot(world,p){
- store(world);for(const[id,invite]of world.partyInvites)if(invite.expires<=world.now()||!world.parties.has(invite.party))world.partyInvites.delete(id);
+ store(world);
+ // PING-FLAT / ROUND2: expire invites once per broadcast (not once per viewer).
+ if(world._broadcastMemo&&world.broadcastMemo)world.broadcastMemo('partyInviteSweep',()=>{for(const[id,invite]of world.partyInvites)if(invite.expires<=world.now()||!world.parties.has(invite.party))world.partyInvites.delete(id);return 1;});
+ else for(const[id,invite]of world.partyInvites)if(invite.expires<=world.now()||!world.parties.has(invite.party))world.partyInvites.delete(id);
  const party=group(world,p),invite=world.partyInvites.get(p.id);
  const row=member=>({id:member.id,name:member.profile.name,level:member.profile.level,classIndex:member.profile.classIndex,map:member.map,hp:member.hp,maxHp:member.maxHp,shield:Math.round(Number(member.shield)||0),maxShield:Math.round(Number(member.stats?.maxShield)||0),statuses:memberStatuses(world,member),leader:party?.leader===member.id});
+ // PING-FLAT / ROUND2: connected roster is viewer-independent - build once per broadcast (was O(players) per viewer).
+ const connected=world._broadcastMemo&&world.broadcastMemo
+  ?world.broadcastMemo('partyConnected',()=>[...world.players.values()].filter(other=>!other.leaving).map(other=>({id:other.id,name:other.profile.name,level:other.profile.level,classIndex:other.profile.classIndex,map:other.map,inParty:!!group(world,other)})))
+  :[...world.players.values()].filter(other=>!other.leaving).map(other=>({id:other.id,name:other.profile.name,level:other.profile.level,classIndex:other.profile.classIndex,map:other.map,inParty:!!group(world,other)}));
  return {active:!!party,id:party?.id||null,name:party?.name||'',itemway:party?.itemway||0,leaderId:party?.leader||null,maxMembers:PARTY_MAX,members:party?party.members.map(id=>online(world,id)).filter(Boolean).map(row):[],
   invite:invite?{id:invite.party,from:invite.from,name:world.parties.get(invite.party)?.name,expires:invite.expires}:null,
-  connected:[...world.players.values()].filter(other=>!other.leaving).map(other=>({id:other.id,name:other.profile.name,level:other.profile.level,classIndex:other.profile.classIndex,map:other.map,inParty:!!group(world,other)}))};
+  connected};
 }
 export function partyCommand(world,p,input){
  const party=group(world,p),op=input.operation;

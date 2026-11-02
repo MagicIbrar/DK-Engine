@@ -16,7 +16,7 @@ const PIPELINE = 1;
 const STEPS = ['characters', 'monsters', 'items', 'skills', 'skills-runtime', 'characters', 'quests', 'shops', 'boxes', 'dungeons', 'events', 'events-ui', 'channels', 'dungeon-uifx', 'item-styles', 'mounts', 'frontend', 'sound', 'life', 'gmcommands', 'server-lists'];
 // Repo files a builder imports from outside tools/build-*.mjs and src/formats: they change a builder's output, so the change detection hashes them too.
 // (tools/test-prepare-inputs-covered.mjs walks the builders' imports and fails when a file is missing here.)
-export const EXTRA_INPUTS = ['server/world/channel-data.mjs', 'src/systems/channels/channel-rules.js', 'src/game/effect-body.js', 'tools/transform-compatibility.mjs', 'tools/effect-unit-recovery.mjs', 'src/systems/quests/reward-text.js', 'tools/lib/siege-renew-deploy-mask.mjs', 'tools/lib/siege-sentry-results.mjs', 'src/game/siege-renew-deploy-mask.js', 'src/game/effect-path-repairs.js', 'src/config/engine-chosen-dead-island.js', 'tools/asset-ref-resolve.mjs', 'tools/lib/authored-animation-key.mjs'];
+export const EXTRA_INPUTS = ['server/world/channel-data.mjs', 'src/systems/channels/channel-rules.js', 'src/game/effect-body.js', 'tools/transform-compatibility.mjs', 'tools/effect-unit-recovery.mjs', 'src/systems/quests/reward-text.js', 'tools/lib/siege-renew-deploy-mask.mjs', 'tools/lib/siege-sentry-results.mjs', 'src/game/siege-renew-deploy-mask.js', 'src/game/effect-path-repairs.js', 'src/config/engine-chosen-dead-island.js', 'tools/asset-ref-resolve.mjs', 'tools/lib/authored-animation-key.mjs', 'src/game/global-attack-class.js', 'src/world/map-folder-bindings.js', 'src/world/legacy-maps.js'];
 
 // ---- running the builders in parallel (2.2.3). A job is one builder run; STEPS is the old one-after-another order, which stays the tie-break
 // and the whole order when only one job may run (DEKARON_PREPARE_JOBS=1). JOB_AFTER lists, per job, the earlier jobs it has to wait for: the
@@ -194,8 +194,25 @@ async function reusableData(engine, current, selected, pack, sourceStamp, {audit
     const indexFile=path.join(owner,'extract-index.json');await contained(engine,indexFile);
     let index;try{index=JSON.parse(await fs.readFile(indexFile,'utf8'));}catch{return null;}
     if(index?.version!==1||index.packHeader!==hash(pack.header)||!index.files||Object.keys(index.files).length!==pack.entries.length)return null;
-    const extracted = new Map((await files(dataRoot,{content:auditFiles})).map(([rel, size, mtimeNs, , sha]) => [rel, {size:Number(size),mtimeNs,sha}]));
-    if (extracted.size !== pack.entries.length) return null;
+    // Warm path (auditFiles=false): authenticate only indexed paths via stat — never readdir the extraction tree
+    // (tools/test-prepare-client-reuse.mjs monkeypatches readdir to prove warm launch stays manifest-only).
+    let extracted;
+    if (auditFiles) {
+      extracted = new Map((await files(dataRoot,{content:true})).map(([rel, size, mtimeNs, , sha]) => [rel, {size:Number(size),mtimeNs,sha}]));
+      if (extracted.size !== pack.entries.length) return null;
+    } else {
+      extracted = new Map();
+      for (const entry of pack.entries) {
+        const want = index.files[entry.rel];
+        if (!want || want.size !== entry.size) return null;
+        const file = path.join(dataRoot, entry.rel);
+        await contained(engine, file);
+        let stat; try { stat = await fs.stat(file, { bigint: true }); } catch { return null; }
+        if (Number(stat.size) !== entry.size) return null;
+        extracted.set(entry.rel, { size: Number(stat.size), mtimeNs: String(stat.mtimeNs), sha: '' });
+      }
+      if (extracted.size !== pack.entries.length) return null;
+    }
     for(const entry of pack.entries){
       const f=extracted.get(entry.rel),want=index.files[entry.rel];
       if(!f||!want||f.size!==entry.size||want.size!==entry.size)return null;

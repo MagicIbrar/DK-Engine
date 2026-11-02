@@ -7,11 +7,11 @@
 // joins wait (players already in keep playing).
 // ENGINE-CHOSEN: thresholds below (no original value exists; the original client ran a different network design).
 export const STREAM_BUDGET = Object.freeze({
-  MAX_DIVISOR: 4,            // slowest: a snapshot every 4th tick (2.5 per second at the 100 ms tick)
+  MAX_DIVISOR: 5,            // FPS-10X: slowest snapshot every 5th tick (~2/s at 100 ms tick)
   OVER: 0.95,                // step down above 95% of the budget ...
   UNDER: 0.75,               // ... step back up when the faster rate would stay under 75%
-  WORK_MS_HIGH: 70,          // tick + broadcast EWMA above this (of the 100 ms tick) also steps down
-  WORK_MS_LOW: 40,           // and allows stepping back up only below this
+  WORK_MS_HIGH: 40,          // FPS-10X: step down sooner when tick+broadcast EWMA is hot
+  WORK_MS_LOW: 26,           // FPS-10X: only step back up when clearly cool
   FULL_SECONDS: 5,           // over budget at the slowest rate this long: new joins wait
   DEFAULT_SHARE: 0.7,        // share of the upload the game may use by default
 });

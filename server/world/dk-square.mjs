@@ -20,9 +20,11 @@ import {fishingBusy} from './fishing.mjs';
 import { randomUUID } from 'node:crypto';
 import { hostEvents } from './prepared-roots.mjs';
 import { DK_SQUARE_CHOSEN as C } from '../../src/config/engine-chosen-dk-square.js';
+import { lobbyListRow } from '../../src/config/older-server-ref-dk-square.js';   // older server reference (lobbylist.csv)
 import { DK_SQUARE_JOB, DK_SQUARE_TEXT as T, buildDkSquare, rankForLevel, scheduleWindow, openRefusal, dealTeams } from '../../src/systems/pvp/dksquare-rules.js';
 import { ARENA_TEXT as AT, ARENA_BROADCAST as B, TEAM_NAME_CODES, SUNSTONE_JOB, parseActivity, parseActionPoints, assignTeam, settle, dkPointFor, tierFor, decideWinner, boardRows, fillAlly } from '../../src/systems/arena/arena-rules.js';
 import { registerPvpMode } from './pvp.mjs';
+import { grantModeSafeTime } from './wanted.mjs';
 import { createInstance, stageInstanceMembers, requestInstanceClose, exitInstance } from './instances.mjs';
 import { nearbyNpc } from './npc-services.mjs';
 import { sameScene } from './scene.mjs';
@@ -85,13 +87,25 @@ function windowOf(world, data) {
 function busyReason(world, q) {
   if (q.dead) return T.dead;
   if (q.arenaQueued || q.arenaId) return T.draco;
-  if (q.duelId || q.partyPvpId || q.trainingCampId || q.instanceId || q.tradeId || fishingBusy(q) || q.mount?.phase === 'on' || q.sceneTransition) return T.busy;
+  if (q.duelId || q.partyPvpId || q.instanceId || q.tradeId || fishingBusy(q) || q.mount?.phase === 'on' || q.sceneTransition) return T.busy;
   return null;
 }
 const penalised = (world, p) => (Number(p.profile.arena?.penaltyUntil) || 0) > world.now();
+// Global GM command `set_dksquareInfo [mode] [rank] [fightTime] [startPcCount] [maxPcCount] [LobbyIndex]` (client GM help string,
+// decompile 64-bit-named strings-xref.csv): the values it gives replace the conquest.csv FightTime / StartPCCount / MaxPCCount of
+// that mode + rank for lobbies opened afterwards. LobbyIndex is kept and shown with its older server reference lobbylist.csv row
+// (src/config/older-server-ref-dk-square.js; null when that file has no such Index). Nobody is moved by it (lobby maps are not entered).
+const infoKey = (mode, rank) => `${Number(mode)}:${Number(rank)}`;
+export function dkSquareGm(world, args) {
+  const a = (args || []).map(Number);
+  if (a.length < 6 || a.some(x => !Number.isFinite(x)) || a[2] <= 0 || a[3] <= 0 || a[4] < a[3]) throw Object.assign(new Error('set_dksquareInfo [mode] [rank] [fightTime] [startPcCount] [maxPcCount] [LobbyIndex]'), { status: 400 });
+  (world.dkSquareInfo ||= new Map()).set(infoKey(a[0], a[1]), { fightSec: a[2], startPlayers: a[3], maxPlayers: a[4], lobbyIndex: a[5], lobbyListRow: lobbyListRow(a[5]) });
+  return { message: `set_dksquareInfo ${a.join(' ')}` };
+}
+const venueFor = (world, data, level) => { const v = rankForLevel(data, level); if (!v) return v; const g = world.dkSquareInfo?.get(infoKey(v.mode, v.rank)); return g ? { ...v, ...g } : v; };
 function admissible(world, p, data, opening) {
   if (!windowOf(world, data).open) fail(T.closed);
-  const v = rankForLevel(data, p.profile.level); if (!v) fail(T.level);
+  const v = venueFor(world, data, p.profile.level); if (!v) fail(T.level);
   if (penalised(world, p)) fail(opening ? T.berserkOpen : T.berserkJoin);
   const busy = busyReason(world, p); if (busy) fail(busy);
   if ((Number(p.profile.dil) || 0) < v.enterCost) fail(T.dil);
@@ -143,6 +157,7 @@ function revive(world, l, q, relocate) {
   if (relocate) { const t = teamOf(l, q), sq = l.v.squads[t], at = sq && world.instances?.get(l.instanceId)?.scene?.nearest(sq.revive.x, sq.revive.z); if (at) { q.x = at.x; q.z = at.z; } }
   q.dead = false; q.hp = Math.max(1, Math.round(q.maxHp * rules.reviveHpRatio / 100)); q.mp = Math.round((q.stats.maxMp || 0) * rules.reviveMpRatio / 100); q.path = []; delete q.pvpLastHit;
   l.down.delete(q.id); world.changed(q); world.emit(q.map, { type: 'revive', actorId: q.id, instanceId: q.instanceId });
+  if (relocate) grantModeSafeTime(world, q, 'arena');
 }
 
 // ---- lobby
@@ -152,7 +167,7 @@ function newLobby(world, p, v, data, no) {
     sun: { owner: -1, since: null, communing: null, blocked: v.squads.map(() => 0) }, result: null };
 }
 function admit(world, p, l, raid = false) {
-  l.members.push({ id: p.id, joinedAt: world.now(), exit: { map: p.map, x: p.x, z: p.z }, ...(raid ? { raidEndsAt: world.now() + C.confirmSec * 1000 } : {}) });
+  l.members.push({ id: p.id, joinedAt: world.now(), exit: { map: p.map, x: p.x, z: p.z }, ...(raid ? { raid: true } : {}) });
   p.dkSquareId = l.id; delete p.dkSquareResult; delete p.dkSquareNotice; world.changed(p);
 }
 const rankLobbies = (world, rank) => [...lobbies(world).values()].filter(l => l.rank === rank && l.phase !== 'over');
@@ -166,7 +181,7 @@ async function stageInto(world, l, ps) {
   try {
     for (const q of staged.candidates) { if ((Number(q.profile.dil) || 0) < v.enterCost) fail(T.dil); q.profile.dil = (Number(q.profile.dil) || 0) - v.enterCost; }
     if (!instance) {
-      instance = await createInstance(staged.world, { map: v.map, members: staged.candidates, kind: 'dkSquare', exit: undefined, durationMs: (v.fightSec + C.finishWaitSec + 120) * 1000 });
+      instance = await createInstance(staged.world, { map: v.map, members: staged.candidates, kind: 'dkSquare', exit: undefined, });
       created = true;
     } else {
       for (const q of staged.candidates) {
@@ -204,7 +219,7 @@ async function start(world, l) {
   if (ps.length < v.startPlayers) return false;
   const teams = dealTeams(ps.map(q => q.id), () => world.random());
   if (!teams[0].length || !teams[1].length) return false;
-  l.phase = 'starting'; l.teams = teams; l.endsAt = world.now() + (v.fightSec + C.finishWaitSec + 120) * 1000;
+  l.phase = 'starting'; l.teams = teams; l.endsAt = null;
   for (const q of ps) { l.names.set(q.id, q.profile.name); l.classes.set(q.id, q.profile.classIndex); }
   try { const instance = await stageInto(world, l, ps); l.instanceId = instance.id; placeStones(world, l, instance); }
   catch (error) { l.phase = 'waiting'; l.teams = null; l.accepted.clear(); throw error; }
@@ -220,7 +235,7 @@ async function raidIn(world, l, q) {
   l.teams[t].push(q.id); l.names.set(q.id, q.profile.name); l.classes.set(q.id, q.profile.classIndex); l.everTeams.add(t);
   try { await stageInto(world, l, [q]); }
   catch (error) { l.teams[t] = l.teams[t].filter(id => id !== q.id); throw error; }
-  const m = l.members.find(x => x.id === q.id); if (m) delete m.raidEndsAt;
+  const m = l.members.find(x => x.id === q.id); if (m) delete m.raid;
   notify(world, l, 'join', { playerId: q.id, team: t });
 }
 
@@ -256,7 +271,7 @@ function tickCommunion(world, l) {
   const c = l.sun.communing; if (!c) return;
   const q = byId(world, c.id);
   if (!q || !inside(world, l, q) || q.dead || l.down.has(q.id)) return stopCommunion(world, l, 'gone');
-  if (Math.hypot(q.x - c.x, q.z - c.z) > 0.5) return stopCommunion(world, l, 'moved');   // engine-chosen-arena communionMoveTolerance
+  if (Math.hypot(q.x - c.x, q.z - c.z) > 0) return stopCommunion(world, l, 'moved');   // any movement (engine-chosen-arena communionMoveTolerance removed, f pass)
   if (q.hp < c.hp) return stopCommunion(world, l, 'hit');
   if (world.now() < c.endsAt) return;
   l.sun.communing = null; l.sun.owner = c.team; l.sun.since = world.now();
@@ -301,7 +316,7 @@ async function finish(world, l, reason) {
   if (l.sun.communing) stopCommunion(world, l, 'end');
   const now = world.now(), data = l.data, teams = teamView(world, l);
   const win = decideWinner(teams, l.sun, reason), outcomeOf = t => (win < 0 ? 'draw' : t === win ? 'win' : 'lose');
-  l.phase = 'over'; l.finishAt = now + C.finishWaitSec * 1000;
+  l.phase = 'over'; l.finishAt = null;   // Lane 71: 160:70 timed move-out REMOVED (no source for its seconds); participants leave with Leave Now (160:71)
   const entries = [];
   for (const id of l.teams.flat()) {
     const q = byId(world, id); if (!inside(world, l, q)) continue;
@@ -344,7 +359,6 @@ async function settleRewards(world,l) {
   }
   if(pending.entries.some(e=>!e.done))return false;
   if(!pending.published){pending.published=true;const {winner,reason}=l.result;
-    l.finishAt=Math.max(l.finishAt,world.now()+C.finishWaitSec*1000);
     notify(world,l,'result',{winner,reasonDetail:reason,...(winner<0?{}:{winnerName:teamName(winner)})});}
   return true;
 }
@@ -376,10 +390,10 @@ export async function tickDkSquare(world) {
         for (const m of [...l.members]) { const q = byId(world, m.id); if (!q || !live(world, q) || q.dkSquareId !== l.id || q.instanceId) drop(world, l, m.id, null); }
         if (!lobbies(world).has(l.id)) continue;
         if (l.phase === 'waiting') {
-          if (l.members.length >= l.v.startPlayers) { l.phase = 'confirm'; l.accepted.clear(); l.confirmAt = now; l.confirmEndsAt = now + C.confirmSec * 1000; notify(world, l, 'confirm', { endsAt: l.confirmEndsAt }); for (const m of l.members) { const q = byId(world, m.id); if (q) world.changed(q); } }
+          if (l.members.length >= l.v.startPlayers) { l.phase = 'confirm'; l.accepted.clear(); l.confirmAt = now; l.confirmEndsAt = null; /* Lane 71: the 160:48 '(%d)' countdown is REMOVED (no source for its seconds); the window waits for every OK / Cancel */ notify(world, l, 'confirm', { endsAt: l.confirmEndsAt }); for (const m of l.members) { const q = byId(world, m.id); if (q) world.changed(q); } }
           continue;
         }
-        if (!l.members.every(m => l.accepted.has(m.id)) && now < l.confirmEndsAt) continue;
+        if (!l.members.every(m => l.accepted.has(m.id))) continue;
         for (const m of [...l.members]) if (!l.accepted.has(m.id)) drop(world, l, m.id, 'cancelled');
         if (!lobbies(world).has(l.id)) continue;
         let started = false;
@@ -388,12 +402,11 @@ export async function tickDkSquare(world) {
         continue;
       }
       if (l.phase === 'fight') {
-        // raiders: accepted -> into the battlefield; no answer in time -> cancelled (160:49)
-        for (const m of l.members.filter(x => x.raidEndsAt)) {
+        // raiders: accepted -> into the battlefield (the 160:79 answer countdown is REMOVED - no source for its seconds: no timeout; Cancel = 160:49)
+        for (const m of l.members.filter(x => x.raid)) {
           const q = byId(world, m.id);
           if (!q || !live(world, q) || q.dkSquareId !== l.id) { drop(world, l, m.id, null); continue; }
           if (l.accepted.has(m.id)) { if (presentCount(world, l) >= l.v.maxPlayers || busyReason(world, q)) { drop(world, l, m.id, 'someCancelled'); continue; } try { await raidIn(world, l, q); } catch { drop(world, l, m.id, 'someCancelled'); } }
-          else if (now >= m.raidEndsAt) drop(world, l, m.id, 'cancelled');
         }
         scanEvents(world, l);
         for (const id of l.teams.flat()) {
@@ -412,10 +425,10 @@ export async function tickDkSquare(world) {
         continue;
       }
       if (l.phase === 'over' && !await settleRewards(world,l)) continue;
-      if (l.phase === 'over' && now >= l.finishAt) {
-        l.closing = true;
+      if (l.phase === 'over') {
         const left = l.teams.flat().map(id => byId(world, id)).filter(q => inside(world, l, q)), instance = world.instances?.get(l.instanceId);
-        if (instance && left.length) { requestInstanceClose(world, instance); continue; }
+        if (left.length) continue;
+        l.closing = true; if (instance) requestInstanceClose(world, instance);
         for (const m of l.members) { const q = byId(world, m.id); if (q && q.dkSquareId === l.id) { q.dkSquareId = null; world.changed(q); } }
         lobbies(world).delete(l.id);
       }
@@ -437,7 +450,7 @@ function battleOf(world, l, p) {
 }
 export function dkSquareSnapshot(world, p) {
   const data = world.data?.dkSquare || world._dkSquareDataSync || null;
-  const v = data ? rankForLevel(data, p.profile.level) : null, w = data ? windowOf(world, data) : { open: false };
+  const v = data ? venueFor(world, data, p.profile.level) : null, w = data ? windowOf(world, data) : { open: false };
   const rec = p.profile.arena || {};
   const out = { open: !!w.open, startsAt: w.startsAt ?? null, endsAt: w.endsAt ?? null,
     rank: v ? { rank: v.rank, minLevel: v.minLevel, maxLevel: v.maxLevel, enterCost: v.enterCost, maxPlayers: v.maxPlayers, startPlayers: v.startPlayers, fightSec: v.fightSec, maxRooms: v.maxRooms, missions: v.missions } : null,
@@ -448,8 +461,8 @@ export function dkSquareSnapshot(world, p) {
   const l = current(world, p); if (!l) return out;
   const m = l.members.find(x => x.id === p.id);
   out.lobby = { id: l.id, no: l.no, name: l.name, rank: l.rank, phase: l.phase, players: battling(l) ? presentCount(world, l) : l.members.length, max: l.v.maxPlayers, start: l.v.startPlayers,
-    playMinutes: Math.round(l.v.fightSec / 60), missions: l.v.missions, enterCost: l.v.enterCost, confirmAt: l.phase === 'confirm' ? l.confirmAt : (m?.raidEndsAt ? m.raidEndsAt - C.confirmSec * 1000 : null),
-    confirmEndsAt: l.phase === 'confirm' ? l.confirmEndsAt : (m?.raidEndsAt || null), raid: !!m?.raidEndsAt, accepted: l.accepted.has(p.id) };
+    playMinutes: Math.round(l.v.fightSec / 60), missions: l.v.missions, enterCost: l.v.enterCost, confirmAt: l.phase === 'confirm' ? l.confirmAt : (m?.raid ? m.joinedAt : null),
+    confirmEndsAt: null, raid: !!m?.raid, accepted: l.accepted.has(p.id) };
   if (l.teams && teamOf(l, p) >= 0) out.battle = battleOf(world, l, p);
   return out;
 }
@@ -488,7 +501,7 @@ export async function dkSquareCommand(world, p, input) {
     if (target.phase === 'over' || target.closing) fail(T.closing);
     if (target.phase === 'starting') fail(T.failed);
     if (target.phase === 'fight') {
-      if (presentCount(world, target) + target.members.filter(m => m.raidEndsAt).length >= target.v.maxPlayers) fail(T.battleFull);
+      if (presentCount(world, target) + target.members.filter(m => m.raid).length >= target.v.maxPlayers) fail(T.battleFull);
       admit(world, p, target, true); notify(world, target, 'raid', { playerId: p.id });
       return state({ raiding: target.id });
     }
@@ -499,11 +512,11 @@ export async function dkSquareCommand(world, p, input) {
   if (!l) fail(T.noLobby);
   const m = l.members.find(x => x.id === p.id);
   if (op === 'cancel') {
-    if (l.phase !== 'waiting' && l.phase !== 'confirm' && !m?.raidEndsAt) fail(T.cannotLeave);
+    if (l.phase !== 'waiting' && l.phase !== 'confirm' && !m?.raid) fail(T.cannotLeave);
     drop(world, l, p.id, null); notify(world, l, 'cancel', { playerId: p.id }); return state({ left: l.id });
   }
   if (op === 'accept' || op === 'decline') {
-    if (!(l.phase === 'confirm' || m?.raidEndsAt)) fail(T.failed);
+    if (!(l.phase === 'confirm' || m?.raid)) fail(T.failed);
     if (op === 'decline') { drop(world, l, p.id, 'cancelled'); notify(world, l, 'decline', { playerId: p.id }); return state(); }
     l.accepted.add(p.id); world.changed(p); notify(world, l, 'accept', { playerId: p.id }); return state();
   }

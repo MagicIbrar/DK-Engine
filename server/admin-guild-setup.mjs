@@ -8,13 +8,13 @@ import {PROMOTION_COST,meets} from '../src/systems/extras/guildboard-rules.js';
 // no caller role, token, guild result, currency or owned-item claims are accepted.
 // Guild writes use ordinary intents; the optional private owner hook grants a native item
 // through the durable GM item service. Never rewrite social membership or permissions.
-export function createAdminGuildSetup({listCandidates,readAccess,readCharacter,readState,nativeConfig,itemDef,withCharacter,visitService,send,provisionGlory=null,provisionFunds=null,now=Date.now,mark={bg:1,icon:1},gloryItems=[60040]}={}) {
+export function createAdminGuildSetup({listCandidates,readAccess,readCharacter,readState,nativeConfig,itemDef,withCharacter,visitService,send,provisionGlory=null,provisionFunds=null,now=Date.now,mark={bg:1,icon:1},gloryItems=[60040],guildName='ADMIN',accountFilter=null}={}) {
  const hooks={listCandidates,readAccess,readCharacter,readState,nativeConfig,itemDef,withCharacter,visitService,send};
  if(Object.values(hooks).some(fn=>typeof fn!=='function')||!guildMark(mark)||!Array.isArray(gloryItems)||!gloryItems.length||gloryItems.some(i=>!Number.isSafeInteger(i)))throw Error('Trusted ADMIN setup hooks and native art selection are required.');
  // Default art selection is ENGINE-CHOSEN among actual selectable native cells;
  // 60040 is the supported Purple Star item. Only the private installation-owner
  // hook may provision it when ADMIN has no Glory and its master owns none.
- const selectedMark={...mark},supportedGlory=new Set(gloryItems);let flight;
+ const selectedMark={...mark},supportedGlory=new Set(gloryItems);const wantedGuild=String(guildName||'ADMIN').toUpperCase();if(!/^[A-Z][A-Z0-9 _]{0,15}$/.test(wantedGuild))throw Error('Trusted ADMIN setup hooks and native art selection are required.');const accountOk=typeof accountFilter==='function'?accountFilter:(c=>true);let flight;
  const blocked=reason=>{throw Object.assign(Error(reason),{setupReason:reason});};
  const state=async()=>{const s=await readState();if(!s||!Number.isSafeInteger(s.revision)||!s.guilds||typeof s.guilds!=='object')blocked('social-storage-unavailable');return s;};
  const gm=async c=>{const access=await readAccess(c.account);return access?.capabilities?.includes('gm:commands')===true;};
@@ -22,17 +22,17 @@ export function createAdminGuildSetup({listCandidates,readAccess,readCharacter,r
  // A private, owner-managed guild may be renamed without creating a second
  // ADMIN guild. The marker grants no permissions: validate still checks every
  // member and master against the current trusted GM roster.
- const target=s=>{const matches=Object.values(s.guilds).filter(g=>g.adminManaged===true||String(g.name).toUpperCase()==='ADMIN');if(matches.length>1||matches.some(g=>g.adminManaged!==true&&g.name!=='ADMIN'))blocked('ADMIN-name-conflict');return matches[0];};
+ const target=s=>{const matches=Object.values(s.guilds).filter(g=>String(g.name).toUpperCase()===wantedGuild||(g.adminManaged===true&&String(g.name).toUpperCase()===wantedGuild));if(matches.length>1)blocked('ADMIN-name-conflict');const byName=Object.values(s.guilds).filter(g=>String(g.name).toUpperCase()===wantedGuild);if(byName.length>1)blocked('ADMIN-name-conflict');return byName[0]||matches[0];};
  const profile=async c=>{const p=await readCharacter(c);if(!p||p.authority!=='server'||p.id!==c.characterId)blocked('authoritative-character-unavailable');return p;};
  const ownedGlory=p=>(p.inventory||[]).find(i=>typeof i.uid==='string'&&(i.count??1)>0&&!(i.expiresAt&&i.expiresAt<=now())&&supportedGlory.has(i.itemIndex)&&isGuildGloryItem(itemDef(i.itemIndex)));
  const number=(cfg,key,min=0)=>{const n=Number(cfg[key]);if(!Number.isSafeInteger(n)||n<min)throw Object.assign(Error('native-rule-unavailable'),{setupReason:'native-rule-unavailable',nativeRule:key});return n;};
- return {run(){if(flight)return flight;flight=execute().finally(()=>{flight=null;});return flight;}};
+ return {run(){if(flight)return flight;flight=Promise.resolve(execute()).finally(()=>{flight=null;});return flight;}};
  async function execute(){
-  const report={complete:false,membershipComplete:false,crestComplete:false,gloryComplete:false,partial:false,eligible:0,excluded:0,enrolled:0,actions:0,guild:'ADMIN',reason:null};
+  const report={complete:false,membershipComplete:false,crestComplete:false,gloryComplete:false,partial:false,eligible:0,excluded:0,enrolled:0,actions:0,guild:wantedGuild,reason:null};
   try{
    const candidates=await listCandidates();if(!Array.isArray(candidates))blocked('private-roster-unavailable');
    const seen=new Set(),eligible=[],initialAccess=new Map();
-   for(const c of candidates){if(!c||typeof c.account!=='string'||typeof c.characterId!=='string')blocked('private-roster-invalid');const ref=characterRef(c.account,c.characterId);if(seen.has(ref))continue;seen.add(ref);if(!initialAccess.has(c.account))initialAccess.set(c.account,await gm(c));if(!initialAccess.get(c.account)){report.excluded++;continue;}const p=await profile(c);if(p.npcSeed||p.npcPlayer)blocked('NPC-not-admin-eligible');eligible.push({...c,ref,profile:p});}
+   for(const c of candidates){if(!c||typeof c.account!=='string'||typeof c.characterId!=='string')blocked('private-roster-invalid');if(!accountOk(c)){report.excluded++;continue;}const ref=characterRef(c.account,c.characterId);if(seen.has(ref))continue;seen.add(ref);if(!initialAccess.has(c.account))initialAccess.set(c.account,await gm(c));if(!initialAccess.get(c.account)){report.excluded++;continue;}const p=await profile(c);if(p.npcSeed||p.npcPlayer)blocked('NPC-not-admin-eligible');eligible.push({...c,ref,profile:p});}
    report.eligible=eligible.length;if(!eligible.length)blocked('no-actual-GM-characters');
    const refs=new Set(eligible.map(c=>c.ref));let s=await state(),g=target(s);const cfg=await nativeConfig();if(!cfg||Number(cfg.ADV)||Number(cfg.PEERAGE))blocked('native-founding-rule-unsupported');
    const validate=async()=>{for(const account of new Set(eligible.map(c=>c.account)))if(!await gm({account}))blocked('administrator-access-changed');const current=await state(),guild=target(current);if(guild&&(!refs.has(guild.master)||guild.members.some(m=>!refs.has(m.ref))))blocked('ADMIN-ownership-conflict');for(const c of eligible){const other=membership(current,c.ref);if(other&&other!==guild)blocked('character-in-other-guild');}return {s:current,g:guild};};
@@ -71,15 +71,15 @@ export function createAdminGuildSetup({listCandidates,readAccess,readCharacter,r
      const current=await state();const result=await send(handle,{type:'guild',operation,revision:current.revision,requestId:randomUUID(),...fields});if(result==null||result===false||result.ok===false)blocked('ordinary-action-rejected');});
     report.actions++;({s,g}=await validate());
    };
-   if(!g)await perform(founder,'create',{name:'ADMIN'},'GUILD');
+   if(!g)await perform(founder,'create',{name:wantedGuild},'GUILD');
    if(!g.mark)await perform(founder,'mark',selectedMark,'GUILDMARK');
    const remaining=missing();
    if(remaining.length){
-    if(!(g.promotion?.expiresAt>now())){const short=Math.max(0,PROMOTION_COST-(g.dil||0)),amount=Math.ceil(short/number(cfg,'DILTOCON',1))*number(cfg,'DILTOCON',1);if(amount)await perform(founder,'deposit',{amount},'GUILD');await perform(founder,'promote',{levelLimit:0,grade:0,classes:Array.from({length:15},(_,i)=>i),approval:true,title:'ADMIN enrollment',content:'Approval required for verified administrator characters.'},'GUILD_ADVERTISE_APPLICATION');}
+    if(!(g.promotion?.expiresAt>now())){const short=Math.max(0,PROMOTION_COST-(g.dil||0)),amount=Math.ceil(short/number(cfg,'DILTOCON',1))*number(cfg,'DILTOCON',1);if(amount)await perform(founder,'deposit',{amount},'GUILD');await perform(founder,'promote',{levelLimit:0,grade:0,classes:Array.from({length:15},(_,i)=>i),approval:true,title:wantedGuild+' enrollment',content:'Approval required for verified administrator characters.'},'GUILD_ADVERTISE_APPLICATION');}
     for(const c of remaining){
      ({s,g}=await validate());if(g.members.some(m=>m.ref===c.ref))continue;
      const otherApplication=Object.values(s.guilds).find(row=>row!==g&&row.applications?.some(a=>a.ref===c.ref));if(otherApplication)blocked('other-guild-application-conflict');
-     if(!g.applications?.some(a=>a.ref===c.ref))await perform(c,'apply',{guildId:g.id,comment:'ADMIN enrollment'},'GUILD_ADVERTISE_LIST');
+     if(!g.applications?.some(a=>a.ref===c.ref))await perform(c,'apply',{guildId:g.id,comment:wantedGuild+' enrollment'},'GUILD_ADVERTISE_LIST');
      ({s,g}=await validate());const application=g.applications?.find(a=>a.ref===c.ref);if(!application)blocked('ordinary-application-unavailable');
      // Approval only for the exact private verified target, never every applicant.
      if(!refs.has(application.ref)||!await gm(c))blocked('application-not-eligible');
@@ -89,7 +89,7 @@ export function createAdminGuildSetup({listCandidates,readAccess,readCharacter,r
    ({s,g}=await validate());report.membershipComplete=!!g&&eligible.every(c=>g.members.some(m=>m.ref===c.ref));report.crestComplete=!!guildMark(g?.mark);report.partial=report.membershipComplete&&report.crestComplete;if(!report.partial)blocked('canonical-projection-incomplete');
    // Remove only our approval-required promotion, avoiding an unnecessary public
    // recruitment listing. A failed removal is retryable without replaying costs.
-   if(g.promotion?.title==='ADMIN enrollment'&&g.promotion.approval)await perform(founder,'deletePromotion',{},'GUILD_ADVERTISE_APPLICATION');
+   if(g.promotion?.title===wantedGuild+' enrollment'&&g.promotion.approval)await perform(founder,'deletePromotion',{},'GUILD_ADVERTISE_APPLICATION');
    if(!g.glory){
     let owned=ownedGlory(await profile(founder));
     if(!owned&&typeof provisionGlory==='function'){

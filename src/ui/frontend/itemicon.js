@@ -45,12 +45,10 @@ async function draw(stage, inv, w, h) {
   scene.add(root);
   const obj = model.instantiate();
   root.add(obj);
-  // itemmesh.fx lighting (preview-materials.js ICON_LIGHT): x PI light units + materials clamped to their texture;
-  // engine-designed wings keep the light they were tuned under
-  const designed = !!obj.userData?.model?.flags?.authoredWing;
-  if (!designed) iconMaterials(obj);
-  scene.add(new THREE.AmbientLight(0xffffff, designed ? 0.75 : ICON_LIGHT.ambient));
-  const sun = new THREE.DirectionalLight(0xffffff, designed ? 1.15 : ICON_LIGHT.key);
+  // itemmesh.fx lighting (preview-materials.js ICON_LIGHT): x PI light units + materials clamped to their texture
+  iconMaterials(obj);
+  scene.add(new THREE.AmbientLight(0xffffff, ICON_LIGHT.ambient));
+  const sun = new THREE.DirectionalLight(0xffffff, ICON_LIGHT.key);
   sun.position.set(-0.4, 0.8, 1);
   scene.add(sun);
   // fit the bounding box (THREE space after the mirror) into the slot, keeping the aspect

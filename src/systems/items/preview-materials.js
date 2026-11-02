@@ -2,6 +2,7 @@
 // Original binary/itemmesh.fx ItemMeshSpecular uses the authored specular mask and
 // viewer light. Reuse ModelCache materials so previews never modify world materials.
 import { reapplySpecular } from '../../engine/matfx.js';
+import { gfxB } from '../../config/gfx-b-switches.js'; // gfx-B2 round 3
 
 const variants = new WeakMap();
 export function refinementTier(def, shape) {
@@ -12,6 +13,7 @@ export function refinementTier(def, shape) {
 }
 export const FORTIFY_STRENGTH = 0.4;
 export function fortifiedMaterial(base, tier) {
+  if (gfxB('previewFortifyOff')) return base;   // gfx-B2 round 3: engine approximation off (no Global tier curve in data)
   if (!(tier >= 4) || !base.specularMap || base.userData?.maxDiffuse) return base;
   let cache = variants.get(base);
   if (!cache) variants.set(base, cache = new Map());
@@ -69,7 +71,6 @@ export function iconMaterials(root) {
   root.traverse(node => { if (node.isMesh && node.material) node.material = Array.isArray(node.material) ? node.material.map(iconMaterial) : iconMaterial(node.material); });
 }
 export function inventoryMaterials(root, models, twoSide, tier = 0) {
-  if (root.userData?.model?.flags?.authoredWing) return;
   root.traverse(node => {
     if (!node.isMesh || !node.material) return;
     // Original itemmesh.fx blends partial-alpha item textures (potion glass over its liquid). A 0.5 cut-out drew

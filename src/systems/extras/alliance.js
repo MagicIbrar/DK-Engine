@@ -9,6 +9,8 @@ import { declineBlockedInvitation } from '../hud-options/invitation-policy.js';
 import { randomUUID } from '../network/web-crypto.js';
 import { SCRIPTS, JOB, STR, TEXT, ROW_HEIGHT, MAX_GUILDS, NOTICE_EDIT_MAX, NAME_MAX, plain, fill } from './alliance-rules.js';
 import { ALLIANCE_CHOSEN } from '../../config/engine-chosen-guild.js';
+import { restrictedWord } from './namechange-rules.js';
+import { guildNameFilter, guildNameWordText } from './namechange.js';
 import { setItemIcon, numText, msg } from '../life/common.js';
 import { atlas } from '../../ui/atlas.js';
 
@@ -163,10 +165,12 @@ export class Alliance {
     this._gauges();
   }
   _gauges() {
+    // LANE-61: requests have no lifetime (ALLIANCE_CHOSEN.INVITE_TIMEOUT_MS REMOVED) -> a full, still bar; an old host that still
+    // sends a timeout and expiresAt keeps its countdown.
     const total = this.state?.inviteTimeoutMs || ALLIANCE_CHOSEN.INVITE_TIMEOUT_MS, clock = this.game.network?._serverClock, now = clock ? clock.time + (performance.now() - clock.at) : Date.now();
     for (const key of ['request', 'invite']) {
       const w = this.wins[key], r = w?.isOpen && w.data?.request;
-      if (r) w.control('processbar').setGauge?.(Math.max(0, Math.min(1, (r.expiresAt - now) / total)));
+      if (r) w.control('processbar').setGauge?.(total > 0 && Number.isFinite(r.expiresAt) ? Math.max(0, Math.min(1, (r.expiresAt - now) / total)) : 1);
     }
   }
   _createName(w) {
@@ -174,6 +178,8 @@ export class Alliance {
       const r = this.state?.outgoing?.find(x => x.stage === 'naming'); if (!r) { w.close(); return; }
       const name = String(w.control('edit_text').getValue?.() || '').trim();
       if (!name || [...name].length > NAME_MAX) { this.note(this.say(STR.nameBad) || TEXT.nameBad, 'err'); return; }
+      const word = restrictedWord(name, await guildNameFilter());   // GLOBAL namefilter.txt before sending (275:330; LANE-61)
+      if (word) { this.note(guildNameWordText(pair => this.t(pair, '') || null, word), 'err'); return; }
       const cost = this.state?.formCost;
       if (!await this.ask(`${this.t([140, 2], 'A.Name')}: ${name}${cost ? `\n${numText(cost)} DIL` : ''}`)) return;
       if (await this.send('allianceCreate', { id: r.id, name })) w.close();

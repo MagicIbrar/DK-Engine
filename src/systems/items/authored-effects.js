@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import {EffectPlayer,controlBone,attachBoneName} from '../skills/effects.js';
 import {AuthoredEffectsData,refinementEffect,socketEffect,socketGems} from './authored-effects-data.js';
-import {WeaponGemGlow,weaponBlade,weaponStations,stationScale,weaponDepthBias} from './weapon-gem-glow.js';
-import {SOCKET_ORB_LOOP_MS} from '../../config/engine-chosen-refinement-rate.js';
+import {WeaponGemGlow,weaponBlade,weaponStations,stationScale,weaponDepthBias,socketBoneLocal} from './weapon-gem-glow.js';
+import {gfxB} from '../../config/gfx-b-switches.js'; // gfx-B2
 import {updateOrbit} from './weapon-orbit.js';
 import {costumeIntrinsicEffects} from './costume-effects.js';
 
@@ -178,6 +178,7 @@ export class AuthoredEquipmentEffects{
  /** The gem-coloured pass over the weapon: each socket's hue is the native socket texture's hue (socketGlowTexture),
   * placed at that socket's station on the weapon line. Returns false when it must be retried (weapon not attached yet). */
  async prepareTint(actor,record,entry){
+  if(gfxB('socketWashOff'))return true;   // gfx-B2: Global authors no weapon tint; only the native socket scenes play
   const tint=entry.socketTint,attributes=[...new Set(tint.gems.map(g=>g.attribute))];
   const hues=new Map((await Promise.all(attributes.map(async a=>[a,(await this.data.socketGlowTexture?.(a))?.hue]))).filter(([,hue])=>hue));
   if(record.expired||this.disposed||actor.culled||actor.dead||actor.disposed||actor.instance!==record.instance)return true;
@@ -185,7 +186,7 @@ export class AuthoredEquipmentEffects{
   if(owner.disposed)return false;
   const stations=weaponStations(weaponBlade(weapon),tint.capacity),gems=tint.gems.filter(g=>hues.has(g.attribute)&&stations[g.index]).map(g=>({local:stations[g.index].local,rgb:hues.get(g.attribute)}));
   if(!gems.length)return true;
-  const handle=new WeaponGemGlow({weapon,owner,stations:gems,capacity:tint.capacity,spacing:stations[0].spacing,timeMs:SOCKET_ORB_LOOP_MS,glow:this.game.gfx?.glow||null});handle.equipmentSlot=entry.slot;record.handles.push(handle);
+  const handle=new WeaponGemGlow({weapon,owner,stations:gems,capacity:tint.capacity,spacing:stations[0].spacing,timeMs:1000,glow:this.game.gfx?.glow||null});handle.equipmentSlot=entry.slot;record.handles.push(handle);
   return true;
  }
  async prepare(actor,record,entries){
@@ -193,16 +194,25 @@ export class AuthoredEquipmentEffects{
    if(record.expired||this.disposed)return;
    if(record.completeSlots?.has(entry.slot))continue;
    if(entry.socketTint){if(!await this.prepareTint(actor,record,entry)){record.retry=true;return;}continue;}
-   // GLOBAL DATA for the gem mist: ONE authored socket scene per
-   // distinct stone element (script/effect/modeleffect.csv group 24: one row per attribute, eff_time 1000, loop 1), and each
-   // scene is ONE sprite at startposition 0 0 0 with no bone (property/effect/effectscene.com.txt cate 7 ids 1-6: size,
-   // alpha (0,.5)(500,.8)(999,.5), scale (0,.8)(500,1)(999,.8), lifetime 1000 ms) - it plays at the weapon's own origin.
-   // Removed (were ENGINE-CHOSEN, no data): one sprite per filled socket along the blade, the MIST_GAIN colour boost, the
-   // 4 s stretched loop, the per-station size scaling.
+   // GLOBAL DATA for the gem mist: authored socket scenes (modeleffect group 24 -> cate 7 ids 1-6) carry startposition
+   // 0 0 0 and no bone. Attach point comes from the weapon skel's native blade dummies (SWD_W01..SWD_W04 / _L), the same
+   // bones item_upgrade_10* scenes use. Count intensity = one authored scene per filled gem at that gem's bone (no alpha
+   // gain invention). Fallback: ENGINE-CHOSEN weaponStations blade line, then weapon origin.
    const ref=glow?await this.data.socketReference(glow.attribute):entry.upgrade?await this.data.upgradeReference(entry.upgrade,entry.weapon):await this.data.reference(entry.id,actor.stance==='battle');
    if(record.expired||this.disposed||actor.culled||actor.dead||actor.disposed||actor.instance!==record.instance)return;if(!ref)continue;
    this.fx||=new EffectPlayer(this.game,this.data);
-   const stations=[null];   // one scene, at the weapon origin (see above)
+   const stations=glow?( ()=>{
+    const weapon=weaponFor(actor,entry.slot);
+    const blade=weaponBlade(weapon);
+    const fallback=blade?weaponStations(blade,glow.capacity):[];
+    const idxs=Array.isArray(glow.slots)&&glow.slots.length?glow.slots:[0];
+    return idxs.map(index=>{
+     const local=socketBoneLocal(weapon,entry.slot,index);
+     if(local)return{local,spacing:fallback[index]?.spacing||0.4,index};
+     if(fallback[index])return{...fallback[index],index};
+     return null; // glowOwner(null) = weapon origin; stacked origins still = count intensity
+    });
+   })():[null];
    const active=this.fx.active.size;
    if(active>=this.maxHandles||(active>0&&active+stations.length>this.maxHandles)){record.retry=true;return;}
    const owners=stations.map(station=>glow?glowOwner(actor,entry.slot,station):ownerFor(actor,entry.slot));
@@ -227,11 +237,14 @@ export class AuthoredEquipmentEffects{
     }
    }
    // Refinement scenes play at their authored length (lifetime 0 1000) with their authored alpha/colour keys: no invented cadence.
-   // Socket pulse uses the original sprite, alpha and scale keys. Count changes
-   // never invent an intensity multiplier; distinct attributes keep their scenes.
-   const depthBias=glow?weaponDepthBias(weaponFor(actor,entry.slot)):0;
+   // Socket pulse uses the original sprite, alpha and scale keys. Count intensity is one sprite per filled gem (stations
+   // above); authored alpha/scale are never multiplied by gem count.
+   // LANE-70b: stationScale (SPRITE_SPACING/MIN/MAX) and the mist depth bias are ENGINE-CHOSEN; Global plays the socket scene
+   // (effectscene 7:1..6) at its authored size/scale keys and depth. gfx-B socketSpriteAuthored (default on) drops both.
+   const authoredSprite=gfxB('socketSpriteAuthored');
+   const depthBias=glow&&!authoredSprite?weaponDepthBias(weaponFor(actor,entry.slot)):0;
    stations.forEach((station,i)=>{
-    const handle=this.fx.play(owners[i],ref,{loop:glow?true:ref.loop===0,particleSpace:'attachment',...(controlFilter?{controlFilter}:{}),...(station?{scale:stationScale(station.spacing)}:{}),...(depthBias>0?{depthBias}:{})});
+    const handle=this.fx.play(owners[i],ref,{loop:glow?true:ref.loop===0,particleSpace:'attachment',...(controlFilter?{controlFilter}:{}),...(station&&!authoredSprite?{scale:stationScale(station.spacing)}:{}),...(depthBias>0?{depthBias}:{})});
     if(handle){
      handle.equipmentSlot=entry.slot;
      // A model replacement must not restart every still-worn glow at its

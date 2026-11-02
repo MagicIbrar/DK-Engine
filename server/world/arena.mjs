@@ -22,6 +22,7 @@ import { ARENA_CHOSEN as C } from '../../src/config/engine-chosen-arena.js';
 import { ARENA_TEXT as T, ARENA_BROADCAST as B, TEAM_NAME_CODES, SUNSTONE_JOB, buildArenaVenues, parseActivity, parseActionPoints, openWindow, levelAllowed,
   assignTeam, settle, dkPointFor, tierFor, decideWinner, boardRows, fillAlly, gradeOf } from '../../src/systems/arena/arena-rules.js';
 import { registerPvpMode } from './pvp.mjs';
+import { grantModeSafeTime } from './wanted.mjs';
 import { createInstance, stageInstanceMembers, requestInstanceClose, exitInstance } from './instances.mjs';
 import { nearbyNpc } from './npc-services.mjs';
 import { sameScene } from './scene.mjs';
@@ -75,7 +76,7 @@ function notify(world, b, reason, extra = {}) {
 }
 function busyReason(world, q) {
   if (q.dead) return T.dead;
-  if (q.duelId || q.partyPvpId || q.trainingCampId || q.instanceId || q.tradeId || fishingBusy(q) || q.mount?.phase === 'on' || q.sceneTransition) return T.busy;
+  if (q.duelId || q.partyPvpId || q.instanceId || q.tradeId || fishingBusy(q) || q.mount?.phase === 'on' || q.sceneTransition) return T.busy;
   return null;
 }
 const penalised = (world, p) => (Number(p.profile.arena?.penaltyUntil) || 0) > world.now();
@@ -127,7 +128,7 @@ function revive(world, b, q, relocate) {
   const rules = world.data.pvpRules || { reviveHpRatio: 100, reviveMpRatio: 100 };
   if (relocate) { const t = teamOf(b, q), sq = b.v.squads[t], at = sq && world.instances?.get(b.instanceId)?.scene?.nearest(sq.revive.x, sq.revive.z); if (at) { q.x = at.x; q.z = at.z; } }
   q.dead = false; q.hp = Math.max(1, Math.round(q.maxHp * rules.reviveHpRatio / 100)); q.mp = Math.round((q.stats.maxMp || 0) * rules.reviveMpRatio / 100); q.path = []; delete q.pvpLastHit;
-  b.down.delete(q.id); world.changed(q); world.emit(q.map, { type: 'revive', actorId: q.id, instanceId: q.instanceId });
+  b.down.delete(q.id); world.changed(q); if (relocate) grantModeSafeTime(world, q, 'arena'); world.emit(q.map, { type: 'revive', actorId: q.id, instanceId: q.instanceId });
 }
 
 // ---- entry
@@ -151,7 +152,7 @@ async function stageInto(world, b, ps, exits) {
   let instance = b.instanceId ? world.instances?.get(b.instanceId) : null, created = false;
   try {
     if (!instance) {
-      instance = await createInstance(staged.world, { map: v.map, members: staged.candidates, kind: 'arena', exit: undefined, durationMs: (Math.max(0, b.endsAt - world.now()) / 1000 + C.finishWaitSec + 120) * 1000 });
+      instance = await createInstance(staged.world, { map: v.map, members: staged.candidates, kind: 'arena', exit: undefined, durationMs: (Math.max(0, b.endsAt - world.now()) / 1000 + 120) * 1000 });   /* +120 s instance housekeeping margin */
       created = true;
     } else {
       for (const q of staged.candidates) {
@@ -352,7 +353,7 @@ async function finish(world, b, reason) {
   if (b.sun?.communing) stopCommunion(world, b, 'end');
   const now = world.now(), data = b.data, teams = teamView(world, b);
   const win = decideWinner(teams, b.sun || {}, reason), outcomeOf = t => (win < 0 ? 'draw' : t === win ? 'win' : 'lose');
-  b.phase = 'over'; b.finishAt = now + C.finishWaitSec * 1000;
+  b.phase = 'over'; b.finishAt = now;   /* Lane 71: 160:70 timed move-out REMOVED (no Global, decompile, older-server or online value); participants are moved out once settled */
   const entries = [];
   for (const id of b.teams.flat()) {
     const q = byId(world, id); if (!inside(world, b, q)) continue;
@@ -389,7 +390,6 @@ async function settleRewards(world,b) {
   }
   if(pending.entries.some(e=>!e.done))return false;
   if(!pending.published){pending.published=true;const {winner,reason}=b.result;
-    b.finishAt=Math.max(b.finishAt,world.now()+C.finishWaitSec*1000);
     notify(world,b,'result',{winner,reasonDetail:reason,...(winner<0?{text:T.noWinner}:{winnerName:teamName(winner)})});}
   return true;
 }

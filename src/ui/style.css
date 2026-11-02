@@ -136,12 +136,12 @@ input[type=text]:focus { border-color: var(--gold); }
 .chatlog .l-sys { color: #f2d77c; } .chatlog .l-dmg { color: #ff9b87; } .chatlog .l-exp { color: #9fe07c; } .chatlog .l-item { color: #86c7ff; } .chatlog .l-err { color: #ff6b5a; }
 .floaters { position: fixed; inset: 0; pointer-events: none; overflow: hidden; }
 .floater { position: absolute; font-weight: 800; font-size: 20px; text-shadow: 0 0 3px #000, 0 2px 2px #000; white-space: nowrap; transform: translate(-50%, -50%); }
-.floater.dmg-out { color: #fff2a8; } .floater.dmg-in { color: #ff5a4a; } .floater.crit { color: #ffcc33; font-size: 28px; } .floater.heal { color: #7ef08a; } .floater.miss { color: #c9c9c9; font-size: 16px; } .floater.exp { color: #b5f07a; font-size: 15px; }
+/* D5_DEAD_FLOAT_CSS_REMOVED: legacy .floater.* colour classes unused by sprite DamageNumbers (ROWS INFERENCE/BLOCKED until Global video) */
 .nameplates { position: fixed; inset: 0; pointer-events: none; overflow: hidden; }
 .nameplate { position: absolute; transform: translate(-50%, -100%); font-size: 12px; text-shadow: 0 0 3px #000, 0 1px 2px #000; white-space: nowrap; text-align: center; }
 .nameplate .hpb { width: 60px; height: 4px; margin: 2px auto 0; background: rgba(0,0,0,.7); border: 1px solid #000; }
 .nameplate .hpb > i { display: block; height: 100%; background: #d23a2e; }
-.nameplate.npc { color: #9fd6ff; } .nameplate.mon { color: #ffe8b0; } .nameplate.mon.aggr { color: #ff9c8a; } .nameplate.player { color: #fff; }
+.nameplate.npc { color: #FFFF00; } .nameplate.mon { color: #ffe8b0; } .nameplate.mon.aggr { color: #ff9c8a; } .nameplate.player { color: #fff; }
 .window { position: fixed; min-width: 280px; padding: 12px 14px; }
 .window .close { position: absolute; right: 6px; top: 4px; padding: 0 8px; font-size: 16px; background: none; border: none; box-shadow: none; }
 .statgrid { display: grid; grid-template-columns: 1fr auto auto; gap: 4px 12px; font-size: 13px; align-items: center; }
@@ -344,21 +344,23 @@ input[type=text]:focus { border-color: var(--gold); }
 /* ---------- floating combat text + name plates ---------- */
 .dk-float { position: absolute; left: 0; top: 0; white-space: nowrap; font: bold 20px Tahoma, Verdana, sans-serif; will-change: transform, opacity;
   text-shadow: 2px 2px 0 #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 0 0 4px #000; pointer-events: none; }
-.dk-float.dmg-out { color: #ffe36b; }
-.dk-float.dmg-in { color: #ff4a36; }
-.dk-float.crit { color: #ff9a1a; font-size: 30px; }
-.dk-float.heal { color: #6cff7e; }
-.dk-float.miss { color: #d8d8d8; font-size: 16px; font-style: italic; }
-.dk-float.exp { color: #b8ff6a; font-size: 14px; }
-.dk-float.heal.mp { color: #6fb6ff; }
-.dk-float.guard { color: #9fc4ff; font-size: 16px; }
-.dk-float.dot { color: #e6a0ff; font-size: 15px; }
+/* D5_DEAD_FLOAT_CSS_REMOVED: .dk-float.* combat colours unused by sprite DamageNumbers (floaters.js ROWS). Damage-colour mapping BLOCKED on owner Global video. */
+.dk-float.dmg-out,
+.dk-float.dmg-in,
+.dk-float.crit,
+.dk-float.heal,
+.dk-float.miss,
+.dk-float.exp,
+.dk-float.heal.mp,
+.dk-float.guard,
+.dk-float.dot { color: inherit; }
 .dk-plate { position: absolute; left: 0; top: 0; text-align: center; white-space: nowrap; font: 11px Tahoma, Verdana, sans-serif; pointer-events: none;
-  padding: 0 3px; border: 4px solid transparent; text-shadow: 1px 1px 0 #000; will-change: transform; }
+  padding: 0; border: 4px solid transparent; text-shadow: 1px 1px 0 #000; will-change: transform; }
 .dk-plate:not(.art) { background: rgba(0,0,0,.8); background-clip: padding-box; }
 .dk-plate-title:empty { display: none; }
 .dk-plate-guild { display: flex; align-items: center; justify-content: center; gap: 3px; }
-.dk-plate-mark { position: relative; display: inline-block; width: 18px; height: 18px; flex: none; }
+/* LANE-61: Global head mark = ui_chatbubble.txt pan_mark 24x24, drawn 1:1 from the 24 px guildbg_s / guildicon_s cells (client size 0x18). */
+.dk-plate-mark { position: relative; display: inline-block; width: 24px; height: 24px; flex: none; }
 .dk-plate-mark > i { position: absolute; inset: 0; background-repeat: no-repeat; background-size: 100% 100%; }
 /* Reserve a column INSIDE the native player frame for the complete crest and
    its authored Glory animation. The label measures this padding too, so the
@@ -367,9 +369,13 @@ input[type=text]:focus { border-color: var(--gold); }
   padding-left: 34px; min-height: 34px; display: flex; flex-direction: column; justify-content: center;
 }
 .dk-plate.player > .dk-plate-guild:not(.dk-plate-alliance) > .dk-plate-mark.dk-plate-glory {
+  width: 18px; height: 18px; /* 18 px x 1.3333 = the same 24 px crest; the Glory art (guild-nameplate-art.js MARK_PX 18) is unchanged */
   position: absolute; left: 3px; top: 50%; transform: translateY(-50%) scale(1.3333333333);
 }
-.dk-plate.npc .dk-plate-name { color: #9be7ff; }
+/* Global 43.19 capture: name glyphs start 4 px in from the frame (= pcpop#79 4 px margin, no extra padding)
+   and sit 7 px below / 5 px above the 20 px frame edges -> 1 px lower than a centred 12 px line. */
+.dk-plate.art > .dk-plate-name { position: relative; top: 1px; }
+.dk-plate.npc .dk-plate-name { color: #FFFF00; }
 .dk-plate.npc .dk-plate-title { color: #e6cf8f; }
 .dk-plate.player .dk-plate-name { color: #ffffff; }
 .dk-plate.mon.boss .dk-plate-name { font-weight: bold; font-size: 12px; }
@@ -500,3 +506,7 @@ input[type=text]:focus { border-color: var(--gold); }
 .dk-npc-opt { padding: 4px 8px; color: #9be7ff; cursor: pointer; border: 1px solid transparent; }
 .dk-npc-opt:hover { color: #fff; background: rgba(80,64,32,.45); border-color: #a88a4a; }
 .dk-npc-msg { margin-top: 6px; color: #ffcf8a; min-height: 14px; }
+
+/* EVENT badge (imagetable bigmap 84, 37x14) beside the NPC plate: size and gap fitted to the Global 43.19 client capture
+   docs/overnight-43.19/ref/global-event-badge.png (badge box 62x22, 2 px clear of the plate frame, outline sits 0.5 px below the plate frame centre -> +1 px). */
+.dk-plate.npc .dk-npc-event-badge { position: absolute; right: calc(100% + 4px + 2px); top: 50%; transform: translateY(calc(-50% + 1px)); width: 62px; height: 22px; background-repeat: no-repeat; background-size: 100% 100%; }

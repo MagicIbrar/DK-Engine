@@ -80,7 +80,7 @@ export const SAMPLER_NONE_FILTER = 'D3DTEXF_NONE as MAG/MIN filter = POINT; out 
  * ENGINE-CHOSEN (not in Global data): shadow.txt `trilinear_filtering 0` is an Options switch of the exe whose effect is
  * not in the files; the maplist MipMapFilter is used as written.
  */
-export const SAMPLER_TRILINEAR_OPTION = 'maplist MipMapFilter used as written (shadow.txt trilinear_filtering 0)';
+export const SAMPLER_TRILINEAR_OPTION = 'OptionStore triFilter (option.txt tri_filter) forces trilinear+aniso via sampler-state.js; shadow.txt trilinear_filtering/anisotropy_filtering are install defaults';
 
 /**
  * ENGINE-CHOSEN (not in Global data): which samplers the map state reaches. The exe sets the sampler states itself; the

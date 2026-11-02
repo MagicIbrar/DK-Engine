@@ -22,6 +22,7 @@
 // (def.bodyEffects[clip effect id], monster-effect-body.js), so they are seen only while they attack, block, guard, take a
 // hit or die, as in the original client.
 import { Actor, actionSetSpec, bodyRadius, LOOP_STATES } from './actor.js';
+import { spawnSlot } from '../engine/spawn-budget.js';
 import { bodyEffectRef } from '../game/effect-body.js';
 import { monsterBodyEffects } from './monster-effect-body.js';
 import {authoredActionEffects,stopActionEffects} from './authored-action-effects.js';
@@ -73,6 +74,7 @@ export class Monster extends Actor {
         parts: [{ meshKey: shape.mesh, tpackKey: shape.tpack || null, textures: shape.textures || null }],
       });
       if (this.disposed) return;
+      { const s = spawnSlot(this.game); if (s) await s; if (this.disposed) return; }   // PERF-CROWD: instantiate over frames
       if (model) this._setSkinned(model);
     }
     this._measure();

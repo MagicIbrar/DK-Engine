@@ -5,23 +5,24 @@ import {gameplayPreferences} from '../../src/game/gameplay-preferences.js';
 // the wanted status: a PK kill adds the pkcount row of "kills in the last hour" to the killer's chaotic value (the same maths as the
 // offline Grade.addPk), the value fades with time, a value above 0 colours the name purple, the bands that force a respawn colour it red.
 // Messages are stringtable_pc cate 1003 (src/config/engine-chosen-pk.js PK_TEXT). Battle status lasts the official 60 s (guide 62,
-// FIELD_PK.battleStatusMs) and the chaotic value fades at the map's native rate (wanted.mjs). ENGINE-CHOSEN: how long a forced action stays armed,
-// the notice repeat, the wanted colours, "no chaos for killing a wanted player" (FIELD_PK). The damage is the PvP pipeline of
+// FIELD_PK.battleStatusMs) and the chaotic value fades at the map's native rate (wanted.mjs). A forced action stays armed for its own command
+// (decompile Force::State::PK, pvp.mjs noteForcedIntent); the wanted colours are Global; "no chaos for killing a wanted player" is a JUDGMENT (FIELD_PK). The damage is the PvP pipeline of
 // server/world/pvp.mjs (src/game/pvp-rules.js, shield first); this file only decides WHO may be hit and what a kill costs.
 import {registerPvpMode,noteForcedIntent} from './pvp.mjs';
 import {sameScene} from './scene.mjs';
 import {isObserver} from './observers.mjs';
 import {socialRef} from './social-state.mjs';
 import {guildWarEnemy} from './guild-war-pvp.mjs';
-import {wantedLevel,addChaos,pkBattleActive,noteBattleStatus} from './wanted.mjs';
+import {wantedLevel,addChaos,pkBattleActive,noteBattleStatus,pkSafeTimeActive} from './wanted.mjs';
 import {isPvpField} from '../../src/game/siege-rules.js';
 import {FIELD_PK,PK_TEXT} from '../../src/config/engine-chosen-pk.js';
+import {applyDeathPenaltyToProfile} from '../../src/game/progression.js';
 
 const num=v=>Number.isFinite(Number(v))?Number(v):0;
 const up=(world,q,allowDowned=false)=>!!q&&world.players.get(q.account)===q&&!q.leaving&&(allowDowned||!q.dead)&&!q.sceneTransition&&!(q.gmAuthorized&&q.profile.gm?.hide);
 
 export {noteForcedIntent};   // a forced attack / skill command arms p (pvp.mjs, shared with skills.mjs)
-const armed=(world,p)=>p.pkForcedAt!=null&&world.now()-p.pkForcedAt<=FIELD_PK.forcedWindowMs;
+const armed=(world,p)=>p.pkForced===true;
 
 /** Is this server and this place a PK field for p? null = yes, else 'off' | 'safe' | 'instance'. */
 export function pkPlace(world,p){
@@ -37,6 +38,9 @@ export function pkRefusal(world,p,q,{allowDowned=false}={}){
   if(!q||q===p||!up(world,p)||!up(world,q,allowDowned)||!sameScene(p,q)||isObserver(world,q)||isObserver(world,p))return 'invalid';
   const place=pkPlace(world,p);if(place)return place;
   if(pkPlace(world,q))return 'safe';
+  // Safe Time (1003:9 / 1003:11): neither side may force-attack while either is protected.
+  if(pkSafeTimeActive(world,q))return 'safetime';
+  if(pkSafeTimeActive(world,p))return 'self-safetime';
   if(allied(world,p,q))return 'ally';
   return null;
 }
@@ -51,7 +55,7 @@ const enemy=(world,p,q)=>pkRefusal(world,p,q)===null&&(armed(world,p)||lawfulTar
 const opponents=(world,p)=>[...world.players.values()].filter(q=>enemy(world,p,q));
 const acceptedHit=(world,killer,target)=>{
   const hit=acceptedHits.get(target),age=world.now()-Number(hit?.at);
-  return !!killer&&hit?.killer===killer&&hit.record===target.pvpLastHit&&target.pvpLastHit?.by===killer.id&&age>=0&&age<=FIELD_PK.forcedWindowMs&&hit.map===target.map&&hit.channel===(target.channel||0)&&hit.instance===(target.instanceId||null)?hit:null;
+  return !!killer&&hit?.killer===killer&&hit.record===target.pvpLastHit&&target.pvpLastHit?.by===killer.id&&age>=0&&age<=FIELD_PK.killCreditMs&&hit.map===target.map&&hit.channel===(target.channel||0)&&hit.instance===(target.instanceId||null)?hit:null;
 };
 
 // ---- consequences of a PK kill
@@ -64,7 +68,9 @@ async function onDown(world,attacker,target){
   const key=`${target.id}:${target.pvpLastHit?.at??world.now()}`,seen=world.fieldPkDowns||=new Set();if(seen.has(key))return;seen.add(key);
   if(seen.size>2000)for(const k of [...seen].slice(0,1000))seen.delete(k);
   if(!target.dead){target.hp=0;target.dead=true;target.path=[];}
-  target.profile.deaths=(target.profile.deaths||0)+1;world.changed(target);
+  // Safe Time after field-PK death: grant on revive (stringtable_pc 1003:10 + formula.ini dwNonPKTime).
+  target.pkSafePending=true; world.changed(target);
+  target.profile.deaths=(target.profile.deaths||0)+1;if(!target._deathPenaltyApplied){target._deathPenaltyApplied=true;applyDeathPenaltyToProfile(target.profile,world.data);}world.changed(target);
   killer.profile.kills=(killer.profile.kills||0)+1;
   let evil=false;
   const row=world.data?.mapRow?.(killer.map),noChaos=num(row?.IsNotIncreaseChao)===1,victimWanted=wantedLevel(world,target)>0;
@@ -81,9 +87,9 @@ export function noteForcedHit(world,attacker,target){
   // turn the victim into an aggressor or forgive the original aggressor's next kill.
   const lawful=lawfulTarget(world,target),record=target.pvpLastHit;
   const age=now-Number(record?.at);
-  if(record?.by===attacker.id&&Number.isFinite(record.at)&&age>=0&&age<=FIELD_PK.forcedWindowMs&&pkRefusal(world,attacker,target,{allowDowned:true})===null)acceptedHits.set(target,{killer:attacker,record,at:record.at,lawful,map:target.map,channel:target.channel||0,instance:target.instanceId||null});
+  if(record?.by===attacker.id&&Number.isFinite(record.at)&&age>=0&&age<=FIELD_PK.killCreditMs&&pkRefusal(world,attacker,target,{allowDowned:true})===null)acceptedHits.set(target,{killer:attacker,record,at:record.at,lawful,map:target.map,channel:target.channel||0,instance:target.instanceId||null});
   if(!lawful){noteBattleStatus(world,attacker,now);attacker.pkBattleVictim=target.id;}   // kept per character through a reconnect (wanted.mjs)
-  if(seen[target.id]!=null&&now-seen[target.id]<FIELD_PK.noticeRepeatMs)return;
+  if(seen[target.id]!=null&&now-seen[target.id]<FIELD_PK.battleStatusMs)return;   // said at the start of the PK (guide 62 battle status), not on a timer of its own
   seen[target.id]=now;
   world.emit(attacker.map,{type:'pk',reason:'attacked',actorId:attacker.id,targetId:target.id,recipients:[attacker.id,target.id]});
 }
@@ -94,6 +100,8 @@ export const pkEnemy=enemy;
 export function pkRefusalText(world,p,q){
   const why=pkRefusal(world,p,q);
   if(why==='safe')return PK_TEXT[8];
+  if(why==='safetime')return PK_TEXT[9];
+  if(why==='self-safetime')return PK_TEXT[11];
   if(why==='ally')return `${q?.profile?.name||''} ${PK_TEXT[3]}`.trim();
   return null;
 }

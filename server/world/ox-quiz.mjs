@@ -1,6 +1,6 @@
 // OX QUIZ host controller (Undo Stadion map 22 via Theme Park map 654). Rules and provenance: src/game/ox-quiz-rules.js.
 // Original GM controls use the Start Stone (NPC 5830, "Usable by GM characters only.");
-// the scheduled adaptation's explicit pacing/reward choices are in engine-chosen-ox-quiz.js.
+// Lane 47: Global OX is GM-run only; the former automatic schedule/pacing/reward (engine-chosen-ox-quiz.js) is removed.
 // players enter from Hani (6185 job31 9710) through warp 11784 -> 11785 and leave through warp 11786 -> 11787.
 // SharedWorld dispatches intent-only actions and publishes its canonical snapshot; tick owns the delayed native wall.
 // Native zone buffs are durably saved; quiz hazards use the original monster rows and combat values.
@@ -22,8 +22,6 @@ import {commitFieldTravel,travelLocation,boundReturnTarget} from './travel.mjs';
 import {channelData} from './channels.mjs';
 import {trackForcedDisplacement} from './movement-authority.mjs';
 import {OX_QUIZ as Q,oxRoundLimit,oxQuestions,oxSides,oxSideAt,oxCallHalves,oxEntryRefusal,oxPickQuestion} from '../../src/game/ox-quiz-rules.js';
-import {OX_AUTOMATION as AUTO,oxScheduleWindow} from '../../src/config/engine-chosen-ox-quiz.js';
-import {AuthoritativeInventory} from './inventory.mjs';
 import {statusFlags} from '../../src/game/monster-rules.js';
 
 export const OX_QUIZ_SCHEMAS={oxquiz:['token','type','operation','answer','menu']};
@@ -222,56 +220,13 @@ function eliminate(world,data,s,answer){
  send(world,data,arenaPlayers(world,data),{type:'oxQuiz',phase:'solution',round:s.round,rounds:data.rounds,solution:{answer:s.question.answer,text:s.question.solution},survivors:left,maxCount:total,eliminated:out,callGroups:data.halves[wrong]});
  return {eliminated:out.length,survivors:left,maxCount:total,callGroups:data.halves[wrong]};
 }
-async function settleRewards(world,data,s){
- if(s.round!==data.rounds||!['solution','rewards'].includes(s.phase))return [];
- const failed=[];
- for(const r of s.participants.values()){
-  if(r.dropout||r.correctRounds!==data.rounds||r.rewarded)continue;
-  const q=[...world.players.values()].find(p=>p.id===r.id);if(!inArena(world,data,q)||q.dead){r.dropout=true;r.reason='left';continue;}
-  if(q.sceneTransition||q.progressCommitting||q.commandActive){failed.push({id:r.id,message:'Waiting for accepted character actions.'});continue;}
-  try{await serializeLife(q,async()=>{
-   if(!inArena(world,data,q)||q.dead||q.leaving)fail('The OX survivor left before reward settlement.');
-   const before=structuredClone(q.profile),profile=structuredClone(before),receipts=profile.oxQuizRewards||={};
-   if(!receipts[s.id]){const inv=new AuthoritativeInventory(profile,world.data.itemDB,{now:world.now,random:world.random});if(!inv.add(AUTO.rewardItem,AUTO.rewardCount))fail('Make room in your inventory for the OX Quiz Gift Box.');
-    receipts[s.id]={at:world.now(),item:AUTO.rewardItem,count:AUTO.rewardCount,rounds:data.rounds};
-    const oldest=Object.entries(receipts).sort((a,b)=>a[1].at-b[1].at);for(const [id]of oldest.slice(0,Math.max(0,oldest.length-128)))delete receipts[id];
-    await commitLife(world,q,profile,{profileBefore:before,rewardProgress:true});
-   }
-   r.rewarded=true;send(world,data,[q],{type:'oxQuizNotice',cate:Q.arena,code:Q.notice.missionClear});
-  });}catch(error){failed.push({id:r.id,message:error.message});}
- }
- s.rewardError=failed[0]?.message||null;return failed;
-}
 async function endSession(world,data,L,s){
- L.open=false;const rewardFailed=await settleRewards(world,data,s);if(rewardFailed.length)return {ended:false,failed:rewardFailed};
+ L.open=false;
  s.ending=true;lowerWall(world,data,s);const failed=[];
  for(const q of arenaPlayers(world,data)){if(q.gmAuthorized)continue;try{await moveOut(world,data,q);}catch(error){failed.push({id:q.id,message:error.message});}}
  if(failed.length)return {ended:false,failed};
  L.last={id:s.id,endedAt:world.now(),rounds:s.round,survivors:[...s.participants.values()].filter(r=>!r.dropout).map(r=>r.name),participants:s.participants.size};L.session=null;return {ended:true,summary:L.last};
 }
-async function automaticQuiz(world,data,L){
- const now=world.now(),window=oxScheduleWindow(now);
- if(!L.session&&window&&L.lastSchedule!==window.id){L.lastSchedule=window.id;L.open=true;L.session=newSession(world);L.session.auto={startAt:window.startAt,nextAt:window.startAt};}
- const s=L.session;if(!s?.auto)return;
- if(s.ending){await endSession(world,data,L,s);return;}
- if(now<s.auto.nextAt)return;
- if(s.phase==='idle'){L.open=false;if(!survivors(s)){await endSession(world,data,L,s);return;}askQuestion(world,data,s);s.auto.nextAt=now+AUTO.answerMs;}
- else if(s.phase==='question'){
-  if(s.wall.state==='down'){requestWall(world,data,s);s.auto.nextAt=s.wall.at;}
-  else if(s.wall.state==='up'){eliminate(world,data,s,s.question.answer);s.auto.nextAt=now+AUTO.solutionMs;}
- }
- else if(s.phase==='solution'){
-  lowerWall(world,data,s);
-  if(s.round>=data.rounds||!survivors(s)){s.phase='rewards';s.auto.nextAt=now;}
-  else {askQuestion(world,data,s);s.auto.nextAt=now+AUTO.answerMs;}
- }
- else if(s.phase==='rewards'){
-  const failed=await settleRewards(world,data,s);if(failed.length){s.auto.nextAt=now+1000;return;}
-  s.phase='complete';s.auto.nextAt=now+AUTO.returnMs;
- }
- else if(s.phase==='complete')await endSession(world,data,L,s);
-}
-
 // ------------------------------------------------------------------ commands
 export async function oxQuizCommand(world,p,input){
   if(!input||input.type!=='oxquiz'||Object.keys(input).some(k=>!OX_QUIZ_SCHEMAS.oxquiz.includes(k)))fail('Send OX quiz intent only.');
@@ -329,7 +284,6 @@ export async function oxQuizCommand(world,p,input){
   }
   atStartStone(world,data,p);
   const s=L.session;if(!s)fail('Allow entry before using the OX quiz functions.',409);
-  if(s.auto&&op!=='end')fail('This scheduled quiz is running automatically. Export All can end it.',409);
   if(s.ending&&op!=='end')fail('Export All is in progress.',409);
   if(op==='close'){L.open=false;return {open:false,code:Q.menu.close};}
   if(op==='wall'){
@@ -363,7 +317,6 @@ export async function tickOxQuiz(world){
   if(L.ticking)return;L.ticking=true;
   try{
     if(s?.wall.state==='pending'&&now>=s.wall.at&&!raiseWall(world,data,s))s.wall={state:'down',at:now,cells:null,base:null};
-    await automaticQuiz(world,data,L);s=L.session;
     if(s)for(const r of s.participants.values())if(!r.dropout&&!r.arriving){const q=[...world.players.values()].find(x=>x.id===r.id);if(!inArena(world,data,q)){r.dropout=true;r.reason='left';r.at=now;}}
     for(const q of [...world.players.values()]){
       if(!present(world,q)||q.map!==Q.arena||q.instanceId||q.gmAuthorized||q.sceneTransition||q.dead)continue;
@@ -381,7 +334,7 @@ export function oxQuizSnapshot(world,p){
   const data=oxQuizData(world);if(!data)return {available:false};
   const L=live(world),s=L.session,r=s?.participants.get(p.id)||null;
   const out={available:true,map:p.map,open:L.open,channel:(p.channel??0)===data.channel,rounds:data.rounds,maxUser:data.max,gm:!!p.gmAuthorized,
-    round:s?.round||0,phase:s?.phase||'idle',automatic:!!s?.auto,deadline:s?.auto?.nextAt||null,rewardError:s?.rewardError||null,wall:{state:s?.wall.state||'down',at:s?.wall.at||0,uid:data.wall.uid,brick:data.wall.brick,x:data.wall.x,z:data.wall.z,dir:data.wall.dir,footprintDir:data.wall.footprintDir,w:data.wall.w,h:data.wall.h},
+    round:s?.round||0,phase:s?.phase||'idle',automatic:false,deadline:null,rewardError:null,wall:{state:s?.wall.state||'down',at:s?.wall.at||0,uid:data.wall.uid,brick:data.wall.brick,x:data.wall.x,z:data.wall.z,dir:data.wall.dir,footprintDir:data.wall.footprintDir,w:data.wall.w,h:data.wall.h},
     survivors:s?survivors(s):0,maxCount:s?s.participants.size:0,mine:r?{participant:true,dropout:r.dropout,reason:r.reason}:null,last:L.last};
   if(s?.phase==='question'&&s.question)out.question={index:s.question.index,text:s.question.question};
   if(s?.phase==='solution'&&s.question)out.solution={answer:s.question.answer,text:s.question.solution};

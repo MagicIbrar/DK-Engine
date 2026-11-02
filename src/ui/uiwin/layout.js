@@ -11,7 +11,31 @@
 // Control `rect x y w h` is relative to its parent; a control `position <h> <v>` anchors it to the parent's
 // edges the same way (inverse = stretch: x from the left, width = parentW - x + w).
 
+import { gfxC } from '../gfx-parity-c.js';
+
 export const REF_W = 1024;
+
+// gfxC3 'hudpos': HUD window positions from Global 43.19's own layout file bin/optionEtc.txt
+// (Global client\bin\optionEtc.txt, sha256 B8FD5182...CC1FA87F):
+//   hp_state_pos 580 -80          -> the HP window (script game2/mainbar/ui_hpwnd.txt, 'left bottom' rect 572 -89)
+//   skill_quickslot_pos 0 -157    -> the skill quickslot (game2/mainbar/ui_quickslotwnd.txt, 'left bottom' rect 0 -153)
+// x from the left edge, negative y from the bottom edge (both windows are 'position left bottom').
+// Verified against the recording global-gfx-session2.mkv (t=26-30 s): Lv box at x 583 (580 + lbl_pclevel x 3), HP frame
+// top at y 698 (768 - 80 + pan_bg y 10), the single skill row at y 707 (768 - 157 + row y 96).
+// item_belt_pos (678 -153) is NOT applied: the recording shows the belt at x 508 / y 561, i.e. moved by hand that session.
+export const GLOBAL_OPTIONETC_POS = Object.freeze([
+  [/(^|\/)mainbar\/ui_hpwnd\.txt$/i, 580, -80],
+  [/(^|\/)mainbar\/ui_quickslotwnd\.txt$/i, 0, -157],
+  // gfxC4 [chatgeom]: chatwnd_pos 0 -519 -> chat button row top at y 249 (recording: buttons 249-275)
+  [/(^|\/)chat\/ui_chatwnd\.txt$/i, 0, -519, 'chatgeom'],
+]);
+export function globalOptionEtcPos(spec, screen) {
+  if (!spec?.file) return null;
+  const hit = GLOBAL_OPTIONETC_POS.find(([re]) => re.test(spec.file));
+  if (!hit || !gfxC(hit[3] || 'hudpos')) return null;
+  const [, x, y] = hit;
+  return { x: x < 0 ? screen.w + x : x, y: y < 0 ? screen.h + y : y };
+}
 export const REF_H = 768;
 
 /** Extent of a control list (max right / bottom of their un-anchored rects). */
@@ -60,6 +84,8 @@ export function computeWindowBox(spec, screen = { w: REF_W, h: REF_H }) {
   } else {
     x = x1; y = y1;
   }
+  const gp = globalOptionEtcPos(spec, screen);
+  if (gp) { x = gp.x; y = gp.y; }
   const e = spec.edges;
   if (e) {
     if (e.left != null) x = e.left;

@@ -104,7 +104,7 @@ export class SkillData {
   }
   unit(key) { return this.units.get(key) || null; }
 
-  /** Model effects (modeleffect.csv groups): status {iconIndex:{start,keep,end}}, spell, pcActionEffects, combat, game. */
+  /** Model effects (modeleffect.csv groups): status {iconIndex:{start,keep,end}}, spell, pcActionEffects, combat, game, quest (code1=18 overhead marks). */
   get modelEffects() { return this.common?.modelEffects || {}; }
   get damageText() { return this.common?.damageText || null; }
   get aggro() { return this.common?.aggro || null; }

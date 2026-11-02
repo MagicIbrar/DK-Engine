@@ -32,7 +32,7 @@ import { installChatLinks } from './chat-links.js';
 import { registerNotices } from './notices.js';
 import { registerSystemMenu } from './sysmenu.js';
 import { registerHelpWindows, renderRich } from './help.js';
-import { DamageNumbers } from './floaters.js';
+import { DamageNumbers, combatResultFloater } from './floaters.js';
 import { ChatBubbles } from './bubbles.js';
 import { takeScreenshot } from './screenshot.js';
 import { OptionHooks } from './optfx.js';
@@ -549,15 +549,20 @@ function wireEvents(game) {
     if ((e.source === me || e.source?.owner === me) && e.target.kind === 'monster') ctx.owned.add(e.target);
     if (!viewAllowed(game, e.source, e.target)) return;
     const toMe = e.target === me;
-    if (e.miss) { ctx.numbers.show(e.target, { word: 'miss' }); return; }
-    if (e.guard) { ctx.numbers.show(e.target, { word: 'block', value: e.amount, kind: toMe ? 'in' : 'out' }); return; }
-    const kind = e.dot ? 'dot' : toMe ? (e.crit ? 'incrit' : 'in') : (e.source === me || e.source?.owner === me) ? (e.crit ? 'crit' : 'out') : 'other';
-    ctx.numbers.show(e.target, { value: e.amount, kind, crit: !!e.crit });
-    if (toMe && (e.crit || (e.source && isAggressive(e.source) && Number(e.source?.def?.rank) >= 3))) ctx.shake(e.crit ? 0.18 : 0.12, 0.3);
+    const ownHit = e.source === me || e.source?.owner === me;
+    const spec = combatResultFloater(e, { toMe, ownHit });
+    if (!spec) return;
+    ctx.numbers.show(e.target, spec);
+    if (toMe && !spec.word && (e.crit || (e.source && isAggressive(e.source) && Number(e.source?.def?.rank) >= 3))) ctx.shake(e.crit ? 0.18 : 0.12, 0.3);
   };
   ev.on('damage', displayDamage);
   // Authoritative impacts use a cosmetic channel to avoid local reward hooks.
   ev.on('server:damage', displayDamage);
+  ev.on('heal', (e) => {
+    if (!e?.target || !viewAllowed(game, e.source, e.target)) return;
+    const spec = combatResultFloater({ ...e, heal: true }, { toMe: e.target === p() });
+    if (spec) ctx.numbers.show(e.target, spec);
+  });
   ev.on('death', (e) => {
     if (e?.actor === p()) ctx.chat.system(`${plainText(str(40, 108) || '')}`.trim() || 'You have died.', 'err');
   });

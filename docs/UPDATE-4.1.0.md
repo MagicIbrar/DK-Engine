@@ -3,7 +3,7 @@
 <details>
 <summary>Contributors</summary>
 
-Franky, DEV ShadoW, CYBER, and Magic Ibrar. Thank you for testing, reports, investigation and contributions.
+DEV ShadoW, CYBER, and Magic Ibrar. Thank you for testing, reports, investigation and contributions.
 
 </details>
 

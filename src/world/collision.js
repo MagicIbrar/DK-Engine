@@ -8,23 +8,52 @@ export class Collision {
    * @param {object|null} grid  parseMac() result (or null/empty = no collision data)
    * @param {number} width      map width in cells (terrain size; used when the grid is missing)
    * @param {number} height
+   * @param {{failClosed?:boolean, reason?:string}} [opts]
+   *   failClosed: when grid is missing/unusable, fill every cell blocked instead of the historical
+   *   all-walkable fallback. Used when maplist names a MapAttribute that failed to load/parse.
+   *   Custom maps and explicit "<< Empty >>" MapAttribute keep the walkable fallback (required=false).
    */
-  constructor(grid, width = 512, height = 512) {
+  constructor(grid, width = 512, height = 512, opts = {}) {
     this.grid = grid && !grid.empty && grid.width > 0 ? grid : null;
     this.width = this.grid ? this.grid.width : width;
     this.height = this.grid ? this.grid.height : height;
-    // movement mask: 1 = blocked. Without data everything inside the map is walkable.
+    this.loadFailed = null;
+    if (!this.grid && opts.failClosed) {
+      // Fail closed: every in-bounds cell blocked. Out-of-bounds already blocked by isWalkable.
+      this.cells = new Uint8Array(this.width * this.height);
+      this.cells.fill(1);
+      this.hasData = false;
+      this.loadFailed = opts.reason || 'missing';
+      this.walkableCount = 0;
+      return;
+    }
+    // movement mask: 1 = blocked. Without data everything inside the map is walkable (optional MAC).
     this.cells = this.grid ? this.grid.cells : new Uint8Array(this.width * this.height);
     this.hasData = !!this.grid;
     this.walkableCount = 0;
     for (let i = 0; i < this.cells.length; i++) if (!this.cells[i]) this.walkableCount++;
   }
 
-  /** Parse a .mac buffer (ArrayBuffer/Uint8Array or null). */
-  static fromBuffer(buf, width = 512, height = 512) {
+  /**
+   * Parse a .mac buffer (ArrayBuffer/Uint8Array or null).
+   * @param {ArrayBuffer|Uint8Array|null|undefined} buf
+   * @param {number} [width]
+   * @param {number} [height]
+   * @param {{required?:boolean}} [opts] required=true => fail-closed when buf missing/empty/unparseable
+   */
+  static fromBuffer(buf, width = 512, height = 512, opts = {}) {
     let grid = null;
+    let parseError = null;
     if (buf) {
-      try { grid = parseMac(buf); } catch (err) { console.warn('[world] .mac parse failed', err); }
+      try { grid = parseMac(buf); } catch (err) {
+        parseError = err;
+        console.warn('[world] .mac parse failed', err);
+      }
+    }
+    const usable = !!(grid && !grid.empty && grid.width > 0);
+    if (!usable && opts.required) {
+      const reason = parseError ? 'parse' : (buf ? 'empty' : 'missing');
+      return new Collision(null, width, height, { failClosed: true, reason });
     }
     return new Collision(grid, width, height);
   }

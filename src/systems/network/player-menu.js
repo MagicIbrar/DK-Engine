@@ -1,8 +1,9 @@
-import {installPcPop} from '../pvp/duel.js';
-import {needStrings} from '../hud-options/util.js';
+﻿import {installPcPop} from '../pvp/duel.js';
+import {needStrings,str} from '../hud-options/util.js';
+import {onOxMap,partyWarMap} from '../pvp/pk-channel.js';
 
-// Native pcpop240 row labels plus messenger1006 Talk/Send Message. The latter
-// two rows reuse the native messenger actions in this menu (ENGINE-CHOSEN order).
+// Native pcpop 240 rows only: Global PcPopWnd builds rows 240:0..13 and has no
+// messenger 1006 rows (lane 62, docs/global-parity-420/PLAYER-CARD-PARITY.md).
 // NPC players use exactly the same routes and host permission guards as humans.
 export function installSharedPlayerMenu(game,network) {
  if(network._socialPlayerMenu)return network._socialPlayerMenu;
@@ -36,16 +37,33 @@ export function installSharedPlayerMenu(game,network) {
  network.playerFollow={canFollow,follow};
  add(0,canFollow,follow);
  game.events?.on?.('keyaction',a=>{if(a?.id==='follow')follow(game.player?.target);});
+ const say=(text,kind='sys')=>{const s=String(text||'').replace(/<[^>]+>/g,'').trim();if(s)game.chat?.system?.(s,kind);return false;};
  add(1,()=>!!game.life?.friends?.add,t=>game.life.friends.add(t.name));
- add(2,()=>!!game.trade?.request,t=>game.trade.request(t.networkId));
+ // 240:2: Global hides Trade on a party-war map (Minimap -> LogicObject::PartyWar::Provider map check) and refuses
+ // on the OX Quiz map with SYSTEM 101:167 (pk-channel.js). The host still owns every trade rule.
+ add(2,()=>!!game.trade?.request&&!partyWarMap(game,network),t=>onOxMap(network)?say(str(101,167,'SYSTEM'),'err'):game.trade.request(t.networkId));
  add(3,()=>!!game.chat?.openInput,t=>game.chat.openInput(`"${t.name} `));
- add(3.1,()=>!!game.messenger?.openChat,t=>game.messenger.openChat(t.name),1006,5);
- add(3.2,()=>!!game.chat?.openInput,t=>game.chat.openInput(`"${t.name} `),1006,6);
- add(4,t=>!!game.party?.command&&leader()&&!(party().members||[]).some(p=>p.id===t.networkId),async t=>{
+ // 240:4 / 240:6 / 240:7 / 240:9 / 240:12: Global builds these rows for every player target; the host refuses
+ // what the caller may not do (leader, guild master, alliance commander checks stay server side).
+ add(4,()=>!!game.party?.command,async t=>{
   if(!party().active&&!(await game.party.command('create')))return false;
   return game.party.command('invite',{targetId:t.networkId});
  });
- add(6,()=>!!game.life?.guild?.inviteName&&!!network.guild?.founded,t=>game.life.guild.inviteName(t.name));
- void needStrings([0,1,2,3,4,6].map(n=>['NORMAL',240,n]).concat([['NORMAL',1006,5],['NORMAL',1006,6]])).catch(()=>{});
+ add(6,()=>!!game.life?.guild?.inviteName,t=>game.life.guild.inviteName(t.name));
+ // 240:7 Alliance = Global InviteAlliance (the host's allianceInvite names the target, who must be a guild master).
+ add(7,()=>!!game.alliance?.invite,t=>game.alliance.invite(t.name));
+ // 240:9 Block = Global RequestBlackList (Messenger blacklist add); the result is the host's 1006 code.
+ add(9,()=>!!game.blacklist?.add,async t=>{const r=await game.blacklist.add(t.name),m=/^(\d+):(\d+)$/.exec(String(r?.code||''));if(m)say(str(Number(m[1]),Number(m[2])).replace(/%s/g,t.name),r?.ok===false?'err':'sys');return r?.ok!==false;});
+ // 240:10 "Shut Out(Expansion)": Global sends the Expedition (troop) invite from this row, shown only to the
+ // expedition leader (Troop::Reference: has a troop and self id == troop leader id).
+ add(10,()=>!!game.life?.expedition?.isLeader,async t=>{const ok=await game.life.expedition.command('invite',{targetId:t.networkId});if(ok)say(str(555,27).replace(/%s/g,t.name));return ok;});   // 555:27 after the send, as Global RequestTroop
+ // 240:11 "Expedition" = Global RequestCharTrade (Character Transfer): added by chartrade/index.js (MENU.order 11).
+ // 240:12 Report = Global AutoReport after the 80:46 / 81:46 confirm box (server/world/auto-report.mjs).
+ add(12,()=>!!game.uiwin?.msgbox,async t=>{
+  const yes=await game.uiwin.msgbox(str(81,46),{title:str(80,46),kind:'yesno'});
+  if(yes!=='yes'||!valid(t))return false;
+  try{return !!(await network.action('autoreport',{targetId:t.networkId}));}catch{return false;}   // an older host has no autoreport route
+ });
+ void needStrings([0,1,2,3,4,6,7,9,10,12].map(n=>['NORMAL',240,n]).concat([['NORMAL',80,46],['NORMAL',81,46],['NORMAL',555,27],['SYSTEM',101,167]])).catch(()=>{});
  network._socialPlayerMenu=pop;return pop;
 }

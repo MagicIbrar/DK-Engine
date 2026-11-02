@@ -557,7 +557,13 @@ export function build(opts) {
   const usedTabNames = new Set();
   for (const s of shopParsed.shops) {
     const tabs = [];
-    s.tabs.forEach((t) => {
+    // scan fix A (A7): the client's shop loader reads TabCount (column 3, FUN_010c64e0 @ decompiled-named.c 32-bit-main
+    // L1586574) and its row parser FUN_010c68b0 (L1586652) loops tab groups only while index < TabCount (L1586793), so tab
+    // groups past TabCount never reach the client (shops 40/61/91/92 have TabCount 1). Empty groups are skipped as before.
+    const tabLimit = Number.isFinite(s.tabCount) ? s.tabCount : s.tabs.length;
+    const beyond = s.tabs.slice(tabLimit).filter((t) => t.set || t.name);
+    if (beyond.length) soft(`shop ${s.index}: TabCount ${s.tabCount} - ${beyond.length} filled tab group(s) past TabCount ignored as the client does (tabs ${beyond.map((t) => t.tab).join(',')})`);
+    s.tabs.slice(0, tabLimit).forEach((t) => {
       if (!t.set && !t.name) return;
       if (t.set) { if (!setUse.has(t.set)) setUse.set(t.set, []); setUse.get(t.set).push(`${s.index}:${t.tab}`); }
       const nm = t.name ? tstr(T_TAB, 2002, t.name) : null;
@@ -591,6 +597,8 @@ export function build(opts) {
   for (const s of setParsed.sets) {
     const used = setUse.get(s.index) || [];
     if (used.length) setsUsed++;
+    // scan fix A (A8): the client's ShopSet row parser FUN_010ceb10 (decompiled-named.c 32-bit-main L3249506) reads all 0x38
+    // (56) ItemIndex/StackCount/PosX/PosY groups whatever TotalCount says, so every filled entry is kept; TotalCount is informational.
     if (s.totalCount !== s.items.length) soft(`shopset ${s.index}: TotalCount ${s.totalCount} but ${s.items.length} items`);
     const kinds = new Set(used.flatMap((u) => { const k = shopsOut[u.split(':')[0]]?.kind; return Array.isArray(k) ? k : k ? [k] : []; }));
     const occ = new Map();

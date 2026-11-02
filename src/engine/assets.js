@@ -84,6 +84,20 @@ function responseError(res, key) {
   return error;
 }
 
+
+// Cold-profile Chrome sometimes aborts in-flight data fetches (TypeError / Failed to fetch /
+// net::ERR_ABORTED). Retry only that network-layer class; HTTP answers and other errors pass through.
+export const NET_RETRY_DELAYS_MS = Object.freeze([150, 600, 1500]);
+export async function fetchWithNetRetry(url, init, fetchFn = globalThis.fetch.bind(globalThis), delays = NET_RETRY_DELAYS_MS) {
+  let attempt = 0;
+  for (;;) {
+    try { return await fetchFn(url, init); }
+    catch (error) {
+      if (!(error instanceof TypeError) || attempt >= delays.length) throw error;
+      await new Promise(r => setTimeout(r, delays[attempt++]));
+    }
+  }
+}
 // Retry on a later consumer request, with bounded exponential backoff. Keep
 // concurrent consumers deduplicated even while a failure is cooling down.
 export function cachedAssetRequest(cache, failures, key, load, onFailure = null) {
@@ -125,7 +139,7 @@ export function fetchBuffer(rel, { priority = null } = {}) {
       // ?opt=1: server.mjs answers a missing file with 204 + X-Missing (no console error for probed fallbacks)
       const custom = /^custom\/glb\/[a-f0-9]{64}\.glb$/.test(key);
       const url = custom ? `/api/world/custom-assets/${key.split('/').at(-1)}` : await versionedContentURL(DATA_URL + key.split('/').map(encodeURIComponent).join('/') + '?opt=1');
-      const res = await (priority ? fetch(url, { priority }) : fetch(url));
+      const res = await fetchWithNetRetry(url, priority ? { priority } : undefined);
       const error = responseError(res, key);
       if (error) throw error;
       const buf = await res.arrayBuffer();
@@ -189,7 +203,7 @@ const jsonFailures = new Map();
 /** Engine-side JSON (e.g. /gamedata/monsters.json), not game data. */
 export function fetchJSON(url) {
   return cachedAssetRequest(jsonCache, jsonFailures, url, async () => {
-    const res = await fetch(await versionedContentURL(url)), error = responseError(res, url);
+    const res = await fetchWithNetRetry(await versionedContentURL(url)), error = responseError(res, url);
     if (error) throw error;
     return res.json();
   });

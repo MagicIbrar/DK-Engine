@@ -7,11 +7,14 @@ const supported=new Set([36818,36819]);
 const percent=v=>Math.max(0,Math.min(100,Number(v)||0));
 // Ice Castle breakable bricks and the DK/Draco team stones share the host's
 // fixed-damage object path (core plain hits, skills, reward routing).
-export const isEventObject=m=>!!m?.eventObject&&supported.has(Number(m.brickIndex))||isTeamStone(m);
+// Lane 59: the Dead Front armory wood fences (36066-36075 / 36091-36092, breakable by brick.csv) are event objects too;
+// breaking one runs the script's OnDestroyBrick (older server reference, deadfront.js _brickDestroyed).
+export const isEventObject=m=>!!m?.eventObject&&(supported.has(Number(m.brickIndex))||m.deadFrontObject===true)||isTeamStone(m);
+const objectKind=m=>m?.deadFrontObject===true?'deadFront':'iceCastle';
 export function eventObjectActive(world,p,m){
  if(isTeamStone(m))return teamStoneActive(world,p,m);
  const i=world.instances?.get(p.instanceId);
- return isEventObject(m)&&i?.kind==='iceCastle'&&i.scene===mapFor(world,p)&&i.scene.monsters.get(m.id)===m&&m.instanceId===i.id&&m.map===p.map&&!m.removed&&!m.dead&&!i.closed&&!i.closeRequested&&!i.admitting&&!i.run?.ended&&i.run?.won==null&&i.run?.phase==='fortress';
+ return isEventObject(m)&&i?.kind===objectKind(m)&&i.scene===mapFor(world,p)&&i.scene.monsters.get(m.id)===m&&m.instanceId===i.id&&m.map===p.map&&!m.removed&&!m.dead&&!i.closed&&!i.closeRequested&&!i.admitting&&!i.run?.ended&&i.run?.won==null&&i.run?.phase==='fortress';
 }
 export function eventObjectDamage(world,p,m,amount,kind='melee'){
  if(!isEventObject(m))return amount;
@@ -32,7 +35,7 @@ export function rewardEventObject(world,p,m){
  if(!isEventObject(m))return false;
  if(isTeamStone(m))return rewardTeamStone(world,p,m);
  const i=world.instances?.get(m.instanceId);
- if(m._eventObjectCounted||!m.dead||!i||i.kind!=='iceCastle'||i.scene.monsters.get(m.id)!==m||p.instanceId!==i.id||p.map!==i.map)return true;
+ if(m._eventObjectCounted||!m.dead||!i||i.kind!==objectKind(m)||i.scene.monsters.get(m.id)!==m||p.instanceId!==i.id||p.map!==i.map)return true;
  m._eventObjectCounted=true;m.hp=0;m.targetId=null;m.respawnAt=Infinity;
  i.run.bricks.remove(m.uid,'die');
  // A counted world death earns the native objective score immediately. Account

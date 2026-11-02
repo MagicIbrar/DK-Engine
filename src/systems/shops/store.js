@@ -8,7 +8,8 @@
 //    (msgbox/ui_buyexchangeitem.txt, 170/9). Input choice is the user-requested engine behavior.
 //  * selling: drop a bag item on the window (confirm msgbox/ui_sellitem.txt 340/11); refusals 340/7, 8, 20, 31
 //  * repurchase (btn_rebuy / btn_shop): the session's sold items on the store_npc_rebuy page, bought back at the sell
-//    price; oldest dropped when the 10 x 8 grid is full; cleared on logout / character select (340/29 notice)
+//    price; Max 10 (guide stringtable_helper Shop Trade Repurchase; oldest dropped from top). UI grid is 10x8 layout.
+//    Cleared on logout / character select (guide Caution; client notice cate 340).
 import {
   T, loadShops, itemInfo, itemInfoFull, itemIcon, itemTooltip, bag, dil, addDil, MAX_DIL, payItems, maxStackOf,
   str, say, notice, fmtNum, COLORS, uiSound, loadItemDB, itemsSys, cleanMarkup,
@@ -50,10 +51,13 @@ export function createStore(game, api) {
   };
   // ENGINE-CHOSEN bounded preparations/retries; closing/changing tabs cancels queued obsolete work.
   const decodedImages = new WeakMap();
-  const newAssets = () => new ShopPageAssets(async (key, {background = false} = {}) => {
+  // mode: 'foreground' | 'background' (prefetch bake) | 'disk' (ICON-PRELOAD: memory / persistent icon cache only, no bake)
+  const prepareKey = async (key, mode = 'foreground') => {
     const [index, w, h] = key.split(':').map(Number);
     const icons = game.items?.icons;
-    const rendered = await (background && icons?.background ? icons.background(() => itemIcon(game, index, w, h)) : itemIcon(game, index, w, h));
+    const request = () => itemIcon(game, index, w, h);
+    const rendered = await (mode === 'disk' && icons?.diskOnly ? icons.diskOnly(request) : mode === 'background' && icons?.background ? icons.background(request) : request());
+    if (!rendered?.url) return null;
     const icon = await retainShopBitmap(rendered);
     if (!icon?.url) return null;
     if (typeof Image === 'function') {
@@ -62,7 +66,9 @@ export function createStore(game, api) {
       decodedImages.set(icon, image);
     }
     return icon;
-  }, { concurrency: 2, limit: COLS * ROWS, paused: () => game._loadingMap || !game._worldReady });
+  };
+  const newAssets = () => new ShopPageAssets((key, {background = false} = {}) => prepareKey(key, background ? 'background' : 'foreground'),
+    { concurrency: 2, limit: COLS * ROWS, paused: () => game._loadingMap || !game._worldReady });
   let assets = newAssets(), catalogGeneration = game.items?.icons?.cache?.generation;
   let backgroundPool = null, backgroundTimer = null, disposed = false;
   const warmJobs = new Map();
@@ -93,6 +99,29 @@ export function createStore(game, api) {
     };
     backgroundTimer = setTimeout(next, 250);
   }
+  // ICON-PRELOAD (2026-10-30): every NPC store catalogue icon already baked in an earlier session (persistent icon
+  // cache, icons/icon-disk-cache.js) is loaded behind the loading screen, so any store / tab / page opens complete.
+  // Icons not on disk yet keep the one-at-a-time idle bake after the world is shown (prepareOtherPages), which also
+  // persists them for the next start. Kill switch: globalThis.__dekaronNoShopDiskWarm = true
+  let diskWarmPool = null;
+  async function warmCatalogFromDisk(pool) {
+    const icons = game.items?.icons;
+    if (diskWarmPool === pool || !icons?.diskOnly || globalThis.__dekaronNoShopDiskWarm === true) return null;
+    diskWarmPool = pool;
+    const t0 = performance.now();
+    const keys = storeCatalogKeys(T.shops, index => itemInfo(game, index));
+    pool.limit = Math.max(pool.limit, keys.length + COLS * ROWS);
+    const todo = keys.filter(key => !pool.now(key));
+    let cursor = 0, loaded = 0;
+    const worker = async () => {
+      while (cursor < todo.length && pool === assets && !disposed) {
+        const key = todo[cursor++];
+        try { const icon = await prepareKey(key, 'disk'); if (icon && pool === assets && !pool.now(key)) { pool.cache.set(key, icon); loaded++; } } catch { /* stays for the idle bake */ }
+      }
+    };
+    await Promise.all(Array.from({length: 8}, worker));
+    return game._shopDiskWarm = {keys: keys.length, fromDisk: loaded, missing: todo.length - loaded, ms: Math.round(performance.now() - t0)};
+  }
   async function prewarm(map = entryMap()) {
     await loadItemDB(game);
     const plan = storeEntryPlan({map, npcs: game.data?.npcs, shops: T.shops,
@@ -110,7 +139,7 @@ export function createStore(game, api) {
       const icon = await pool.get(iconKey, {priority: 0});
       if (!icon?.url) progress.failed.push(iconKey);
       progress.done++; game._shopIconProgress?.(progress.done, progress.total);
-    })).then(() => {
+    })).then(() => warmCatalogFromDisk(pool).catch(() => null)).then(() => {
       // A genuinely missing optional native thumbnail keeps the existing
       // visible retry/fallback path; it cannot permanently strand map entry.
       if (progress.failed.length) console.warn('[shops] missing entry images', progress.failed);
@@ -442,7 +471,8 @@ export function createStore(game, api) {
     const inf = itemInfo(game, r.itemIndex);
     r.w = Math.min(REBUY_COLS, inf.w || 1); r.h = Math.min(REBUY_ROWS, inf.h || 1);
     st.rebuy.push(r);
-    // re-pack in sale order; drop the oldest while the newest does not fit (340/29)
+    // Guide Max 10 (stringtable_helper Shop Trade Repurchase); then pack into 10x8 UI grid.
+    while (st.rebuy.length > 10) st.rebuy.shift();
     while (!packRebuy() && st.rebuy.length > 1) st.rebuy.shift();
   }
   function packRebuy() {
@@ -487,6 +517,9 @@ export function createStore(game, api) {
     state: st,
     priceOf, sellQuote, sellEntry, buySlot,
     prewarm,
+    /** Diagnostics/tests (ICON-PRELOAD): the retained catalogue thumbnail pool and its catalogue keys. */
+    iconPool: () => syncAssets(),
+    catalogKeys: () => storeCatalogKeys(T.shops, index => itemInfo(game, index)),
     /** Open a store: shop index, NPC actor (null for the remote store). */
     open(shop, npc = null, remote = false) { return game.uiwin.open('shop', { shop, npc, remote }); },
     get isOpen() { return !!st.win?.isOpen; },

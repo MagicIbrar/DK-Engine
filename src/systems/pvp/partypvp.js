@@ -1,4 +1,4 @@
-import { declineBlockedInvitation } from '../hud-options/invitation-policy.js';
+﻿import { declineBlockedInvitation } from '../hud-options/invitation-policy.js';
 // PARTY-PVP client windows (original scripts; strings stringtable_pvp.txt cate 280 / 1008, pcpop 240:8). The host owns
 // the match (server/world/party-pvp.mjs); these windows only show network.partyPvp state and send its intents.
 //   pcpop                240:8 "Party PvP" on another party's leader (only for a party leader)
@@ -10,6 +10,7 @@ import { declineBlockedInvitation } from '../hud-options/invitation-policy.js';
 //   partypvp_result      game2/partypvp/ui_partypvp_resultwnd.txt BLUE/RED members + scores, Total Points, Survived, Prize Money
 import { str, needStrings } from '../hud-options/util.js';
 import { installPcPop } from './duel.js';
+import { nonPkChannel, siegeOrPartyWarMap } from './pk-channel.js';
 import {installPartyBuffWindow} from './party-buff-window.js';
 
 const S = (c, code) => str(c, code) || '';
@@ -40,14 +41,21 @@ function fitText(c) {
 export function installPartyPvpWindows(game, network) {
   const P = () => network.partyPvp, st = () => P()?.state() || {};
   const now = () => P()?.serverNow() ?? Date.now();
-  void needStrings([['NORMAL', 280, 17], ['NORMAL', 1008, 20], ['NORMAL', 240, 8]]).catch(() => {});
+  void needStrings([['NORMAL', 280, 17], ['NORMAL', 1008, 20], ['NORMAL', 240, 8], ['NORMAL', 240, 31], ['NORMAL', 280, 65]]).catch(() => {});
   const ui = game.uiwin;
   installPartyBuffWindow(game,network);
   const pop = installPcPop(game);
   const party = () => network.party || game.party?.serverState || null;
   const myId = () => network.self?.id;
-  pop.add({ code: 8, visible: t => t?.kind === 'player' && t !== game.player && !!network.active && party()?.active && party()?.leaderId === myId() && !(party()?.members || []).some(mm => mm.id === t.networkId),
-    run: t => { if (!st().id) void P()?.request(t); } });
+  // 240:8 Party PvP: Global PcPopWnd builds the row for every player target; on click it refuses on a non-PK channel
+  // (240:31) and on a siege or party-war map (280:65), then sends the request (the host owns leader/party rules).
+  const refuse = text => { const s = plain(text); if (s) game.chat?.system?.(s, 'err'); return false; };
+  pop.add({ code: 8, visible: t => t?.kind === 'player' && t !== game.player && !!network.active,
+    run: async t => {
+      if (await nonPkChannel(network) === true) return refuse(S(240, 31));
+      if (siegeOrPartyWarMap(game, network)) return refuse(S(280, 65));
+      if (!st().id) void P()?.request(t);
+    } });
 
   ui.registerWindow('partypvp_ask', {
     script: 'game2/msgbox/ui_partypvpask.txt', remember: false, escClose: false, band: 'modal',
@@ -137,7 +145,7 @@ export function installPartyPvpWindows(game, network) {
       let text = '';
       if (s.phase === 'wait') text = `${plain(S(1008, 8))} ${Math.max(0, Math.ceil(((s.startAt || 0) - t) / 1000))} ${plain(S(1008, 10))}`;
       else if (s.phase === 'fight') text = mmss(S(280, 44), (s.endsAt || 0) - t);
-      else if (s.phase === 'over') text = mmss(S(280, 51), (s.finishAt || 0) - t);
+      else if (s.phase === 'over') text = plain(S(280, 51));   /* finish duration removed (no source, lane 71): label only */
       else { win.close(); return; }
       if (text !== win.data.text) { win.data.text = text; win.control('lbl_text').setText(text); fitText(win.control('lbl_text')); }
     },

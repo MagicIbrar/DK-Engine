@@ -52,7 +52,7 @@ function Test-ClientAllowLan {
  try{$pp=Read-ClientHostPreferences;return [bool]($pp -and $pp.hosting -and $pp.hosting.allowLan)}catch{return $false}
 }
 function Start-FriendsServerProcess([string]$Node,[string]$Engine,[string]$Stdout,[string]$Stderr,$Config) {
- if(-not $Config.configured -or $Config.port -ne 7778){throw 'Configure a new GM account before hosting.'}
+ if(-not $Config.configured -or $Config.port -ne 7778){throw 'Configure an Admin / GM / Dev (max staff) account before hosting.'}
  $rates=$Config.rates;if(-not $rates){$rates=[pscustomobject]@{exp=1;dil=1;drop=1}}
  $values=@{DEKARON_HOST=$(if(Test-ClientAllowLan){'0.0.0.0'}else{'127.0.0.1'});PORT='7778';DEKARON_LOCAL_DEMO='0';DEKARON_ACCOUNT_STORE=[string]$Config.accountStore;DEKARON_PERMISSION_STORE=[string]$Config.permissionsFile;DEKARON_SERVER_MODE='friends';DEKARON_FRIENDS_GATE='1';DEKARON_EXP_RATE=([double]$rates.exp).ToString([Globalization.CultureInfo]::InvariantCulture);DEKARON_DIL_RATE=([double]$rates.dil).ToString([Globalization.CultureInfo]::InvariantCulture);DEKARON_DROP_RATE=([double]$rates.drop).ToString([Globalization.CultureInfo]::InvariantCulture)};if($script:relayConfig){$values.DEKARON_HOST='127.0.0.1';$values.DEKARON_RELAY_SECRET=$script:relayConfig.secret;$values.DEKARON_RELAY_ORIGIN=$script:relayConfig.publicOrigin};$previous=@{}
  foreach($key in $values.Keys){$previous[$key]=[Environment]::GetEnvironmentVariable($key,'Process')}
@@ -113,7 +113,7 @@ function Initialize-FriendsControls {
  $script:ratesToggle.Add_CheckedChanged({$script:ratesPanel.Visible=$script:ratesToggle.Checked -and $script:friendsMode -eq 'host';if($script:ratesPanel.Visible){$script:ratesPanel.BringToFront()}})
  Initialize-RelayControls
  $script:hostFields=@();$script:hostInputs=@()
- $labels=@('Your new GM account ID','GM password (12+ characters)','Repeat GM password','Invite password (different, 12+)')
+ $labels=@('Admin / GM / Dev account ID','Staff password (12+ characters)','Repeat staff password','Invite password (different, 12+)')
  for($i=0;$i -lt 4;$i++){$label=New-Object Windows.Forms.Label;$label.Text=$labels[$i];$label.Location=New-Object Drawing.Point(16,(141+$i*44));$label.Size=New-Object Drawing.Size(310,19);$label.ForeColor=$muted;$field=New-Object GalaxyTextBox;$field.Location=New-Object Drawing.Point(16,(160+$i*44));$field.Size=New-Object Drawing.Size(310,26);$field.BackColor=[Drawing.Color]::FromArgb(30,35,44);$field.ForeColor=$gold;$field.UseSystemPasswordChar=$i -gt 0;$script:friendsPanel.Controls.Add($label);$script:friendsPanel.Controls.Add($field);$script:hostFields+=$label;$script:hostFields+=$field;$script:hostInputs+=$field}
  $script:joinAddress=New-Object GalaxyTextBox;$script:joinAddress.Location=New-Object Drawing.Point(16,115);$script:joinAddress.Size=New-Object Drawing.Size(310,28);$script:joinAddress.BackColor=[Drawing.Color]::FromArgb(30,35,44);$script:joinAddress.ForeColor=$gold;$script:friendsPanel.Controls.Add($script:joinAddress)
  $script:internetHelp=New-Object Windows.Forms.CheckBox;$script:internetHelp.Text='Show Internet / HTTPS setup';$script:internetHelp.Location=New-Object Drawing.Point(16,163);$script:internetHelp.Size=New-Object Drawing.Size(310,28);$script:internetHelp.ForeColor=$muted;$script:friendsPanel.Controls.Add($script:internetHelp)

@@ -5,6 +5,18 @@ import { Servant } from '../skills/summons.js';
 import { SkillData } from '../skills/data.js';
 import { remoteAppearance } from './appearance.js';
 import { RemoteMotion, remoteLocomotionState, placeRemote } from './movement-sync.js';
+import { gaitFromMeasuredSpeed } from '../../game/monster-rules.js';
+import { GlobalMonsterMove, isGlobalMoveRow } from './monster-move.js';
+
+/** Prefer host row.walk; else measure sample speed vs monster.dat and map through gaitFromMeasuredSpeed. */
+function inferRemoteMonsterWalk(actor, row, last, poseTime, moved) {
+  if (row.walk === 'peace' || row.walk === 'battle') return row.walk;
+  if (!moved || !last || actor.kind !== 'monster') return undefined;
+  const dt = (poseTime - (Number.isFinite(last.pt) ? last.pt : last.t)) / 1000;
+  if (!(dt > 0)) return undefined;
+  const spd = Math.hypot(row.x - last.x, row.z - last.z) / dt;
+  return gaitFromMeasuredSpeed(actor.def, spd) === 'walk' ? 'peace' : undefined;
+}
 
 export function setServerPose(actor, row, now = performance.now(), preservePosition=false, poseTime=null) {
   if (!Number.isFinite(row.x) || !Number.isFinite(row.z)) return;
@@ -17,14 +29,31 @@ export function setServerPose(actor, row, now = performance.now(), preservePosit
   // same buffer, stamped with the host tick that produced the position (snapshot.tickAt, poseTime from _reconcile).
   const clock = actor.game?.network?._motionClock;
   const remotePlayer = actor.remote && actor.kind === 'player' && actor !== actor.game?.player && Number.isFinite(row.pt) && clock;
-  const remoteOther = actor.remote && actor.kind !== 'player' && Number.isFinite(poseTime) && clock && !globalThis.__dekaronLegacyMonsterTween;   // kill switch / A-B measurement (test client)
+  // Lane 60: a new host publishes row.mv (Global MoveDest / Stand, server/world/monster-gait.mjs): the monster walks to the
+  // destination at the commanded speed with the Global catch-up rule (monster-move.js) instead of the delayed buffer.
+  const globalMove = actor.remote && actor.kind === 'monster' && isGlobalMoveRow(row) && !globalThis.__dekaronLegacyMonsterTween && !globalThis.__dekaronLegacyMonsterMotion;
+  if (globalMove) {
+    if (actor._motion) actor._motion = null;
+    const gm = (actor._gmove ||= new GlobalMonsterMove());
+    const did = gm.push(actor, row, { hostNow: clock ? clock.now(now) : null, poseTime });
+    // a host move ends a monster's swing hold, as in the buffered path
+    if (did === 'move' && !actor.dead && actor._networkAttackHold && actor.state === 'attack') { actor._networkAttackHold = false; actor._networkAnimHold = 0; }
+  } else if (actor._gmove) actor._gmove = null;
+  const remoteOther = !globalMove && actor.remote && actor.kind !== 'player' && Number.isFinite(poseTime) && clock && !globalThis.__dekaronLegacyMonsterTween;   // kill switch / A-B measurement (test client)
   const buffered = remotePlayer || remoteOther;
   if (buffered) {
     const motion = (actor._motion ||= new RemoteMotion());
     let pose = row;
     if (remoteOther) {
       const last = motion.samples.at(-1), moved = !!last && Math.hypot(row.x - last.x, row.z - last.z) > 1e-4;
-      pose = { pt: poseTime, x: row.x, z: row.z, moving: moved };
+      // A newer host tick that moves a monster ends its attack hold, as in the legacy tween.
+      // Never clear player attack/root-motion, hit reactions, duplicate ticks or reordered poses.
+      if (moved && poseTime > motion.lastPt && actor.kind === 'monster' && !actor.dead &&
+          actor._networkAttackHold && actor.state === 'attack') {
+        actor._networkAttackHold = false; actor._networkAnimHold = 0;
+      }
+      const walk = inferRemoteMonsterWalk(actor, row, last, poseTime, moved);
+      pose = { pt: poseTime, x: row.x, z: row.z, moving: moved, ...(walk ? { walk } : {}) };
       // standing still on consecutive ticks adds nothing (the buffer keeps showing its last pose)
       if (last && !last.moving && !moved && poseTime > motion.lastPt) pose = null;
     }
@@ -32,11 +61,11 @@ export function setServerPose(actor, row, now = performance.now(), preservePosit
     if (!actor._serverPose) actor.setPosition(row.x, row.z);
   }
   else if (actor._motion && actor.remote) actor._motion = null;
-  if (!buffered && !preservePosition&&(!actor._serverPose || Math.hypot(row.x - actor.x, row.z - actor.z) > 10)) actor.setPosition(row.x, row.z);
+  if (!buffered && !globalMove && !preservePosition&&(!actor._serverPose || Math.hypot(row.x - actor.x, row.z - actor.z) > 10)) actor.setPosition(row.x, row.z);
   actor._serverPose = { x: actor.x, z: actor.z, tx: row.x, tz: row.z, at: now, duration: 200 };
   actor._serverYaw = Number.isFinite(row.yaw) ? row.yaw : null;
   if (actor._serverYaw != null) actor._yawGoal = actor._serverYaw;
-  actor._serverWalk = row.walk === 'peace' || row.walk === 'battle';   // R walk: the host moves it at the walk stride
+  actor._serverWalk = row.walk === 'peace' || row.walk === 'battle' || !!(buffered && actor.kind === 'monster' && actor._motion?.samples?.at(-1)?.walk);   // R walk: host walk stride, or inferred from WalkSpeed
   // sitting (server/world/emotes.mjs): a player seen sitting keeps the sit loop; standing up releases the hold
   if (actor.kind === 'player' && actor !== actor.game?.player && !!row.sitting !== !!actor._remoteSit) {
     if (row.sitting) actor.game?.life?.emotes?.playRemote?.(actor, 'sit-keep');
@@ -63,7 +92,12 @@ export function advanceServerPose(actor, now = performance.now()) {
   const u = Math.max(0, Math.min(1, (now - p.at) / p.duration));
   const x = p.x + (p.tx - p.x) * u, z = p.z + (p.tz - p.z) * u;
   const moving = Math.hypot(x - actor.x, z - actor.z) > 0.001;
-  if (!actor.dead && moving && !Number.isFinite(actor._serverYaw)) actor.faceTowards(p.tx, p.tz);
+  // Global WASD parity: while a remote is shown moving, snap facing to host yaw / move delta (no TURN_RATE moonwalk).
+  if (!actor.dead && moving) {
+    if (Number.isFinite(actor._serverYaw)) actor.yaw = actor._serverYaw;
+    else if (typeof actor.faceDirection === 'function') actor.faceDirection(p.tx - actor.x, p.tz - actor.z, true);
+    else actor.faceTowards(p.tx, p.tz);
+  }
   placeRemote(actor, x, z);
   const ownCombo = actor === actor.game?.player && actor.game?.controller?.combo;
   const ownController = actor === actor.game?.player && actor.game?.controller;
@@ -135,7 +169,7 @@ export class RemoteMonster extends Monster {
     super(game, def, { monsterIndex: row.monsterIndex, x: row.x, z: row.z });
     this.networkId = row.id; this.remote = true; this.brain = null;
   }
-  update(dt) { advanceRemoteActor(this, 'idle'); super.update(dt); }
+  update(dt) { advanceRemoteActor(this, 'idle', dt); super.update(dt); }
 }
 // Servant rows (shape mesh / texture pack / skeleton / clips: share/creature/servant.csv, docs/formats/skills.md section 9) are compiled only
 // into the SUMMONER classes' skill packs (gamedata/skills/class_3.json Vicious Summoner, class_10.json Conserra Summoner); the SkillData
@@ -211,7 +245,8 @@ export class RemoteServant extends Servant {
   }
 }
 /** A remote monster / summon: its time-stamped buffer when it has one (setServerPose), else the legacy tween. */
-function advanceRemoteActor(actor, rest) {
+function advanceRemoteActor(actor, rest, dt = 0) {
   const now = performance.now(), clock = actor.game?.network?._motionClock;
+  if (actor._gmove) { actor._gmove.update(actor, dt, now, rest); return; }   // Lane 60: Global MoveDest walk
   if (!(actor._motion && clock && actor._motion.apply(actor, clock.now(now), now, rest))) advanceServerPose(actor);
 }

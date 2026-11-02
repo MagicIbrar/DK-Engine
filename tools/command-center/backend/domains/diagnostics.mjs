@@ -50,7 +50,12 @@ async function sources() {
   for (const s of list) { let size = null, mtime = null; if (s.file) { fullFiles.set(s.id, s.file); const st = await fsp.stat(s.file).catch(() => null); if (st) { size = st.size; mtime = st.mtimeMs; } } else fullFiles.delete(s.id); out.push({...s, exists: size !== null, size, mtime, file: s.file ? shown(s.file) : null}); }
   return out;
 }
-const LEVEL = line => /\b(error|exception|fatal|failed|unhandled|ERR!|TypeError|ReferenceError|RangeError|SyntaxError)\b/i.test(line) ? 'error' : /\b(warn(ing)?|deprecated|retry|timed out|timeout)\b/i.test(line) ? 'warn' : 'info';
+const LEVEL = line => {
+  // The native loading diagnostic emits a boolean field, not an error message.
+  // Ignore only its false value; preserve every other error on the same line.
+  const classified = /\bload-diag sample\b/i.test(line) ? line.replace(/\bfailed=false\b/gi, '') : line;
+  return /\b(error|exception|fatal|failed|unhandled|ERR!|TypeError|ReferenceError|RangeError|SyntaxError)\b/i.test(classified) ? 'error' : /\b(warn(ing)?|deprecated|retry|timed out|timeout)\b/i.test(classified) ? 'warn' : 'info';
+};
 const errorCounts = {}; // id -> {errors, warnings, scannedTo}
 async function tail({source, cursor = -1, maxBytes = 65536, level = 'all', search = ''}) {
   const s = (await sources()).find(x => x.id === source); if (!s) throw new UserError('Unknown log.', 404);

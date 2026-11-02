@@ -21,6 +21,8 @@ async function ordinaryPath(file) {
 // Per-server on/off switches of the dashboard (Settings). Each is stored ONLY while it is off (absent = the default, ON), so the plain
 // two-key file of older engines stays valid: starterPack = a NEW character gets the starter kit (boxes.starter.onCreate),
 // fieldPk = Ctrl forced attack (PK) on open PvP fields (server/world/field-pk.mjs).
+// starterPack (F1) is an ENGINE-CHOSEN ADDITION kept ON by owner choice: the Global client has no starter-kit table
+// (tools/build-boxes.mjs STARTER, docs/formats/boxes.md 4). Scan fix A labels it; it is not a Global rule.
 const DEFAULTS={starterPack:true,fieldPk:true,npcPlayers:false}; // NPC players are an opt-in ENGINE-CHOSEN extension.
 const SWITCHES = Object.keys(DEFAULTS);
 const valueFor=(value,k)=>typeof value?.[k]==='boolean'?value[k]:DEFAULTS[k];

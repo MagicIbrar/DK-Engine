@@ -80,43 +80,45 @@ export function install(game) {
     win.control('lbl_magic').setText(`${fmt(S.magicMin)} ~ ${fmt(S.magicMax)}`);
     win.control('lbl_defense').setText(fmt(S.defense));
     win.control('lbl_magicresist').setText(fmt(S.magicResist ?? S.magicDefense ?? 0));
-    win.control('lbl_pvp_attack').setText(fmt(S.pvpAttack ?? 0));
+    // lane 62: a field with no 4.2.0 source value stays empty (no invented 0 / 0.0%); see PLAYER-CARD-PARITY.md.
+    const val = (id, v, f = fmt) => win.control(id).setText(v == null || !Number.isFinite(Number(v)) ? '' : f(v));
+    val('lbl_pvp_attack', S.pvpAttack);
     // page 0: resistances / ratings / speeds
     for (const [id, key] of [['fire', 'resistFire'], ['ice', 'resistIce'], ['lightning', 'resistLightning'], ['poison', 'resistPoison'], ['curse', 'resistCurse'], ['dark', 'resistDark']]) {
-      win.control(`lbl_${id}`).setText(fmt(S[key] ?? S.resist?.[id] ?? 0));
+      val(`lbl_${id}`, S[key] ?? S.resist?.[id]);
     }
     win.control('lbl_hitrating').setText(fmt(S.hitRate));
     win.control('lbl_blockrating').setText(fmt(S.dodge));
     win.control('lbl_guardrating').setText(pct(S.guardRate));
-    win.control('lbl_acceleration').setText(fmt(S.acceleration ?? 0));
+    val('lbl_acceleration', S.acceleration);
     win.control('lbl_movespeed').setText(pct(n0(S.moveSpeedMul || 1) * 100));
     win.control('lbl_attckspeed').setText(pct(n0(S.attackSpeed || 1) * 100));
     // page 1: critical / damage rates
-    win.control('lbl_skillful').setText(fmt(S.skillful ?? 0));
-    win.control('lbl_vitality').setText(fmt(S.vitality ?? 0));
-    win.control('lbl_destroy').setText(fmt(S.destroy ?? 0));
-    win.control('lbl_criticalrating').setText(fmt(S.critRating ?? 0));
+    val('lbl_skillful', S.skillful);
+    val('lbl_vitality', S.vitality);
+    val('lbl_destroy', S.destroy);
+    val('lbl_criticalrating', S.critRating);
     win.control('lbl_criticalrate').setText(pct(S.critRate));
-    win.control('lbl_critical_damage_rate').setText(pct(n0(S.critMultiplier || 1.5) * 100));
-    win.control('lbl_damage_rate').setText(pct(S.damageRate ?? 100));
-    win.control('lbl_pvp_tole_damage').setText(pct(S.pvpToleDamage ?? 0));
-    win.control('lbl_pve_tole_damage').setText(pct(S.pveToleDamage ?? 0));
-    win.control('lbl_rating_anti_status').setText(fmt(S.antiStatus ?? 0));
-    win.control('lbl_distance_meleedamage').setText(pct(S.distanceMelee ?? 0));
-    win.control('lbl_distance_rangedamage').setText(pct(S.distanceRange ?? 0));
+    val('lbl_critical_damage_rate', S.critMultiplier == null ? null : n0(S.critMultiplier) * 100, pct);   // classinfo CRITICAL_DAMAGE_FACTORY / 1000
+    val('lbl_damage_rate', S.damageRate, pct);
+    val('lbl_pvp_tole_damage', S.pvpToleDamage, pct);
+    val('lbl_pve_tole_damage', S.pveToleDamage, pct);
+    val('lbl_rating_anti_status', S.antiStatus);
+    val('lbl_distance_meleedamage', S.distanceMelee, pct);
+    val('lbl_distance_rangedamage', S.distanceRange, pct);
     // page 2: recovery / penetration
     win.control('lbl_hp_recovery').setText((Math.round(n0(S.hpRegen) * 10) / 10).toString());
     win.control('lbl_mp_recovery').setText((Math.round(n0(S.mpRegen) * 10) / 10).toString());
-    win.control('lbl_shild_recovery').setText('0');
-    win.control('lbl_defeat_recovery').setText('0');
-    win.control('lbl_speed_cooltime').setText(pct(S.cooldownMul ? (1 - S.cooldownMul) * 100 : 0));
-    win.control('lbl_anti_rating_anti_status_add').setText('0');
-    win.control('label_pvp_damage_add').setText('0');
-    win.control('label_pvp_damagerate_add').setText(pct(0));
-    win.control('label_phhysical_penetrate').setText(fmt(S.physicalPenetrate ?? 0));
-    win.control('label_magical_penetrate').setText(fmt(S.magicalPenetrate ?? 0));
-    win.control('label_boss_damage_mul').setText(pct(S.bossDamageMul ?? 0));
-    win.control('label_bonus_exp_add').setText(pct(personalExpBonus(game,S))).setTooltip('Personal hunting EXP bonus from active buffs, equipment and premium services. Conditional party, level-cap and server multipliers are applied separately.');
+    val('lbl_shild_recovery', S.shieldRegen, v => (Math.round(n0(v) * 10) / 10).toString());   // progression shieldRegen (classinfo SHIELD_RPS / SHIELD_RPS_LF)
+    val('lbl_defeat_recovery', S.defeatRecovery);
+    val('lbl_speed_cooltime', S.cooldownMul == null ? null : (1 - n0(S.cooldownMul)) * 100, pct);
+    val('lbl_anti_rating_anti_status_add', S.antiStatusAdd);
+    val('label_pvp_damage_add', S.pvpDamageAdd);
+    val('label_pvp_damagerate_add', S.pvpDamageRateAdd, pct);
+    val('label_phhysical_penetrate', S.physicalPenetrate);
+    val('label_magical_penetrate', S.magicalPenetrate);
+    val('label_boss_damage_mul', S.bossDamageMul, pct);
+    win.control('label_bonus_exp_add').setText(pct(personalExpBonus(game,S)));   // no tooltip: Global's script has none
     // gauges
     const hp = n0(p.hp), mhp = Math.max(1, n0(p.maxHp || S.maxHp)), mp = n0(p.mp), mmp = Math.max(1, n0(p.maxMp || S.maxMp));
     win.control('pro_hp').setGauge(hp / mhp);
@@ -130,7 +132,7 @@ export function install(game) {
     const need = expToNext(n0(s.level) || 1, game.data);
     const ef = Number.isFinite(need) && need > 0 ? Math.min(1, n0(s.exp) / need) : 1;
     win.control('pro_exp').setGauge(ef);
-    win.control('lbl_exp').setText(`${fmt(s.exp)} / ${Number.isFinite(need) ? fmt(need) : '-'} (${(ef * 100).toFixed(2)}%)`);
+    win.control('lbl_exp').setText(Number.isFinite(need) ? `${fmt(s.exp)} / ${fmt(need)} (${(ef * 100).toFixed(2)}%)` : fmt(s.exp));   // no invented '-' at the level cap
     let gp = { cur: 0, need: 0, frac: 0 };
     try { if (life?.progress) gp = life.progress(); } catch { /* ignore */ }
     win.control('pro_gradeexp').setGauge(gp.frac || 0);
@@ -143,9 +145,9 @@ export function install(game) {
     win.control('lbl_pvp').setText(fmt(s.pvpWins ?? 0));
     win.control('lbl_colosseum').setText(fmt(s.colosseumPoints ?? s.colosseum?.points ?? 0));
     win.control('lbl_dkpoint').setText(fmt(s.dkPoints ?? 0));
-    win.control('lbl_dktier').setText(String(s.dkTier ?? '-'));
+    win.control('lbl_dktier').setText(s.dkTier == null ? '' : String(s.dkTier));
     win.control('lbl_dkpoint_dk').setText(fmt(s.dkPoints ?? 0));
-    win.control('lbl_dktier_dk').setText(String(s.dkTier ?? '-'));
+    win.control('lbl_dktier_dk').setText(s.dkTier == null ? '' : String(s.dkTier));
     // ---- Title
     if (st.tab === 3) paintTitles(win);
   }

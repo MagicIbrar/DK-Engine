@@ -1,4 +1,5 @@
 import {normalizeCharacterName, normalizeCharacterNameColor, characterNameKey} from './character-name.js';
+import { CHAR_TRADE_ENGINE_CHOSEN } from '../config/engine-chosen-char-trade.js';
 // Guest saves remain local. Signed-in accounts use a durable local cache plus versioned server snapshots.
 const KEY = 'dekaron-solo:characters:v1';
 let active = null, pending = null, retryTimer = null;
@@ -58,21 +59,24 @@ export async function configureAccountSaves(id) {
 }
 export async function importLocalCharacters() {
   if (!active) throw new Error('Log in before copying local characters.');
-  const rows = readAll(), ids = new Set(rows.map(c => c.id)); let imported = 0, skipped = 0;
+  const rows = readAll(), ids = new Set(rows.map(c => c.id)), before = rows.length; let imported = 0, skipped = 0;
   for (const ch of getLocalCharacters()) {
     if (ids.has(ch.id)) { skipped++; continue; }
     rows.push(ch); ids.add(ch.id); imported++;
   }
-  if (rows.length > 100) throw new Error('An account can hold at most 100 characters.');
+  // MIGRATION-4.1.x: an account carried over from 4.1.x with more than 18 characters keeps them; only growth past the cap is refused.
+  if (imported && rows.length > Math.max(CHAR_TRADE_ENGINE_CHOSEN.receiverMaxCharacters, before)) throw new Error(`An account can hold at most ${CHAR_TRADE_ENGINE_CHOSEN.receiverMaxCharacters} characters.`);
   if (!writeAll(rows) || !await flushCharacterSaves()) throw new Error(status.message || 'Could not sync copied characters.');
   return { imported, skipped };
 }
 /** Server-created characters are the only records admitted to the shared world. */
-export async function createAccountCharacter({ name, classIndex, nameColor }) {
+export async function createAccountCharacter({ name, classIndex, nameColor, staffPrivileges = false, staffRole = undefined } = {}) {
   name=normalizeCharacterName(name);nameColor=normalizeCharacterNameColor(nameColor);
   if (!active) throw new Error('Log in before creating an online character.');
   if (!await flushCharacterSaves()) throw new Error(status.message);
-  const result = await request('/api/characters', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ account: active.id, name, nameColor, classIndex }) });
+  const body = { account: active.id, name, nameColor, classIndex };
+  if (staffPrivileges === true) { body.staffPrivileges = true; if (staffRole != null) body.staffRole = staffRole; }
+  const result = await request('/api/characters', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   if (result.account !== active.id) throw new Error('Account changed. Log in again.');
   active.revision = result.revision; active.characters = result.characters; active.dirty = false;
   cache(active); notice('synced', 'Online character created by the server.');
@@ -190,6 +194,40 @@ export async function deleteAccountCharacter(id, typedName) {
   active.revision = result.revision; active.characters = result.characters; active.dirty = false;
   if (!cache(active)) throw new Error(status.message || 'The character list could not be saved in this browser.');
   notice('synced', 'Online character deleted by the server.');
+}
+
+/** Clear host-supplied pendingDeleteAt (Global client action 5 / btn_delete_cancel).
+ *  Does not invent a delay; only strips pending fields when present.
+ *  Browser chars: rewrite local list. Server chars: ask host DELETE with cancelPending:true
+ *  (host clears fields only — no character removal). */
+export async function cancelAccountCharacterPending(id) {
+  const strip = (ch) => {
+    if (!ch || typeof ch !== 'object') return ch;
+    const next = { ...ch };
+    delete next.pendingDeleteAt; delete next.deleteAt; delete next.pending_delete_at;
+    return next;
+  };
+  const ch = getCharacter(id);
+  if (!ch) throw new Error('That character no longer exists.');
+  const at = ch.pendingDeleteAt ?? ch.deleteAt ?? ch.pending_delete_at;
+  if (at == null || at === '' || at === 0 || at === false) return ch;
+  if (ch.authority !== 'server') {
+    const list = readAll().map(c => c.id === id ? strip(c) : c);
+    if (!writeAll(list)) throw new Error('Pending deletion could not be cancelled locally.');
+    return getCharacter(id);
+  }
+  if (!active) throw new Error('Log in before cancelling an online pending deletion.');
+  if (!await flushCharacterSaves()) throw new Error(status.message || 'Characters could not be synced before cancel.');
+  const result = await request('/api/characters', {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ account: active.id, id, cancelPending: true }),
+  });
+  if (result.account !== active.id || !Array.isArray(result.characters)) throw new Error('Account changed. Log in again.');
+  active.revision = result.revision; active.characters = result.characters; active.dirty = false;
+  if (!cache(active)) throw new Error(status.message || 'The character list could not be saved in this browser.');
+  notice('synced', 'Pending character deletion cancelled.');
+  return getCharacter(id);
 }
 
 if (typeof globalThis.addEventListener === 'function') {

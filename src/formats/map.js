@@ -49,24 +49,24 @@ export function tileUV(s, t, rot) {
 
 /**
  * Corner mask -> [canonical pattern k (0..3), rot] with rot = counter-clockwise quarter turns for tileUV().
- * Mask bits are set where the corner has the HIGHER terrain type:
+ * Mask bits are set where the corner differs from the selected lower terrain type:
  * 1 = (col,row), 2 = (col+1,row), 4 = (col,row+1), 8 = (col+1,row+1)
  * (seen from above, north = +row: 1 = SW, 2 = SE, 4 = NW, 8 = NE).
- * Canonical atlas patterns (corners of the upright image that show the higher type):
+ * Canonical atlas patterns (corners that show a type other than the lower type):
  * k0 = {bottom-right}, k1 = {top-right, bottom-right} (right half), k2 = {top-left, bottom-right} (diagonal),
  * k3 = {top-left, top-right, bottom-right} (all but bottom-left). At rot 0 image bottom-right = SE = bit 2.
- * (Derived by brute force from tileUV in tools/verify-terrain.mjs.)
+ * (Pattern and rotation order follows the native terrain classifier.)
  */
 export const MASK_TO_TILE = [
-  null, [0, 3], [0, 0], [1, 3], [0, 2], [1, 2], [2, 0], [3, 2],
-  [0, 1], [2, 1], [1, 0], [3, 3], [1, 1], [3, 1], [3, 0], null,
+  null, [0, 1], [0, 0], [1, 1], [0, 2], [1, 2], [2, 0], [3, 2],
+  [0, 3], [2, 1], [1, 0], [3, 1], [1, 3], [3, 3], [3, 0], null,
 ];
 
 // Cell flags in the tile lookup (A channel).
 export const CELL_HOLE = 1;       // covered by an s_empty decal: do not render the terrain. NOT a walkability flag:
                                   // .mac decides (hole cells marked walkable there are object-borne floors, e.g.
                                   // arcadia_sky platforms / bridges; the ground height then comes from the object)
-export const CELL_MULTITYPE = 2;  // 3-4 distinct corner types: approximated with the best 2-type tile
+export const CELL_MULTITYPE = 2;  // 3-4 distinct corner types: native selection collapses non-lower types
 export const CELL_DECAL = 4;      // covered by at least one (non-hole) decal
 
 const LITTLE_ENDIAN = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
@@ -285,14 +285,13 @@ export function terrainTileForCell(map, col, row) {
   if (tl === tr && tl === bl && tl === br) {
     lo = hi = tl; slot = tl * 4 + variant;
   } else {
-    hi = Math.max(tl, tr, bl, br);
-    // lower type = most frequent non-hi corner type (ties -> lowest type)
-    const cnt = [0, 0, 0, 0];
-    if (tl !== hi) cnt[tl]++; if (tr !== hi) cnt[tr]++; if (bl !== hi) cnt[bl]++; if (br !== hi) cnt[br]++;
-    lo = -1; let distinct = 1;
-    for (let t = 0; t < 4; t++) if (cnt[t]) { distinct++; if (lo < 0 || cnt[t] > cnt[lo]) lo = t; }
-    if (distinct > 2) flags |= CELL_MULTITYPE;
-    mask = (tl === hi ? 1 : 0) | (tr === hi ? 2 : 0) | (bl === hi ? 4 : 0) | (br === hi ? 8 : 0);
+    // Native client examines corners in TL, BL, BR, TR order and chooses the
+    // first value different from TL. Other types are rendered as the upper type.
+    const second = bl !== tl ? bl : br !== tl ? br : tr;
+    lo = Math.min(tl, second); hi = Math.max(tl, second);
+    if ((tl !== lo && tl !== hi) || (tr !== lo && tr !== hi) ||
+        (bl !== lo && bl !== hi) || (br !== lo && br !== hi)) flags |= CELL_MULTITYPE;
+    mask = (tl !== lo ? 1 : 0) | (tr !== lo ? 2 : 0) | (bl !== lo ? 4 : 0) | (br !== lo ? 8 : 0);
     const [k, r] = MASK_TO_TILE[mask];
     slot = 16 + PAIR_INDEX[lo][hi] * 16 + k * 4 + variant;
     rot = r;

@@ -22,16 +22,18 @@ import { Brick } from './bricks.js';
 import { Trigger } from './triggers.js';
 import { correctedMapInfo } from './native-row-corrections.js';
 import { nativeStageRespawn } from '../../game/native-stage-index.js';
+import { serverRefPositions, serverRefSpawnTiming, SERVER_REF } from './server-ref-plans.js';
 
 export const START_COUNTDOWN = 5;
 export const TRANSFER_SECONDS = 60;
 export const CLOSE_SECONDS = 10;
 const POLL = 0.25;
 const LOCK_RADIUS = 30;          // create:0 bricks this close to a script boss lock its room
-const SQUAD = 3;                 // copies of a non-boss script monster (the server count is not in the client)
+// Lane 65: SQUAD = 3 copies per script monster removed (invented). A Global scriptmonster row is one monster; where
+// the older server reference script of the floor spawns it, its Spawn(mon, x, y) cells are used (server-ref-plans.js).
 
-const HALL_BACK = 9;             // a hallway squad stands this many path cells before its gate
-const HALL_SQUAD = 6;            // monsters per hallway squad
+const HALL_BACK = 9;             // ENGINE placement (no Global X/Y): a hallway squad stands this many path cells before its gate
+// Lane 65: HALL_SQUAD = 6 monsters per hallway removed (invented): a hallway squad is one of each Global scriptmonster creature.
 const ADD_EVERY = 10;            // s between the adds a live spawner object (crystal) calls
 const ADD_RANGE = 35;            // the spawner object only calls adds while the player is this close
 const STUCK_EVERY = 6;           // s between progress-guard checks (_unstick)
@@ -197,23 +199,33 @@ export class Director {
       // run; mutating their paid flag would suppress later parties' clear EXP.
       this.groups = groups.map(group=>({...group,paid:false}));
     }
-    this._adoptForeignWaves();
+    // Lane 52: no foreign-wave adoption. A floor whose Global call file carries the same rows as a sibling's
+    // (Tower of Spell 1F 89 = 2F 90 except the MapIndex header) plays its own file exactly as Global ships it.
     // script monsters: bosses -> summon stage (trigger NPC), others -> a guard squad at their suggested point
     const sSpawns = inf.scriptSpawns || [];
     const scriptBossStage = src.find(s => s.script);
     const bosses = sSpawns.filter(s => s.boss);
     const minions = sSpawns.filter(s => !s.boss);
-    if (minions.length) {
+    const refOf = (m) => serverRefPositions(this.map, m.monster);
+    const refRows = minions.flatMap(m => (refOf(m) || []).map(p => [m.monster, p[0], p[1], 0, 1]));
+    if (refRows.length) {
+      // older server reference: the floor's own script spawns these monsters at these cells; minions it never
+      // spawns keep one ENGINE-placed copy at the builder's point
+      const rows = [...refRows];
+      for (const m of minions) if (!refOf(m) && m.suggest) rows.push([m.monster, m.suggest[0], m.suggest[1], 3, 1]);
+      this.stages.push({ n: 900, kind: 'squad', objective: 'kill-all', rows, opens: [], bosses: [], group: 0, spawned: false, done: false, recs: [], atStart: true, source: SERVER_REF });
+    } else if (minions.length) {
       const halls = this.stages.length ? null : this._hallwaySquads(minions, bosses);
       if (halls?.length) for (const st of halls) this.stages.push(st);
       else {
         const rows = [];
-        for (const m of minions) if (m.suggest) rows.push([m.monster, m.suggest[0], m.suggest[1], 3, SQUAD]);
+        for (const m of minions) if (m.suggest) rows.push([m.monster, m.suggest[0], m.suggest[1], 3, 1]);   // ENGINE placement, one per row
         if (rows.length) this.stages.push({ n: 900, kind: 'squad', objective: 'kill-all', rows, opens: [], bosses: [], group: 0, spawned: false, done: false, recs: [], atStart: true });
       }
     }
     if (bosses.length) {
-      const rows = bosses.filter(b => b.suggest).map(b => [b.monster, b.suggest[0], b.suggest[1], 0, 1]);
+      // older server reference cell (first Spawn call of the boss) where the floor's reference script has one, else ENGINE placement
+      const rows = bosses.map(b => { const r = refOf(b)?.[0]; return r ? [b.monster, r[0], r[1], 0, 1] : (b.suggest ? [b.monster, b.suggest[0], b.suggest[1], 0, 1] : null); }).filter(Boolean);
       const trig = scriptBossStage?.trigger || null;
       if (rows.length) this.stages.push({ n: 999, kind: 'boss', objective: 'kill-boss', rows, opens: [], bosses: bosses.map(b => b.monster),
         alert: scriptBossStage?.alert || [], trigger: trig, group: 0, spawned: false, done: false, recs: [], script: true });
@@ -242,43 +254,6 @@ export class Director {
         else this.clearDef = { kind: 'all-waves' };
       }
     }
-  }
-
-  /**
-   * A call file shipped as a copy of a sibling floor's (Tower of Spell 1F carries the 2F rows: Scabers, Arc Spider,
-   * Atypidae ... that only 2F's texts name): the floor keeps the rows' layout, and the monsters become the floor's
-   * own script monsters (1F: Klaatu / Abyss Watchman, named by its missions), round-robin by frequency.
-   */
-  _adoptForeignWaves() {
-    const inf = this.info;
-    const waves = inf.waves || [];
-    if (!waves.length || !this.stages.length) return;
-    const textOf = (i) => `${(i.missions || []).map(m => `${m.text} ${m.note || ''}`).join(' ')} ${Object.values(i.messages || {}).map(m => m.t || '').join(' ')}`.toLowerCase();
-    const named = (txt, idx) => { const n = monsterName(this.game, idx).toLowerCase().replace(/s$/, ''); return n.length >= 4 && txt.includes(n); };
-    const idxs = [...new Set(waves.flatMap(w => w.rows.map(r => Number(r[0]))))];
-    const own = textOf(inf);
-    if (idxs.some(i => named(own, i))) return;
-    const sig = JSON.stringify(waves.map(w => w.rows));
-    let sibling = null;
-    for (const [k, m] of Object.entries(D.dg?.maps || {})) {
-      if (Number(k) === this.map || (m.waves || []).length !== waves.length || JSON.stringify(m.waves.map(w => w.rows)) !== sig) continue;
-      if (idxs.some(i => named(textOf(m), i))) { sibling = Number(k); break; }
-    }
-    if (sibling == null) return;
-    const mdef = (i) => this.game.data?.monster?.(Number(i)) || null;
-    const minions = [...new Set((inf.scriptSpawns || []).filter(s => !s.boss && mdef(s.monster)?.role === 'creature').map(s => Number(s.monster)))];
-    if (!minions.length) return;
-    const freq = new Map();
-    for (const w of waves) for (const r of w.rows) freq.set(Number(r[0]), (freq.get(Number(r[0])) || 0) + Math.max(1, Number(r[4]) || 1));
-    const order = [...freq.entries()].filter(([i]) => mdef(i)?.role !== 'invisible').sort((a, b) => b[1] - a[1]).map(([i]) => i);
-    const map = new Map(order.map((i, k) => [i, minions[k % minions.length]]));
-    for (const st of this.stages) {
-      if (st.kind !== 'wave') continue;
-      st.rows = st.rows.map(r => (map.has(Number(r[0])) ? [map.get(Number(r[0])), ...r.slice(1)] : r));
-      st.bosses = [];
-      if (st.objective === 'kill-boss') st.objective = 'kill-all';
-    }
-    this.foreignWaves = { from: sibling, map: Object.fromEntries(map) };
   }
 
   /**
@@ -321,7 +296,7 @@ export class Director {
       const p = cellBefore(field, col, h.g.x, h.g.y, h.d, HALL_BACK);
       if (!p) continue;
       const rows = [];
-      for (let k = 0; k < HALL_SQUAD; k++) rows.push([creatures[(i + k) % creatures.length], Math.floor(p[0]), Math.floor(p[1]), 3, 1]);
+      for (const c of creatures) rows.push([c, Math.floor(p[0]), Math.floor(p[1]), 3, 1]);
       if (i === n - 1) for (const o of objects) rows.push([o, Math.floor(p[0]), Math.floor(p[1]), 2, 1]);
       out.push({ n: 900 + i, kind: 'squad', objective: 'kill-all', rows, opens: [h.g.uid], bosses: [], group: 0, spawned: false, done: false, recs: [], atStart: true, hall: i + 1 });
     }
@@ -444,6 +419,10 @@ export class Director {
       };
       const def = this.game.data?.monster?.(s.monsterIndex);
       if (!def || def.role === 'invisible') { rec.skip = true; rec.dg.killed = true; }
+      // lane65: older server reference spawn timer (server-ref-plans.js SERVER_REF_SPAWN_TIMING)
+      const tm = rec.skip ? null : serverRefSpawnTiming(this.map, s.monsterIndex);
+      if (tm?.after != null) { rec.failedUntil = Infinity; rec.dg.waitFor = tm; }
+      else if (tm?.sec) rec.failedUntil = (this.game.time || 0) + tm.sec;
       sp.records.push(rec);
       st.recs.push(rec);
       if (!rec.skip) this._countSpawn(s.monsterIndex);    // invisible helpers (fire traps) are never killed
@@ -637,11 +616,14 @@ export class Director {
     const s = t.stateDef;
     t.busy = true;
     try {
+      // Global: gauge + triggerinteractiveaction motion chain run together when the CSV has a row.
+      const interactP = this.game.life?.interact?.(t.place?.trigger);
       if (s && (s.ms > 0 || s.text)) {
         const seq = dlg._seq, world = this.game.world;
         const ok = await dlg.gauge(s.text || t.name, Math.max(300, Number(s.ms) || 1000));
         if (!ok || seq !== dlg._seq || world !== this.game.world) return;
       }
+      if (interactP) await interactP.catch?.(() => false);
       t.advance();
       this.used.add(`t${t.place?.trigger}`);
       if (t.opened && t.drop) this._dropTrigger(t);
@@ -791,7 +773,7 @@ export class Director {
   _begin() {
     this.phase = 'running';
     this.elapsed = 0;
-    this.effect(2000);
+    if (!this.plan?.noStartEffect) this.effect(2000);   // lane65: a server-ref plan that plays its own start notice
     try { this.plan?.begin?.(this); } catch (err) { console.error('[dungeons] plan begin', err); }
     if (!this.plan?.noStages) this._startStages();
     if (this.killTarget) this.sys.ui.count(`${this.kills} / ${this.killTarget}`, sysText(104));
@@ -978,6 +960,8 @@ export class Director {
     this.kills++;
     this.vars.count = this.kills;
     if (Number.isFinite(idx)) this.killedIdx.set(idx, (this.killedIdx.get(idx) || 0) + 1);
+    // lane65: a reference-timed monster waiting for this kill starts its timer now
+    if (Number.isFinite(idx)) for (const r of this.game.spawner?.records || []) if (r.dg?.waitFor?.after === idx && r.failedUntil === Infinity) r.failedUntil = (this.game.time || 0) + r.dg.waitFor.sec;
     if (this.killTarget) this.sys.ui.count(`${this.kills} / ${this.killTarget}`, sysText(104));
     try { this.plan?.onKill?.(this, actor, rec); } catch (err) { console.error('[dungeons] plan onKill', err); }
     this._poll = 0;

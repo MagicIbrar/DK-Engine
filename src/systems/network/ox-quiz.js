@@ -19,20 +19,22 @@ export function installSharedOxQuiz(game,network,{bridge,dialog,ui}){
  let disposed=false,latest=null,texts=null,mapTexts=null,world=null,wallKey=null,releaseMask=null,generation=0,renderKey=null,renderGeneration=0;
  const seen=new Set(),wallBanners=new Map();let noticeDeadline=null,wallNotice=null;
  game.uiwin?.registerWindow('oxquiz',{script:Q.script,hud:true,escClose:false,remember:false,band:'hud'});
- game.uiwin?.registerWindow('oxquiz_clock',{script:'game2/partywar/ui_limittimewnd.txt',hud:true,escClose:false,remember:false,band:'hud'});
- let clockKey=null,clockGeneration=0;
+ // Lane 47: Global opens only UI_Game2_Event_ui_oxquizwnd for OX (decompile 32-bit-main decompiled.c:1020158, dekaron64:1301913);
+ // no OX countdown window exists in Global, so the former OX countdown window (partywar limittime with non-Global English labels) is removed.
  const ready=Promise.all([bridge.ready,loadStrings()]).then(([data,strings])=>{texts=strings.window;mapTexts=strings.map;if(!disposed)sync();return data;}).catch(error=>{if(!disposed)game.chat?.system?.(error.message,'err');return null;});
  const current=()=>!disposed&&!network.disposed&&latest?.available===true&&latest.channel===true&&[Q.arena,Q.lobby].includes(Number(network.self?.map))&&Number(game.world?.info?.index)===Number(network.self?.map)&&latest.map===Number(network.self?.map);
  const arena=()=>current()&&latest.map===Q.arena;
  const serverTime=()=>{const clock=network._serverClock;return Number.isFinite(clock?.time)&&Number.isFinite(clock?.at)?clock.time+performance.now()-clock.at:NaN;};
  const pending=at=>arena()&&latest.wall?.state==='pending'&&Number.isFinite(at)&&latest.wall.at===at&&serverTime()<at;
  const dropBanner=effect=>{for(const part of effect.parts)part.el.remove();const index=banners.live.indexOf(effect);if(index>=0)banners.live.splice(index,1);wallBanners.delete(effect);};
+ // EventMessage lines stack (Global 5-line queue): remove only this quiz's own line; older EventUI hosts close the window as before.
+ const dropNotice=text=>{if(typeof ui?.dropNotice==='function'){ui.dropNotice(text);return;}if(game.uiwin?.window('ev_message')?.control('lbl_message').getText()===text)game.uiwin?.close('ev_message');};
  const syncWarnings=()=>{
   for(const [effect,at]of wallBanners){if(!pending(at)||!banners.live.includes(effect))dropBanner(effect);else effect.t=Math.max(effect.t,effect.ms-(at-serverTime()));}
-  if(wallNotice&&!pending(wallNotice.at)){if(game.uiwin?.window('ev_message')?.control('lbl_message').getText()===wallNotice.text)game.uiwin?.close('ev_message');wallNotice=null;}
+  if(wallNotice&&!pending(wallNotice.at)){dropNotice(wallNotice.text);wallNotice=null;}
  };
  let bannerQueue=Promise.resolve();const speaker=new Messenger(game,{
-  notice:text=>{const noticeWorld=game.world,at=noticeDeadline;void ui.notice(text).then(()=>{if(at!=null)wallNotice={text,at};if((disposed||noticeWorld!==game.world||at!=null&&!pending(at))&&game.uiwin?.window('ev_message')?.control('lbl_message').getText()===text)game.uiwin?.close('ev_message');});},
+  notice:text=>{const noticeWorld=game.world,at=noticeDeadline;void ui.notice(text).then(()=>{if(at!=null)wallNotice={text,at};if(disposed||noticeWorld!==game.world||at!=null&&!pending(at))dropNotice(text);});},
   banner:(id,ms)=>{const bannerWorld=game.world,at=noticeDeadline;bannerQueue=bannerQueue.then(async()=>{if(!arena()||bannerWorld!==game.world||at!=null&&!pending(at))return;const before=new Set(banners.live);await banners.show(id,ms);for(const effect of banners.live.filter(b=>!before.has(b))){if(disposed||bannerWorld!==game.world||at!=null&&!pending(at))dropBanner(effect);else if(at!=null){effect.t=Math.max(0,ms-(at-serverTime()));wallBanners.set(effect,at);}}});},
  });
  const closeWindow=()=>{renderGeneration++;renderKey=null;game.uiwin?.close('oxquiz');};
@@ -54,14 +56,7 @@ export function installSharedOxQuiz(game,network,{bridge,dialog,ui}){
   const key=JSON.stringify(values);if(renderKey===key)return;renderKey=key;const epoch=++renderGeneration,renderWorld=game.world;
   void game.uiwin?.open('oxquiz').then(win=>{if(disposed||epoch!==renderGeneration||renderWorld!==game.world||!arena()){if(!arena())game.uiwin?.close('oxquiz');return;}for(const [id,text]of Object.entries(values))win.control(id).setRichText(text);}).catch(error=>{if(!disposed&&epoch===renderGeneration){renderKey=null;game.chat?.system?.(error.message,'err');}});
  };
- const renderClock=()=>{
-  const deadline=latest?.automatic&&Number.isFinite(latest.deadline)&&latest.deadline>0?latest.deadline:null,now=serverTime();
-  if(!current()||deadline==null||!Number.isFinite(now)){if(clockKey){clockGeneration++;clockKey=null;game.uiwin?.close('oxquiz_clock');}return;}
-  const secs=Math.ceil(Math.max(0,deadline-now)/1000),label={idle:'OX Quiz begins',question:latest.wall?.state==='pending'?'Wall appears':'Answer time',solution:'Next question',rewards:'Reward retry',complete:'Return'}[latest.phase]||'OX Quiz',key=`${latest.phase}:${deadline}:${secs}:${label}`;
-  if(clockKey===key)return;clockKey=key;const generation=++clockGeneration,origin=game.world;
-  void game.uiwin?.open('oxquiz_clock').then(win=>{if(disposed||generation!==clockGeneration||origin!==game.world||!current()){if(!current())game.uiwin?.close('oxquiz_clock');return;}win.control('lbl_text').setText(`${label}: ${String(Math.floor(secs/60)).padStart(2,'0')}:${String(secs%60).padStart(2,'0')}`);}).catch(()=>{});
- };
- function sync(){ox.state=current()?latest:null;wall();render();renderClock();syncWarnings();}
+ function sync(){ox.state=current()?latest:null;wall();render();syncWarnings();}
  const nativeError=message=>{const m=/^oxquiz:(22|654):(\d+)$/.exec(String(message||''));if(!m)return false;const entry=nativeEntry(mapTexts?.get(`${m[1]}:${m[2]}`));if(entry)speaker.say(entry);return !!entry;};
  const send=async(operation,answer)=>{
   if(disposed||!network.ready||!network.token)return null;const token=network.token,before=network._lastCommandError;
@@ -106,6 +101,6 @@ export function installSharedOxQuiz(game,network,{bridge,dialog,ui}){
   // The host snapshot, including its position revision, owns wall state and forced displacement.
  };
  const update=bridge.update;bridge.update=dt=>{update(dt);if(disposed)return;sync();banners.update(dt);ox.brick?.update(dt);};
- const dispose=bridge.dispose;bridge.dispose=()=>{if(!disposed){disposed=true;off?.();for(const registry of registered)registry.unregister?.(31,service);registered.clear();clearWall();closeWindow();clockGeneration++;clockKey=null;game.uiwin?.close('oxquiz_clock');seen.clear();for(const b of banners.live)for(const p of b.parts)p.el.remove();banners.live.length=0;wallBanners.clear();wallNotice=null;if(game.chat?.commands?.get('/oxquiz')?.fn===command){if(previousCommand)game.chat.commands.set('/oxquiz',previousCommand);else game.chat.commands.delete('/oxquiz');}ox.state=null;}dispose();};
+ const dispose=bridge.dispose;bridge.dispose=()=>{if(!disposed){disposed=true;off?.();for(const registry of registered)registry.unregister?.(31,service);registered.clear();clearWall();closeWindow();seen.clear();for(const b of banners.live)for(const p of b.parts)p.el.remove();banners.live.length=0;wallBanners.clear();wallNotice=null;if(game.chat?.commands?.get('/oxquiz')?.fn===command){if(previousCommand)game.chat.commands.set('/oxquiz',previousCommand);else game.chat.commands.delete('/oxquiz');}ox.state=null;}dispose();};
  ox.ready=ready;ox.action=send;ox.openNpc=open;return ox;
 }

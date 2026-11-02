@@ -1,0 +1,21 @@
+/* DK Engine 4.3.2 port of the Global 0.0.1 design. 0.0.1 sizes every focused section to the window; this
+   engine's sections are longer (they keep every 4.3.2 control), so the content column scrolls instead of
+   clipping. Nothing here changes colours: those come from tokens.css / app.css unchanged from 0.0.1. */
+.content { overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; }
+.page { height: auto; min-height: 100%; }
+.page > .stack.loose { gap: 14px; }
+.tab-hub, .tab-hub .focus-workspace-body { height: auto; flex: none; overflow: visible; }
+.tab-hub .focus-workspace-body > .tab-panel:not([hidden]) { animation: panel-arrive var(--motion-panel, 180ms) var(--ease) 1; }
+.tab-hub[data-view="categories"] .focus-workspace-nav .btn { display: none; }
+.tab-hub .focus-workspace-hub .btn .pill { margin-left: auto; }
+.sql-page > #sql-context:empty { display: none; }
+/* Page switch: fade in (0.0.1 page-in), never leave a half-faded control behind. */
+.page[hidden] { display: none !important; }
+:root[data-motion="off"] .page, :root[data-motion="off"] .tab-hub .tab-panel { animation: none !important; }
+/* SQL: the connection context (profile + database) stays above the categories, compact like 0.0.1 pickers. */
+.sql-page > #sql-context { align-items: center; gap: 10px; }
+.sql-page > #sql-context > .input, .sql-page > #sql-context select { width: auto; max-width: 420px; flex: 0 1 420px; }
+/* Launcher bar: buttons beside an input (Refresh, Save, Browse…, Search) and list-card action columns
+   (SQL profile Test / Edit) keep their full label instead of shrinking into a truncated stub. */
+.input-row > .btn, .input-row > button { flex-shrink: 0; }
+.list-card > .stack, .list-card > .row { flex: none; }

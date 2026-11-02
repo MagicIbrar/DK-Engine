@@ -1,0 +1,25 @@
+DEKARON 4.2.0 - JOIN-ONLY CLIENT
+
+QUICK START
+  0. REQUIREMENT: You need a fresh, unmodified Dekaron Global client (with its GameGuard folder) installed. This download is the engine only and contains no game files.
+     When setup asks, point it to that fresh Global client folder.
+New players:
+  1. Get the Dekaron Global client and install it, or run its patcher so it is up to date.
+  2. Open GameWindow.exe in "1 - Join Only Client" and type the server address your host gave you.
+     (It needs the Microsoft Edge WebView2 Runtime, which Windows 10/11 normally already has.)
+  3. Create your own account on that server and join.
+Hosts:
+  - Use "2 - Dashboard + Client (Host and Join)": open Client.exe to run the dashboard,
+    then click Start world. Open or forward your game port and the ping port (game port + 1).
+    See docs/HOSTING.md in that folder.
+Existing 4.1.x users:
+  - The launcher updates itself: open your Client.exe and click the update notice.
+    Or install "2 - Dashboard + Client (Host and Join)" over the top of your old install.
+    Accounts, characters, settings and SQL progress are kept. Back up your own saves first.
+ABOUT THIS FOLDER
+GameWindow.exe joins a hosted world only. It has no dashboard and cannot host.
+The server you pick is remembered; to change it later, delete
+%LOCALAPPDATA%\DekaronPlayer\server.txt and reopen GameWindow.exe.
+Keep this folder separate from a full (host) install: if a Client.exe sits next to
+GameWindow.exe or in the folder above it, GameWindow.exe opens that launcher instead.
+What changed in 4.2.0: docs/UPDATE-4.2.0.md.

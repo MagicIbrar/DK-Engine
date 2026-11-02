@@ -74,16 +74,44 @@ export function seg(options, value, onChange, {label, disabled, title} = {}) {
   return g;
 }
 
-// ---- tabs (roving tabindex, arrows/Home/End)
-export function tabs(list, {current, onSelect, label}) {
-  const bar = h('div', {class: 'tabs', role: 'tablist', 'aria-label': label});
-  const btns = list.map(t => h('button', {type: 'button', role: 'tab', id: 'tab-' + t.id, 'aria-controls': 'panel-' + t.id, 'aria-selected': String(t.id === current), tabindex: t.id === current ? '0' : '-1'}, t.ico ? icon(t.ico, 16) : null, t.label, t.badge ? h('span', {class: 'pill err', text: t.badge}) : null));
-  btns.forEach((b, i) => { b.addEventListener('click', () => select(i)); b.addEventListener('keydown', e => { const k = e.key; let j = null; if (k === 'ArrowRight') j = (i + 1) % btns.length; else if (k === 'ArrowLeft') j = (i - 1 + btns.length) % btns.length; else if (k === 'Home') j = 0; else if (k === 'End') j = btns.length - 1; if (j !== null) { e.preventDefault(); select(j); btns[j].focus(); } }); });
-  function select(i) { btns.forEach((b, k) => { b.setAttribute('aria-selected', String(k === i)); b.tabIndex = k === i ? 0 : -1; }); place(); onSelect(list[i].id); }
-  bar.select = tabId => { const i = list.findIndex(t => t.id === tabId); if (i >= 0) select(i); };
-  append(bar, btns);
-  const place = slider(bar, () => btns.find(b => b.getAttribute('aria-selected') === 'true'));
-  return bar;
+// ---- section categories (Global 0.0.1 focus workspace). Same API the pages used for tabs: select(id) still
+// switches section; show(id) opens a section or, with no id and nothing chosen yet, the category grid.
+// The page keeps its own panels (#panel-<id>); they are moved under this workspace so the hub and the
+// "Choose a category" picker replace the old tab bar. Categories back button removed (declutter) —
+// overview stays available via the empty picker option. No section is removed.
+export function tabs(list, {current, onSelect, onOverview, label, overview = true}) {
+  let active = overview ? null : (current || list[0]?.id || null);
+  const picker = h('select', {class: 'input', 'aria-label': label || 'Choose a section'}, h('option', {value: '', text: 'Choose a category'}), list.map(t => h('option', {value: t.id, text: t.label})));
+  const hub = h('div', {class: 'focus-workspace-hub', role: 'group', 'aria-label': label || 'Categories'}, list.map(t => {
+    const b = button(t.label, {kind: 'ghost', ico: t.ico || 'chevronRight', attrs: {'data-section': t.id, id: 'tab-' + t.id, title: t.desc || t.label}, onClick: () => select(t.id, {focus: true})});
+    if (t.badge) b.append(h('span', {class: 'pill err', text: t.badge}));
+    return b;
+  }));
+  const body = h('div', {class: 'focus-workspace-body'}, hub);
+  const host = h('section', {class: 'focus-workspace tab-hub', 'aria-label': label || 'Sections'}, h('div', {class: 'focus-workspace-nav'}, picker), body);
+  const panels = () => list.map(t => {
+    const scope = host.closest('.page') || host.parentElement?.parentElement || host.parentElement;
+    const p = scope?.querySelector('[id="panel-' + t.id + '"]');
+    if (p && p.parentElement !== body) body.append(p);
+    return p;
+  });
+  function present({focus = false} = {}) {
+    picker.value = active || ''; hub.hidden = active !== null; host.dataset.view = active ? 'section' : 'categories';
+    if (active === null) { for (const p of panels()) if (p) p.hidden = true; if (focus) hub.querySelector('button')?.focus(); }
+  }
+  function select(id, {focus = false} = {}) {
+    if (!list.some(t => t.id === id)) return host.overview({focus});
+    panels(); active = id; present(); onSelect(id);
+    if (focus) { const p = body.querySelector('[id="panel-' + id + '"]'), heading = p?.querySelector('h2,h3'); if (heading) { heading.tabIndex = -1; heading.focus({preventScroll: true}); } }
+    return active;
+  }
+  host.select = id => select(id);
+  host.overview = ({focus = false} = {}) => { active = null; present({focus}); onOverview?.(); return null; };
+  host.show = id => (list.some(t => t.id === id) ? select(id) : active ? select(active) : host.overview());
+  Object.defineProperty(host, 'active', {get: () => active});
+  picker.addEventListener('change', () => (picker.value ? select(picker.value, {focus: true}) : host.overview()));
+  present();
+  return host;
 }
 export function collapsible(title, content, {open = false, desc, cardCls = ''} = {}) {
   const bid = id('c'); const body = h('div', {id: bid, class: 'stack', hidden: !open});

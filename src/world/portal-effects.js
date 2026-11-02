@@ -1,7 +1,9 @@
 // Native placed map visuals from .mel and the original effectscene/effectdata catalogs.
 // Keep authored placement, full orientation, scale, scene controls and period.
-// Sound/light invocation and actor-only meshstatus are deliberately not inferred.
+// Sound invocation and actor-only meshstatus are deliberately not inferred. Cate-9 local lights are inventoried via mel-local-lights.js (Global geometry.fx PointLight call is commented out; no invented THREE.PointLight).
 import {parseMel} from '../formats/mel.js';
+import {nativeLightPlacements} from './mel-local-lights.js';
+export {nativeLightPlacements, resolveMelLocalLights, isMelLocalLightEntry, MEL_LIGHT_CATEGORY} from './mel-local-lights.js';
 import {parseEffectScenes,describeControl,describeUnit,gamePathToData} from '../systems/items/native-effect-parser.js';
 import {parseTpack,textureCandidates} from '../formats/tpack.js';
 import {parseMesh} from '../formats/mesh.js';
@@ -101,10 +103,13 @@ export async function returnGateGroundOffset(library, meshSource) {
 export class PortalEffects {
   constructor(game,world,{source=fetchBuffer,library=new MapEffectsData()}={}) {
     this.game=game;this.world=world;this.source=source;this.library=library;
-    this.entries=[];this.excluded=[];this.fx=null;this.disposed=false;this.ready=false;
+    this.entries=[];this.excluded=[];this.localLightPlacements=[];this.fx=null;this.disposed=false;this.ready=false;
   }
   async load(key) {
-    const gates=key?nativeVisualPlacements(await this.source(key)):[];
+    const melBuf=key?await this.source(key):null;
+    const gates=melBuf?nativeVisualPlacements(melBuf):[];
+    // Cate-9 inventory only (no THREE.PointLight — Global terrain PointLight path is commented out).
+    this.localLightPlacements=melBuf?nativeLightPlacements(melBuf):[];
     const returns=returnPortalPlacements(this.world,this.game.data?.npcs);
     if(this.disposed||!gates.length&&!returns.length)return;
     const refs=[...new Map([...gates.map(e=>e.ref),...returns.map(e=>e.ref)].map(ref=>[ref.cate+':'+ref.id,ref])).values()];

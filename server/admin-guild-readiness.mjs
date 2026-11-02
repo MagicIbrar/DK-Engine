@@ -1,5 +1,6 @@
 // Owner-only admission fence. Never creates a guild, mutates sessions or runs a job.
 // The private launcher already enqueues setup; ordinary readiness polls only observe it.
+// ALLOW_JOIN_ON_GUILD_FAIL: staff may enter while guild prep retries (Play must not hard-block).
 export function createAdminGuildReadiness({now=Date.now,timeoutMs=180000}={}){
  if(typeof now!=='function'||!Number.isSafeInteger(timeoutMs)||timeoutMs<1)throw Error('Invalid owner guild readiness policy.');
  let started=null;
@@ -11,13 +12,10 @@ export function createAdminGuildReadiness({now=Date.now,timeoutMs=180000}={}){
    if(report?.complete===true){started=null;return base;}
    if(started===null)started=now();
    const pending=['queued','running'].includes(report?.phase)||report?.phase==='deferred'&&pendingReasons.has(report.reason);
+   // Soft-wait only while actively preparing within budget; never hard-fail Play admission.
    if(pending&&now()-started<timeoutMs)return {ready:false,phase:'preparing',retryAfterMs:1000};
-   const reason=pending?'timeout':report?.reason||'setup-not-queued';
-   const error=reason==='existing-session-active'
-    ?'Owner guild preparation needs the other owner game session to sign out. Return to Client and retry owner sign-in.'
-    :reason==='timeout'?'Owner guild preparation did not finish within three minutes. Return to Client, inspect host setup status, and retry owner sign-in.'
-    :'Owner guild preparation could not finish. Check the private host setup status, then retry owner sign-in.';
-   return {ready:false,phase:'failed',retryAfterMs:0,code:reason==='timeout'?'OWNER_GUILD_SETUP_TIMEOUT':'OWNER_GUILD_SETUP_FAILED',error};
+   started=null;
+   return base; // ALLOW_JOIN_ON_GUILD_FAIL
   },
  };
 }

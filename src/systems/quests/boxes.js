@@ -2,7 +2,8 @@
 // docs/formats/boxes.md §7). game.boxes = { ready, isBox(i), info(i), open(instOrIndex) -> Promise<bool>, showInfo(i) }.
 // The items system calls game.boxes.open(inst) when a box item is used (right click / double click / quick slot).
 // Windows (original scripts):
-//   select / all   game2/ui_new_randomboxwnd.txt   "Select Item": 14 checkbox rows + scroll, lbl_info = messagebox 81:83 / 81:85
+//   select / all   game2/previewboxinfo/ui_previewboxinfownd.txt  Global: multi_tree + checkmarks + ModelPreview on pan_effect_bg + class tabs
+//                  (fallback game2/ui_new_randomboxwnd.txt text-only rows)
 //   package        game2/msgbox/ui_msgbox_ok.txt   "Open Package" (80:65) + the binding warning (81:65)
 //   egg            game2/msgbox/ui_hatch.txt       hatch confirmation
 //   keyed chest    game2/randombox/ui_cashrandomboxwnd_renew.txt   box + key -> result, number of units, Max / Init, Exchange
@@ -13,6 +14,7 @@ import { spawnMonster } from './engine.js';
 import { plainText } from './markup.js';
 import { borrowPreviewIcon } from '../../ui/preview-cache.js';
 import { globalNotice } from '../../ui/uiwin/global-windows.js';
+import { ModelPreview } from '../shops/preview.js';
 
 const N = (cate, code) => ({ group: 'NORMAL', cate, code });
 const SYS = (cate, code) => ({ group: 'SYSTEM', cate, code });
@@ -126,7 +128,8 @@ export class BoxSystem {
     const inst = typeof instOrIndex === 'object' ? instOrIndex : null;
     const idx = Number(inst ? inst.itemIndex ?? inst.index : instOrIndex);
     const b = this.info(idx);
-    if (!b || this.busy) return false;
+    if (!b) { this.say('This box has no contents table in this client. Restart the game to reload the box list.', 'err'); return false; }
+    if (this.busy) { this.say('Another box is already open. Finish or cancel it first.', 'err'); return false; }
     const g = this.game;
     const lv = num(g.save.level) || 1, cls = num(g.save.classIndex);
     await this.W?.strings?.need?.([N(1002, 65), N(1002, 66), N(1002, 67), N(1002, 68), N(1002, 40), SYS(101, 214), N(80, 65), N(81, 65), N(81, 83), N(81, 85), N(100, 79), N(100, 15), N(81, 86)]).catch(() => {});
@@ -308,7 +311,12 @@ export class BoxSystem {
     W.registerWindow('randombox', {
       script: 'game2/ui_new_randomboxwnd.txt',
       create(win) { self._selCreate(win); },
-      onClose(win, result) { const d = self._sel; self._sel = null; d?.resolve?.(result === 'ok' ? d.chosen() : null); },
+      onClose(win, result) {
+        const d = self._sel;
+        if (!d || d.surface !== 'random') return;
+        self._sel = null;
+        d.resolve(result === 'ok' ? d.chosen() : null);
+      },
     });
     W.registerWindow('randombox_renew', {
       script: 'game2/randombox/ui_cashrandomboxwnd_renew.txt',
@@ -321,6 +329,22 @@ export class BoxSystem {
       modal: true,
       create(win) { self._infoCreate(win); },
       onOpen(win, i) { self._infoFill(Number(i)); },
+    });
+    // Global select/all UI: tree checkmarks + item icons + 3D ModelPreview (Engine DX11 path kept via ModelPreview).
+    W.registerWindow('previewboxinfownd', {
+      script: 'game2/previewboxinfo/ui_previewboxinfownd.txt',
+      modal: true,
+      create(win) { self._prevCreate(win); },
+      onClose(win, result) {
+        const d = self._sel;
+        self._prevTeardown();
+        if (!d || d.surface !== 'preview') return;
+        self._sel = null;
+        d.resolve(result === 'ok' ? d.chosen() : null);
+      },
+      update(win, dt) {
+        if (self._prev?.preview && win.control('pan_preview')?.isVisible?.() !== false) self._prev.preview.tick(dt);
+      },
     });
   }
 
@@ -346,18 +370,38 @@ export class BoxSystem {
     if (!list.length) return false;
     const give = all ? list.length : Math.max(1, Math.min(list.length, num(b.give) || 1));
     const cls = num(this.game.save.classIndex);
-    // Native checkboxes start unchecked (ui_new_randomboxwnd.txt) and the prompt asks the player to select N items; no
-    // choice is made for them. Only an "all" list (every entry is granted) is shown fully ticked.
+    // Native checkboxes start unchecked; the prompt asks the player to select N items. Only an "all" list is fully ticked.
     const picked = new Set();
     if (all) list.forEach((e, i) => picked.add(i));
     const done = new Promise(resolve => {
       this._sel = {
-        b, idx, list, give, all, picked, top: 0, cls, resolve,
+        b, idx, list, give, all, picked, top: 0, cls, classFilter: cls, resolve,
         valid: () => picked.size === give,
         chosen: () => [...picked].map(i => ({ item: list[i].item, count: list[i].count, i: list[i].i })),
       };
     });
-    const win = await this.W.open('randombox');
+    // Global standard: previewboxinfownd (tree + checkmarks + 3D preview). Fallback: text-only randombox.
+    let win = null;
+    try {
+      win = await this.W.open('previewboxinfownd');
+    } catch (err) {
+      console.warn('[boxes] previewboxinfownd open failed, falling back to randombox', err);
+    }
+    if (win && win.control('multi_tree')) {
+      this._sel.surface = 'preview';
+      try { this._prevOpen(win, all, give); }
+      catch (err) { console.warn('[boxes] previewboxinfownd fill failed', err); this._sel.surface = null; try { win.close('cancel'); } catch (_) {} this._sel = null; this.say('The box window could not be shown. Try again.', 'err'); return false; }
+      const chosen = await done;
+      if (!chosen) return false;
+      return this._give(b, idx, inst, chosen);
+    }
+    // Discard a broken preview shell without resolving the select promise.
+    if (win) {
+      this._sel.surface = null;
+      try { win.close('cancel'); } catch (_) {}
+    }
+    this._sel.surface = 'random';
+    win = await this.W.open('randombox');
     win.control('lbl_title').setText(all ? this.str(N(81, 86), 'Item List').replace(/<center>/g, '').trim() : this.str(N(100, 15), 'Select Item'));
     const info = all ? this.str(N(81, 85), '') : this.str(N(81, 83), '').replace('%d', give);
     this.sys.setRich(win.control('lbl_info'), info);
@@ -368,6 +412,134 @@ export class BoxSystem {
     const chosen = await done;
     if (!chosen) return false;
     return this._give(b, idx, inst, chosen);
+  }
+
+  // ------------------------------------------------------------------ previewboxinfownd (Global select/all + 3D preview)
+  _prevCreate(win) {
+    this.prevWin = win;
+    const st = this._prev = { preview: null, hot: -1 };
+    st.preview = new ModelPreview(this.game, 340, 416);
+    // pan_effect_bg is the Global 3D slot (Itemchoice #21 under pan_preview); Engine ModelPreview keeps DX11 path.
+    win.control('pan_effect_bg')?.setIcon?.({ canvas: st.preview.canvas });
+    win.control('pan_mark')?.hide?.();
+    win.control('btn_use')?.onClick(() => { if (this._sel?.valid()) win.close('ok'); });
+    win.control('btn_cancel')?.onClick(() => win.close('cancel'));
+    win.control('btn_close')?.onClick(() => win.close('cancel'));
+    win.control('btn_ok')?.onClick(() => win.close('cancel'));
+    const tree = win.control('multi_tree');
+    tree?.on?.('check', (n) => this._prevToggle(n));
+    tree?.on?.('select', (n) => { if (n?.data?.i != null) this._prevShow(n.data.i); });
+    for (let c = 0; c < 15; c++) {
+      const btn = win.control(`btn_classname_${c}`);
+      if (!btn) continue;
+      const name = this.game.classNames?.[c] ?? `Class ${c}`;
+      btn.setText?.(String(name));
+      btn.onClick(() => this._prevSetClass(c));
+    }
+  }
+  _prevTeardown() {
+    const st = this._prev;
+    if (st?.preview) { try { st.preview.dispose(); } catch (_) {} st.preview = null; }
+    this._prev = null;
+    this.prevWin = null;
+  }
+  _prevOpen(win, all, give) {
+    const s = this._sel;
+    if (!s) return;
+    this.prevWin = win;
+    if (!this._prev?.preview) {
+      this._prev = { preview: new ModelPreview(this.game, 340, 416), hot: -1 };
+      win.control('pan_effect_bg')?.setIcon?.({ canvas: this._prev.preview.canvas });
+    }
+    win.control('btn_close')?.hide?.();
+    win.control('btn_use')?.show?.();
+    win.control('btn_cancel')?.show?.();
+    win.control('lbl_title')?.setText?.(all ? this.str(N(81, 86), 'Item List').replace(/<center>/g, '').trim() : this.str(N(100, 15), 'Select Item'));
+    const info = all ? this.str(N(81, 85), '') : this.str(N(81, 83), '').replace('%d', give);
+    if (win.control('lbl_info')) this.sys.setRich(win.control('lbl_info'), info);
+    this._prevHighlightClass(s.classFilter);
+    this._prevRender();
+    const first = this._prevVisible()[0];
+    if (first) this._prevShow(first.i); else this._prevShow(-1);
+  }
+  _prevVisible() {
+    const s = this._sel;
+    if (!s) return [];
+    const cf = s.classFilter;
+    return s.list.filter((e) => !Array.isArray(e.ec) || e.ec.length === 0 || (cf == null || cf < 0) || e.ec.includes(cf));
+  }
+  _prevSetClass(c) {
+    const s = this._sel;
+    if (!s) return;
+    s.classFilter = c;
+    this._prevHighlightClass(c);
+    this._prevRender();
+    const vis = this._prevVisible();
+    const keep = vis.find((e) => s.picked.has(s.list.indexOf(e))) || vis[0];
+    if (keep) this._prevShow(keep.i);
+  }
+  _prevHighlightClass(c) {
+    const win = this.prevWin;
+    if (!win) return;
+    for (let i = 0; i < 15; i++) {
+      const btn = win.control(`btn_classname_${i}`);
+      if (!btn) continue;
+      btn.setChecked?.(i === c);
+      // Prefer check state when available; otherwise leave titles alone.
+    }
+  }
+  _prevRender() {
+    const s = this._sel, win = this.prevWin;
+    if (!s || !win) return;
+    const tree = win.control('multi_tree');
+    if (!tree) return;
+    const icons = this.game.items?.icons;
+    const size = tree.iconSize || 33;
+    const nodes = this._prevVisible().map((e) => {
+      const li = s.list.indexOf(e);
+      const name = this.db.itemName(e.item);
+      const icon = icons?.now?.(e.item, size, size) || icons?.cached?.(e.item) || null;
+      if (icons?.get && !icon) void icons.get(e.item, size, size).then(() => { if (this._sel === s) this._prevRender(); }).catch(() => {});
+      return {
+        text: e.count > 1 ? `${name} x${e.count}` : name,
+        checked: s.picked.has(li),
+        icon,
+        state: 'sub',
+        data: { i: e.i, li, item: e.item, count: e.count },
+      };
+    });
+    // "all" lists stay fully ticked; select mode starts empty (Global).
+    if (s.all) for (const n of nodes) n.checked = true;
+    tree.setNodes(nodes);
+    win.control('btn_use')?.setEnabled?.(s.valid());
+    const chk = win.control('lbl_check_info');
+    if (chk) {
+      const msg = s.all ? '' : `${s.picked.size} / ${s.give}`;
+      chk.setText?.(msg);
+    }
+  }
+  _prevToggle(n) {
+    const s = this._sel;
+    if (!s || !n?.data) return;
+    if (s.all) { n.checked = true; this._prevRender(); return; }
+    const li = n.data.li;
+    if (li == null || !s.list[li]) return;
+    if (n.checked) {
+      if (s.give === 1) s.picked.clear();
+      if (s.picked.size >= s.give && !s.picked.has(li)) { n.checked = false; this._prevRender(); return; }
+      s.picked.add(li);
+    } else s.picked.delete(li);
+    this._prevRender();
+    this._prevShow(n.data.i);
+  }
+  _prevShow(entryI) {
+    const s = this._sel, st = this._prev;
+    if (!s || !st?.preview) return;
+    const e = s.list.find((x) => x.i === entryI) || s.list[entryI];
+    st.hot = e ? e.i : -1;
+    if (!e) return;
+    st.preview.auto = true;
+    void st.preview.show(e.item);
   }
   _selRender() {
     const s = this._sel, win = this.selWin;

@@ -251,12 +251,16 @@ export class Emotes {
    * trigger's motion chain (100 lever ready -> 101 lever pull). Resolves when the last motion ends.
    */
   interact(triggerIndex) {
+    // Global script/interactiveaction/triggerinteractiveaction.csv lists only TriggerIndex 43/44/45
+    // (Elmar levers). triggers.js: play the interactive action "when the table gives one".
     const row = (this.D?.interactive || []).find((r) => r.trigger === Number(triggerIndex));
-    const chain = row ? row.actions : [100, 101];
-    const yaw = row ? (row.dir * Math.PI) / 180 : null;
+    if (!row) return Promise.resolve(false);
+    const chain = (row.actions || []).filter((a) => Number(a) > 0);
+    if (!chain.length) return Promise.resolve(false);
+    const yaw = (row.dir * Math.PI) / 180;
     return new Promise((resolve) => {
       const step = (i) => {
-        if (i >= chain.length) { resolve(true); this.game.events?.emit?.('life:interact', { trigger: triggerIndex, interaction: row?.interaction }); return; }
+        if (i >= chain.length) { resolve(true); this.game.events?.emit?.('life:interact', { trigger: triggerIndex, interaction: row.interaction }); return; }
         const ok = this.playMotion(chain[i], { face: i === 0 ? yaw : null, quiet: true, onEnd: () => step(i + 1) });   // a lever is not an emote: no emote refusal line
         if (!ok) resolve(false);
       };

@@ -10,4 +10,4 @@ Command Center's SQL query workspace defaults to database-enforced read-only acc
 
 The 4.0.1 gameplay and content fixes remain included. The release package contains no Global game assets: supply your own Global folder when setup requests it. Existing installation state is preserved by the updater; keep your own backup before changing storage or updating.
 
-Contributors: Franky, DEV ShadoW, CYBER, Magic Ibrar.
+Contributors: DEV ShadoW, CYBER, Magic Ibrar.

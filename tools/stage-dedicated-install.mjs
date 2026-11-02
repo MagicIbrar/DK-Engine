@@ -15,32 +15,40 @@ const ROOT=path.resolve(fileURLToPath(new URL('../',import.meta.url)));
 const WEBVIEW2_DOWNLOAD='https://developer.microsoft.com/en-us/microsoft-edge/webview2/';
 const DIRECTORIES=['server','src','site','web','vendor','client-assets'];
 const FILES=['server.mjs','package.json','package-lock.json','index.html','join.html','launch.html','Client.exe','GameWindow.exe','tools/setup-dedicated-sql.mjs','tools/dedicated-setup-guard.mjs','tools/create-dedicated-shortcut.ps1','tools/save-backup.mjs','tools/lib/sql-migrations.mjs','docs/SAVE-BACKUP.md','deploy/start-host.mjs','Dockerfile','compose.yaml','render.yaml','railway.json','.dockerignore','THIRD_PARTY_NOTICES.md'];
-export const USER_DOCUMENTS=['docs/README.md','docs/SQL-SETUP.md','docs/DEDICATED-INSTALLER-3.3.0.md','docs/INSTALLATION-HOTFIX-3.3.1.md','docs/UPDATE-3.3.3.md','docs/UPDATE-3.3.4.md','docs/UPDATE-3.3.5.md','docs/UPDATE-4.0.0.md','docs/UPDATE-4.0.1.md','docs/UPDATE-4.0.2.md','docs/UPDATE-4.0.3.md','docs/UPDATE-4.1.0.md','docs/HOSTING.md'];
-export const START_HERE=`DK ENGINE 4.1.0 - COMMAND CENTER
+export const USER_DOCUMENTS=['docs/README.md','docs/SQL-SETUP.md','docs/DEDICATED-INSTALLER-3.3.0.md','docs/INSTALLATION-HOTFIX-3.3.1.md','docs/UPDATE-3.3.3.md','docs/UPDATE-3.3.4.md','docs/UPDATE-3.3.5.md','docs/UPDATE-4.0.0.md','docs/UPDATE-4.0.1.md','docs/UPDATE-4.0.2.md','docs/UPDATE-4.0.3.md','docs/UPDATE-4.1.0.md','docs/UPDATE-4.2.0.md','docs/HOSTING.md'];
+export const START_HERE=`DEKARON 4.2.0 - DASHBOARD + CLIENT (HOST AND JOIN)
 
-1. Open Client.exe for DK Command Center.
-   If assets are not installed, keep the downloaded Global folder next to this engine.
-   Client checks runtimes and prepares or updates your dedicated installation.
-2. Create your own account. This copy includes no development accounts or saved passwords.
+QUICK START
+New players:
+  1. Get the Dekaron Global client and install it, or run its patcher so it is up to date.
+  2. Open Client.exe in this folder. When asked, choose your installed Global client folder
+     (setup finds it, or use the folder picker). The engine prepares its game data from it.
+  3. Create your own account, pick a server and join.
+Hosts:
+  1. Open Client.exe. This opens the dashboard (DK Command Center).
+  2. On Home, review your world settings and click Start world.
+  3. Open or forward your game port and the ping port (game port + 1). See docs/HOSTING.md.
+Existing 4.1.x users:
+  - The launcher updates itself: open Client.exe and click the update notice, then reopen
+    Client.exe when asked. Or install this folder over the top of your old install.
+    Accounts, characters, settings and SQL progress are kept. Back up your own saves first.
+
+MORE DETAIL
+1. Client.exe checks runtimes and prepares or updates your dedicated installation.
+2. This copy includes no development accounts or saved passwords. Create your own account.
 3. For SQL, stop the world and open Options > SQL / Storage.
    Choose Local world or Hosted world, then Prepare SQL automatically.
    For missing SQL, review and accept Microsoft terms; approve Windows UAC.
-   Setup runs in the background and selects SQL storage after successful world setup.
-4. On Home, review your world settings and click Start world.
-   Choose DX11 Client (windowed 1280x720) or adjacent DX11 Fullscreen (borderless).
-   Sign in when prompted. Local DX11 loads in the same native GameWindow.exe:
-   installed-byte verification first, then frontend/graphics readiness before login.
-   Host friends, Connect and Hosting options remain available.
-5. Read docs/README.md, docs/SQL-SETUP.md and docs/UPDATE-4.1.0.md.
-6. Update checks run on opening and every five minutes. Click the notice to install;
-   close this world/game/launcher when asked, then reopen Client.exe.
+4. Choose DX11 Client (windowed, default 1024x768) or DX11 Fullscreen (borderless).
+   Local DX11 loads in the native GameWindow.exe. Host friends, Connect and Hosting stay available.
+5. Read docs/UPDATE-4.2.0.md, docs/README.md, docs/SQL-SETUP.md and docs/HOSTING.md.
+6. Update checks run on opening and every five minutes.
 
 Keep account/database backups before changing storage. Local and hosted accounts stay separate.
-Use Client.exe for setup, updates and Command Center. Setup-DK.cmd is an alias.
-If Command Center cannot open, Client.exe falls back to the classic launcher. Use Settings > Launcher to choose the classic launcher at the next start.
-Updates preserve existing accounts, settings and SQL progress; back up your own saves first.
-This engine reads Global assets; it does not run the original Global executable. A clean-Windows installation is not proven.
-`;
+Use Client.exe for setup, updates and the dashboard. Setup-DK.cmd is an alias.
+If the dashboard cannot open, Client.exe falls back to the classic launcher (Settings > Launcher).
+This engine reads your own Global client's assets; it does not run the original Global executable.
+New desktop shortcuts are named "Dekaron 4.2.0"; an existing 4.1.x shortcut for this folder is reused.`;
 // Server inventory contains only .mjs/.ps1 runtime code; all other server files are local state.
 const PRIVATE=/^(?:server\/(?!.*\.(?:mjs|ps1)$).*|.*\.(?:db|sqlite|sqlite3|log|tmp|pem|key)(?:-(?:wal|shm))?)$/i;
 
@@ -188,6 +196,12 @@ export async function copyPreparationTools(source,target){
   }
   return [...visited];
 }
+// Locate the player's Global client root (the folder whose bin\ or root holds GameGuard) from its data folder.
+// Read-only: nothing in the Global client is moved, changed or deleted.
+export function findGlobalClientRoot(rawGlobal){
+  try{let dir=path.resolve(rawGlobal);for(let i=0;i<5;i++){if(exists(path.join(dir,'bin','GameGuard.des'))||exists(path.join(dir,'GameGuard.des')))return dir;const up=path.dirname(dir);if(up===dir)break;dir=up;}}catch{}
+  return null;
+}
 export async function stageRawGlobal(rawGlobal,destination,{dedicatedSource=ROOT,prepare=prepareClient,...stageOptions}={}){
   rawGlobal=path.resolve(rawGlobal);destination=path.resolve(destination);
   const missing=missingRuntimeFiles(dedicatedSource);
@@ -205,7 +219,7 @@ export async function stageRawGlobal(rawGlobal,destination,{dedicatedSource=ROOT
     await copyPreparationTools(dedicatedSource,prepRoot);
     await prepare({engine:prepRoot,data:rawGlobal,log:message=>console.error(message)});
     const plan=inspect({dedicatedSource,globalEngine:prepRoot});
-    return await stage(plan,destination,{...stageOptions,stageGlobal:true,ownedPreparation});
+    return await stage(plan,destination,{...stageOptions,stageGlobal:true,ownedPreparation,globalClient:findGlobalClientRoot(rawGlobal)});
   }finally{
     // Only this invocation's new sibling is removed. Source folders are never cleanup targets.
     if(created&&exists(prepRoot))await fsp.rm(prepRoot,{recursive:true,force:true});
@@ -232,7 +246,7 @@ async function makeShortcut(destination){
   const result=execFileSync('powershell.exe',['-NoProfile','-NonInteractive','-File',path.join(destination,'tools','create-dedicated-shortcut.ps1'),'-InstallRoot',destination],{encoding:'utf8'});
   return result.trim();
 }
-async function stage(plan,destination,{shortcut=true,stageGlobal=true,nodeExecutable=null,engineOnly=false,ownedPreparation=null}={}){
+async function stage(plan,destination,{shortcut=true,stageGlobal=true,nodeExecutable=null,engineOnly=false,ownedPreparation=null,globalClient=null}={}){
   const missing=missingRuntimeFiles(plan.dedicatedSource);
   if(missing.length)throw Error('Incomplete dedicated Engine package; missing: '+missing.slice(0,8).join(', '));
   if(engineOnly)stageGlobal=false;
@@ -283,6 +297,7 @@ async function stage(plan,destination,{shortcut=true,stageGlobal=true,nodeExecut
     await fsp.writeFile(path.join(temp,'START-HERE.txt'),START_HERE,{flag:'wx'});
     if(!engineOnly)await fsp.writeFile(path.join(temp,'dedicated-source.json'),JSON.stringify({version:1,sourceEngine:stagedGlobal?.sourceEngine||plan.globalEngine},null,2)+'\n');
     await fsp.writeFile(path.join(temp,'install-sources.json'),JSON.stringify({version:1,globalMode:engineOnly?'user-supplied':stagedGlobal?'portable-copy':'linked',assetSource:'User-supplied Global game data; original game executables are not redistributed.'},null,2)+'\n');
+    if(globalClient)await fsp.writeFile(path.join(temp,'global-client.json'),JSON.stringify({version:1,root:globalClient},null,2)+'\n');
     if(!engineOnly)await writeInstallOwnership(temp,destination);
     const stagedMissing=missingRuntimeFiles(temp);
     if(stagedMissing.length)throw Error('Installed engine is incomplete before activation; missing: '+stagedMissing.slice(0,8).join(', '));

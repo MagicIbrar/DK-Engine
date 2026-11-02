@@ -5,7 +5,19 @@ import {assertNpcServiceUse} from './npc-service-guard.mjs';
 export function isCustomScene(world,map){return !!world.data.customMaps?.has?.(map);}
 // lane-perf: within one synchronous snapshot broadcast the placements of a map are the same for every viewer (core.mjs
 // broadcastMemo); each caller still gets its own array. Outside a broadcast this computes every call, as before.
+// STABILITY-PING: original (non-custom) placements depend only on the loaded catalog/quest tables, yet map 150 re-ran
+// questNpcLayout for every action reply and snapshot (~3% of the main thread at 100 players). They are cached per loaded
+// table set (identity-checked) and shared like the broadcast memo already shares them; custom scenes are never cached.
+const STATIC_PLACEMENTS=new WeakMap();
+function staticPlacements(world,map){
+  const data=world?.data;if(!data||typeof data!=='object'||isCustomScene(world,map))return null;
+  const progression=data.progression,npcs=progression?.npcs,quests=progression?.quests;
+  let byMap=STATIC_PLACEMENTS.get(data);if(!byMap||byMap.progression!==progression||byMap.npcs!==npcs||byMap.quests!==quests){byMap={progression,npcs,quests,rows:new Map()};STATIC_PLACEMENTS.set(data,byMap);}
+  const key=String(map);let rows=byMap.rows.get(key);if(!rows){rows=computeNpcPlacements(world,map);byMap.rows.set(key,rows);}
+  return rows;
+}
 export function npcPlacements(world,map){
+  const fixed=staticPlacements(world,map);if(fixed)return fixed.slice();
   if(world?._broadcastMemo&&world.broadcastMemo)return world.broadcastMemo(`npcPlacements:${map}`,()=>computeNpcPlacements(world,map)).slice();
   return computeNpcPlacements(world,map);
 }

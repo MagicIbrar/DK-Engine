@@ -6,6 +6,9 @@
 // the native artwork, attachment and animation remain unchanged.
 import {nativeOverheadTop} from './native-overhead-bounds.js';
 
+// ENGINE-DEFAULT (configurable), scan-fix 2026-10-29: the screen gaps below (6 px monsters/NPCs, 30 px players, 72..128 px
+// with an emblem) are this engine's. Global positions plates in the exe (no ui_*.txt, option.txt or csv carries an overhead
+// offset; the exe-side placement was not traced); the emblem art itself is native modeleffect.
 export const MAX_EMBLEM_NAMEPLATE_GAP = 128;
 
 export function nameplateHeadGap(actor,game=null,projection=null,viewport=null) {

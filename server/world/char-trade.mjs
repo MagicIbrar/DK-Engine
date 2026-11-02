@@ -9,6 +9,7 @@ import {sameScene} from './scene.mjs';
 import {AuthoritativeInventory} from './inventory.mjs';
 import {Container} from '../../src/systems/items/model.js';
 import {cursorTradeSaving} from './cursor-trade.mjs';
+import {canTradeOffer} from './item-flags.mjs';
 import {CHAR_TRADE_ENGINE_CHOSEN as C} from '../../src/config/engine-chosen-char-trade.js';
 
 export const CHAR_TRADE_SCHEMAS={chartrade:['token','type','operation','targetId','id','revision','characterId','items','dil']};
@@ -59,7 +60,7 @@ function payment(world,p,input){
   for(const row of input.items){
     if(!row||typeof row!=='object'||Array.isArray(row)||Object.keys(row).some(k=>!['uid','count'].includes(k))||typeof row.uid!=='string'||seen.has(row.uid)||!Number.isInteger(row.count)||row.count<1)fail(C.msg.failed,'Send each item UID and quantity once.');
     seen.add(row.uid);const item=p.profile.inventory?.find(i=>i.uid===row.uid),def=item&&world.data.itemDB.def(item.itemIndex);
-    if(!def||item.bound||Number(def.trade)===0||item.expiresAt&&item.expiresAt<=world.now()||item.pet?.active||item.pet?.inv?.length)fail(C.msg.failed,'That item cannot be traded.');
+    if(!canTradeOffer(def,item,world.now()))fail(C.msg.failed,'That item cannot be traded.');
     if(row.count>(item.count||1))fail(C.msg.failed,'That item quantity is unavailable.');
     const entry=structuredClone(item);entry.count=row.count;delete entry.page;delete entry.x;delete entry.y;
     if(!container.add(entry,{noStack:true}).ok)fail(C.msg.failed,'The payment exceeds the trade grid.');

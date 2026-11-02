@@ -5,21 +5,24 @@ import {poller} from '../core/poll.js';
 import {state, on} from '../core/state.js';
 import * as f from '../core/format.js';
 import {button, card, stat, pill, notice, switchRow, round, toast, empty, textField, setError} from '../ui/components.js';
-import {startWorld, stopWorld, restartWorld, storageSwitch} from './world-actions.js';
+import {startWorld, stopWorld, restartWorld, storageSwitch, gameGuardSwitch} from './world-actions.js';
 import {storagePresentation} from './world-presentation.js';
 
 export function create({navigate}) {
   const heroTitle = h('div', {class: 'hero-title', text: 'Checking your world…'});
   const heroSub = h('p', {class: 'muted wrap-any'});
   const heroPills = h('div', {class: 'row wrap'});
+  const ggSwitch = gameGuardSwitch();
+  const heroGg = h('div', {class: 'row wrap hero-gg'}, ggSwitch);
   const heroActions = h('div', {class: 'row wrap hero-actions'});
+  // Seed Start/Stop while status is still unknown (act-start-seed).
+  heroActions.append(button('Start world', {kind: 'primary', size: 'large', ico: 'power', disabled: true, attrs: {id: 'act-start'}, title: 'Checking your world.'}), button('Stop world', {kind: 'danger', ico: 'stop', disabled: true, attrs: {id: 'act-stop'}}), button('Host friends', {size: 'large', onClick: () => navigate('play/host')}), button('Join a server', {kind: 'ghost', onClick: () => navigate('play/join')}));
   const progressHost = h('div', {class: 'stack tight', hidden: true, 'aria-live': 'polite'});
-  const orb = h('div', {class: 'world-orb', 'aria-hidden': 'true'}, h('span', {class: 'orb-glow'}), h('span', {class: 'orb-ripple'}), h('span', {class: 'orb-ripple r2'}), h('span', {class: 'orb-arc'}), h('span', {class: 'orb-core'}));
   const firstBox = h('div', {class: 'first-start', hidden: true});
   const heroFoot = h('div', {class: 'hero-foot'}, storageSwitch(), h('span', {class: 'faint', text: state.mode === 'install' ? 'Port 7996 · this PC only' : 'Port 17996 · this PC only'}));
   const hero = h('section', {class: 'card hero', 'aria-label': 'World'},
-    h('div', {class: 'hero-top'}, h('div', {class: 'stack tight grow'}, h('div', {class: 'row wrap'}, h('span', {class: 'eyebrow', text: state.mode === 'install' ? 'Your world' : 'Sandbox world'}), heroPills), heroTitle, heroSub), orb),
-    firstBox, progressHost, heroActions, heroFoot);
+    h('div', {class: 'hero-top'}, h('div', {class: 'stack tight grow'}, h('div', {class: 'row wrap'}, h('span', {class: 'eyebrow', text: state.mode === 'install' ? 'Your world' : 'Sandbox world'}), heroPills), heroTitle, heroSub)),
+    firstBox, progressHost, heroGg, heroActions, heroFoot);
 
   const humans = stat({label: 'Players online', value: '—', note: 'Real people signed in', tint: 'mint', valueId: 'v-humans', open: {label: 'Open players', onClick: () => navigate('server/players')}});
   const bots = stat({label: 'Bots', value: '—', note: 'Simulated players', tint: 'amber', valueId: 'v-bots', open: {label: 'Open bot settings', onClick: () => navigate('server/world', {anchor: 'set-bots'})}});
@@ -80,7 +83,16 @@ export function create({navigate}) {
       button('DX11 Client', {kind: 'primary', size: 'large', ico: 'play', onClick: () => launch('native')}), button('DX11 Fullscreen', {size: 'large', onClick: () => launch('native-fullscreen')}),
       button('Desktop App', {kind: 'ghost', onClick: () => launch('desktop')}), button('Web Browser', {kind: 'ghost', onClick: () => launch('browser')}),
       h('span', {class: 'grow'}), button('Restart', {kind: 'ghost', ico: 'refresh', disabled: !!busy || w.adopted, title: w.adopted ? 'This world was started outside this launcher.' : undefined, onClick: () => restartWorld({host: progressHost})}), button('Stop world', {kind: 'danger', ico: 'stop', disabled: !!busy, attrs: {id: 'act-stop'}, onClick: () => stopWorld({host: progressHost})}));
-    else heroActions.append(button(busy ? busy.title + '…' : 'Start world', {kind: 'primary', size: 'large', ico: 'power', disabled: !!busy || !stopped, attrs: {id: 'act-start'}, onClick: () => start()}), button('Host friends', {size: 'large', onClick: () => navigate('play/host')}), button('Join a server', {kind: 'ghost', onClick: () => navigate('play/join')}));
+    else {
+      // Always keep Start world + Stop world in the DOM (Stop disabled when not running) so usability survives status=checking / unknown.
+      const canStart = !!stopped && !busy;
+      heroActions.append(
+        button(busy ? busy.title + '.' : 'Start world', {kind: 'primary', size: 'large', ico: 'power', disabled: !canStart, attrs: {id: 'act-start'}, onClick: () => start()}),
+        button('Stop world', {kind: 'danger', ico: 'stop', disabled: true, attrs: {id: 'act-stop'}, title: 'World is not running.'}),
+        button('Host friends', {size: 'large', onClick: () => navigate('play/host')}),
+        button('Join a server', {kind: 'ghost', onClick: () => navigate('play/join')})
+      );
+    }
     heroFoot.hidden = running;
     const p = w.population;
     humans.querySelector('.stat-value').firstChild.textContent = running && p?.known ? f.n(p.humans) : running && p?.total !== null && p?.total !== undefined ? '?' : '—';

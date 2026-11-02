@@ -331,7 +331,7 @@ export function registerUpgrade(sys) {
         sys.msg(null, null, clean(str(1001, 12)).replace('<itemlevel>', `+${newLv}`));
       } else sys.msg(1001, 11);
     }
-    g.events.emit('item:upgrade', { item: inst, ok, level: ok ? lv + 1 : newLv, destroyed: newLv < 0 });
+    const kind={4:'weapon',5:'armor',2:'accessory'}[Number(def.type)]; g.events.emit('item:upgrade', { item: inst, ok, level: ok ? lv + 1 : newLv, destroyed: newLv < 0, kind });
     for (const s of K.slots) s.validate();
     if (S.item.inst && !sys.bag.list.includes(S.item.inst)) S.item.clear(false);
     S.item.draw();

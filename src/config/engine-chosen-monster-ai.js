@@ -72,6 +72,10 @@ export const MONSTER_AI_ENGINE_CHOSEN = Object.freeze({
     possibleHpApplied: false,
   }),
   // MON_*.csv column 2 (respawn seconds, meaning inferred). The old client sanitising, now used by the server too:
+  // ENGINE-DEFAULT (configurable): the column values are Global; how 0/negative, 1..4 and 60000/65534 are treated is not.
+  // Searched: Global share/map MON_*.csv + maplist.csv, server-ref Normal/Arena share/map (same values, no rule), 64-bit decompile
+  // (only LogicProcess::Loader::Map::MonsterLocate, spawning is server-side), no online source. So the 'never' rows come back
+  // after rareSec (15 min) here.
   respawn: Object.freeze({
     defaultSec: 30,         // 0 / missing / negative
     minSec: 5,              // 1..4

@@ -15,18 +15,23 @@
 //   (turn left / Connect / turn right), btn_create_char (New), btn_delete_char (Delete, confirmed in
 //   ui_deletecharwnd.txt by typing the name), btn_exit (Exit Game -> back to the login screen: a browser tab cannot
 //   quit itself).
-// Decisions: deletion is immediate after the confirmation (the server-side "Deletion in progress" timer of the live
-// service, lbl_character_del_* / btn_delete_cancel / btn_delete_char_confirm, has no meaning offline and stays
-// hidden); field-channel choices come from the authenticated host catalog.
+// Decisions: deletion stays immediate after name confirmation until a host-supplied pendingDeleteAt is evidenced
+// (Global client shows lbl_character_del_* + 30:123/124 and btn_delete_cancel / btn_delete_char_confirm from the
+// server delete-at __time64 — FUN_00a5b180/b650/d2e0 + stringtable loginmsg/30; delay duration UNRESOLVED). When pendingDeleteAt is present
+// the countdown UI is wired; otherwise those controls stay hidden. Field-channel choices come from the host catalog.
 import { FrontCharacter } from './character.js';
 import { updateOrbit } from '../../systems/items/weapon-orbit.js';
 import { loadSelectInfo, classSceneInfo, selectCharYaw, frameView, rowCamHeight, SELECT_BAND } from './selectinfo.js';
 import { rowFovDeg } from './stage.js';
 import { cloneTemplate, rich } from './ui.js';
 import { SERVER_LABEL } from './login.js';
-import { listCharacters, deleteAccountCharacter } from '../../game/save.js';
+import { listCharacters, deleteAccountCharacter, cancelAccountCharacterPending } from '../../game/save.js';
+import {
+  isCharacterPendingDelete, isPendingDeleteExpired,
+  pendingDeleteLabelText, PENDING_DELETE_STRINGS,
+} from './pending-delete.js';
 import { prewarmClassIcons } from '../icon-prewarm.js';
-import { playerNameplateName } from '../../game/nameplate-view.js';
+import { playerNameplateName, authorizedStaffTag } from '../../game/nameplate-view.js';
 
 export const ROWS_PER_PAGE = 5;
 export const PAGES = 2;
@@ -42,6 +47,7 @@ export class SelectScreen {
     this.chars = [];
     this.page = 0;
     this.selectedId = null;
+    this._pendingTimer = null;
     this.model = null;
     this._seq = 0;
     this._turn = 0;
@@ -50,8 +56,9 @@ export class SelectScreen {
   /** @returns {Promise<{action:'enter'|'create'|'logout', character?:object}>} */
   async run({ selectId = null } = {}) {
     const fe = this.fe;
-    this.staffTag=null;
-    try { const session=await fe.accounts.request('/api/auth/me');if(session.id===fe.account&&session.capabilities?.includes('gm:commands'))this.staffTag='ADMIN'; } catch { /* ordinary labels when the session cannot be checked */ }
+    this.staffAuthorized=false;this.staffAccount=null;
+    // The account session authorizes the cosmetic label; the character's saved choice supplies its value.
+    try { const session=await fe.accounts.request('/api/auth/me');if(session.id===fe.account&&session.capabilities?.includes('gm:commands')){this.staffAuthorized=true;this.staffAccount=session.id;} } catch { /* ordinary labels when the session cannot be checked */ }
     this.serverLabel = SERVER_LABEL;
     try { const info = await fe.accounts.request('/api/server/info'); if (typeof info.name === 'string' && info.name.trim()) this.serverLabel = info.name.trim().slice(0,64); } catch { /* local fallback retains the configured frontend name */ }
     this.channels=[];this.channelError=null;this.selectedChannel=null;
@@ -91,7 +98,7 @@ export class SelectScreen {
   _mapName(save) { return this.fe.data.mapByIndex(save?.map != null ? save.map : 150)?.Name || ''; }
   _describe(c) {
     const def = this._classDef(c);
-    return `${playerNameplateName(c.name,{staffTag:this.staffTag})}\nLv. ${c.level || 1}  ${c.className || def?.name || ''}\n${this._mapName(c)}`;
+    return `${playerNameplateName(c.name,{staffTag:authorizedStaffTag(c.name,this.staffAccount,this.staffAuthorized)})}\nLv. ${c.level || 1}  ${c.className || def?.name || ''}\n${this._mapName(c)}`;
   }
 
   // ---------------------------------------------------------------------------------------- scene
@@ -140,8 +147,9 @@ export class SelectScreen {
       char.play('createPose');
     }
     if (si) {
-      // the original framing: file anchor + maplist Camera_Height, the whole body inside the
-      // letterbox with head and foot room; with no character, a nominal 2.4 m body on the stage
+      // uniform card framing (selectinfo.js frameView): Global's map / stand point / facing / view side, the camera
+      // placed from the measured body so every class stands at the same centre, feet row and size in the card;
+      // with no character, a nominal 2.4 m body on the stage
       if (!body) {
         const bottom = char ? char.y : stage.heightAt(si.x, si.z, si.eye.y + 0.7);
         body = { x: si.x, z: si.z, bottom, top: bottom + (char ? char.height * char.scale : 2.4) };
@@ -206,8 +214,8 @@ export class SelectScreen {
     standardMode?.setChecked(true).onClick(() => standardMode.setChecked(true));
     win.find('btn_sel_arena_mode')?.setEnabled(false);
     // connect bar
-    c('btn_delete_cancel').hide();
-    c('btn_delete_char_confirm').hide();
+    c('btn_delete_cancel').hide().onClick(() => this._cancelPendingDelete());
+    c('btn_delete_char_confirm').hide().onClick(() => this._confirmPendingDelete());
     c('btn_connect').onClick(() => this._enter());
     for (const [id, dir] of [['btn_turn_left', 1], ['btn_turn_right', -1]]) {
       const b = c(id);
@@ -234,24 +242,62 @@ export class SelectScreen {
   _refresh() {
     const c = id => this.win.control(id);
     const page = this._pageChars();
+    const now = Date.now();
+    const units = {
+      day: this.T.get(PENDING_DELETE_STRINGS.units.cate, PENDING_DELETE_STRINGS.units.codes.day, 'Day(s)'),
+      hour: this.T.get(PENDING_DELETE_STRINGS.units.cate, PENDING_DELETE_STRINGS.units.codes.hour, 'Hour(s)'),
+      minute: this.T.get(PENDING_DELETE_STRINGS.units.cate, PENDING_DELETE_STRINGS.units.codes.minute, 'Minute(s)'),
+    };
     this.rows.forEach((b, k) => {
       const ch = page[k] || null;
       b.data.char = ch;
-      if (!ch) { b.hide(); return; }
+      const del = this.win.find(`lbl_character_del_${k}`);
+      if (!ch) {
+        b.hide();
+        del?.hide();
+        return;
+      }
       b.setText(this._describe(ch));
       b.setChecked(ch.id === this.selectedId);
       b.show();
+      if (isCharacterPendingDelete(ch, now)) {
+        const text = pendingDeleteLabelText(ch, (cate, code, fb) => this.T.raw(cate, code, fb), now, units);
+        if (del) {
+          if (typeof del.setRichText === 'function') del.setRichText(text);
+          else del.setText(text);
+          del.show();
+        }
+      } else {
+        del?.hide();
+      }
     });
+    for (let k = this.rows.length; k < 9; k++) this.win.find(`lbl_character_del_${k}`)?.hide();
     const pages = Math.max(1, Math.ceil(this.chars.length / ROWS_PER_PAGE));
     c('btn_page_1').setEnabled(this.page > 0);
     c('btn_page_2').setEnabled(this.page < pages - 1);
     const sel = this.selected;
+    const selPending = isCharacterPendingDelete(sel, now);
     c('pan_select_char').setVisible(!!sel);
     c('pan_connect').setVisible(!!sel);
-    c('btn_connect').setEnabled(!!sel&&Number.isInteger(this.selectedChannel)&&!this.channelError);
-    c('btn_delete_char').setEnabled(!!sel);
+    c('btn_connect').setEnabled(!!sel && !selPending && Number.isInteger(this.selectedChannel) && !this.channelError);
+    c('btn_delete_char').setEnabled(!!sel && !selPending);
+    c('btn_delete_cancel').setVisible(!!selPending);
+    c('btn_delete_char_confirm').setVisible(!!selPending);
     c('btn_create_char').setEnabled(this.chars.length < MAX_CHARACTERS);
-    if (sel) c('lbl_select_msg').setText(playerNameplateName(sel.name,{staffTag:this.staffTag}));
+    if (sel) c('lbl_select_msg').setText(playerNameplateName(sel.name,{staffTag:authorizedStaffTag(sel.name,this.staffAccount,this.staffAuthorized)}));
+    this._armPendingTimer(this.chars.some(ch => isCharacterPendingDelete(ch, now)));
+  }
+
+  _armPendingTimer(needed) {
+    if (!needed) {
+      if (this._pendingTimer) { clearInterval(this._pendingTimer); this._pendingTimer = null; }
+      return;
+    }
+    if (this._pendingTimer) return;
+    this._pendingTimer = setInterval(() => {
+      if (this._leaving || !this.win) { this._armPendingTimer(false); return; }
+      this._refresh();
+    }, 1000);
   }
 
   select(id) {
@@ -314,6 +360,10 @@ export class SelectScreen {
   async _enter() {
     const c = this.selected;
     if (!c || this._leaving) return;
+    if (isCharacterPendingDelete(c)) {
+      void this.fe.messageBox(this.T.get(30, 124, 'Deletion in Progress'));
+      return;
+    }
     if(this.channelError||!this.channels.some(row=>row.index===this.selectedChannel&&row.available)){void this.fe.messageBox(this.channelError||'Select an available server channel.');return;}
     this.fe.uim.sound(1);
     // FrontEnd verifies the account before opening this screen and again before
@@ -336,6 +386,7 @@ export class SelectScreen {
     this._leaving = true;
     this._seq++;
     this._unwire?.();
+    this._armPendingTimer(false);
     this._offFrame?.();
     const win = this.win;
     this.accountLine?.remove(); this.accountLine = null;
@@ -350,6 +401,7 @@ export class SelectScreen {
   async _confirmDelete() {
     const ch = this.selected;
     if (!ch || this._modal || this._leaving) return;
+    if (isCharacterPendingDelete(ch)) return;
     this._modal = true;
     const ui = this.fe.uim;
     const dlg = await ui.create('game2/ui_deletecharwnd.txt', { name: 'chardelete', modal: true, remember: false, disposeOnClose: true, autoClose: false });
@@ -392,5 +444,35 @@ export class SelectScreen {
     this.selectedId = (this.chars[Math.min(i, this.chars.length - 1)] || null)?.id || null;
     this._refresh();
     this._showSelected();
+  }
+  /** Global action 5: cancel pending deletion (clears pendingDeleteAt when the host stored one). */
+  async _cancelPendingDelete() {
+    const ch = this.selected;
+    if (!ch || this._leaving || this._deleting) return;
+    if (!isCharacterPendingDelete(ch)) return;
+    this._deleting = true;
+    try {
+      await cancelAccountCharacterPending(ch.id);
+    } catch (err) {
+      this._deleting = false;
+      this.fe.messageBox(err.message);
+      return;
+    }
+    this._deleting = false;
+    this.chars = listCharacters();
+    this._refresh();
+    this._showSelected();
+  }
+
+  /** Global action 4: finalize after countdown — host DELETE once expired (30:124). */
+  async _confirmPendingDelete() {
+    const ch = this.selected;
+    if (!ch || this._leaving || this._deleting) return;
+    if (!isCharacterPendingDelete(ch)) return;
+    if (!isPendingDeleteExpired(ch)) {
+      void this.fe.messageBox(pendingDeleteLabelText(ch, (cate, code, fb) => this.T.raw(cate, code, fb)));
+      return;
+    }
+    await this._delete(ch, ch.name);
   }
 }

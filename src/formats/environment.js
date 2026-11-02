@@ -44,12 +44,15 @@ function normalize3(v) {
  *   sky {type, unk}          'sky_type' N [M]: N = row of script/environment/sky_table.txt; M raw (0/1, optional)
  *   cloud {raw:[5 numbers]}  'cloud_type' (a b c alpha(0..255) e) kept raw
  *   night boolean            'night'
- *   interior raw[4]|null     'interior' (2 files, kept raw)
+ *   interior raw[4]|null     'interior' (last line seen while this key was open; kept raw for tools)
+ * File level: interiors [[x0,z0,x1,z1],...] every 'interior' line (Global appends each to one list, FUN_0097ea10;
+ *   see interiorAt). Key defaults are Global's light-key reset FUN_0081bc90 (see newKey).
  *   extra {key: values}      anything unknown
  */
 export function parseEnvironment(src) {
   const text = toText(src);
   const keys = [];
+  const interiors = [];
   let cur = null;
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
@@ -57,10 +60,11 @@ export function parseEnvironment(src) {
     const low = line.toLowerCase();
     if (low === '<light>') { cur = newKey(); continue; }
     if (low === '</light>') { if (cur) keys.push(finishKey(cur)); cur = null; continue; }
-    if (!cur) continue;
     const t = line.split(/\s+/);
     const k = t[0].toLowerCase();
     const v = t.slice(1);
+    if (k === 'interior') { const r = nums(v.slice(0, 4)); if (r.length === 4 && r.every(Number.isFinite)) interiors.push(r); }
+    if (!cur) continue;
     switch (k) {
       case 'time': cur.time = Number(v[0]); break;
       case 'lightdistance': cur.lightDistance = Number(v[0]); break;
@@ -85,14 +89,25 @@ export function parseEnvironment(src) {
     }
   }
   keys.sort((a, b) => a.time - b.time);
-  return { keys, dayUnits: DAY_UNITS };
+  return { keys, dayUnits: DAY_UNITS, interiors };
 }
 
+// Defaults = Global's light-key reset at each <light> (32-bit FUN_0081bc90, field offsets from the parser stores in
+// FUN_0097e4xx: fog_value -> +0/+4, fog_color -> +8..+0x10, dirlight_dir -> +0x14, dirlight_color -> +0x20,
+// dirbacklight_dir -> +0x2c, dirbacklight_color -> +0x38, ambient_color -> +0x44, lightdistance -> +0x50):
+// fog 50 / 70, fog colour 0 0 0, sun dir (0, 1, 5), sun colour 1 1 1, back dir (0, 1, -5), back colour 0 0 0 (= off),
+// ambient 1 1 1, lightdistance 1000. (All 283 Global keys set every field except the back light, 236 keys omit it.)
+export const GLOBAL_LIGHT_KEY_DEFAULTS = Object.freeze({
+  fogStart: 50, fogEnd: 70, fogColor: [0, 0, 0], sunDirRaw: [0, 1, 5], sunColor: [1, 1, 1],
+  backDirRaw: [0, 1, -5], backColor: [0, 0, 0], ambient: [1, 1, 1], lightDistance: 1000,
+});
 function newKey() {
+  const D = GLOBAL_LIGHT_KEY_DEFAULTS;
   return {
-    time: 0, hour: 0, lightDistance: 100, ambient: [0.5, 0.5, 0.5], sunColor: [1, 1, 1], sunDir: [0, 1, 0], sunDirRaw: null,
-    backColor: null, backDir: null, backDirRaw: null,
-    fog: { start: 30, end: 60, color: [0.5, 0.5, 0.5] },
+    time: 0, hour: 0, lightDistance: D.lightDistance, ambient: D.ambient.slice(), sunColor: D.sunColor.slice(),
+    sunDir: normalize3(D.sunDirRaw), sunDirRaw: null,
+    backColor: null, backDir: null, backDirRaw: null,   // unset = Global's (0,0,0) back colour = no back light
+    fog: { start: D.fogStart, end: D.fogEnd, color: D.fogColor.slice() },
     weather: { enabled: false, rate: 0, scene: 0, duration: 0, raw: [] }, bloom: { enabled: false, params: [], raw: [] },
     sky: { type: 0, unk: null, raw: [] }, cloud: { raw: [] }, night: false, interior: null, extra: {},
   };
@@ -114,7 +129,7 @@ const lerp3 = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2],
 export function sampleEnvironment(env, time) {
   const keys = env.keys;
   if (!keys.length) return finishKey(newKey());
-  if (keys.length === 1) return { ...keys[0], time };
+  if (keys.length === 1) return { ...keys[0], time, fogKey: keys[0].fog, fogDirect: true };
   const T = env.dayUnits || DAY_UNITS;
   const t = ((time % T) + T) % T;
   let i = keys.length - 1;
@@ -131,10 +146,76 @@ export function sampleEnvironment(env, time) {
     sunColor: lerp3(a.sunColor, b.sunColor, f),
     sunDir: normalize3(lerp3(a.sunDir, b.sunDir, f)),
     fog: { start: lerp(a.fog.start, b.fog.start, f), end: lerp(a.fog.end, b.fog.end, f), color: lerp3(a.fog.color, b.fog.color, f) },
+    // Global fog: the current key A approached from the last sent fog (stepGlobalFog), not a lerp A -> B. `fog` above is
+    // kept for tools; Environment.update drives the scene fog from fogKey / blend.t (LANE-66).
+    fogKey: a.fog, fogDirect: dt === 0,
     bloom: { ...a.bloom, params: a.bloom.params.map((p, k) => (b.bloom.params[k] !== undefined ? lerp(p, b.bloom.params[k], f) : p)) },
   };
   if (a.backColor && b.backColor) out.backColor = lerp3(a.backColor, b.backColor, f);
   return out;
+}
+
+/**
+ * Global's per-update fog step (LANE-66; decompile/32-bit-main SystemModel::Environment::Provider,
+ * update FUN_0081d010 + apply FUN_0081ddd0, disassembly 0081d2d1..0081d34c). The exe does NOT interpolate fog between
+ * the surrounding keys: with f = the key blend factor (sampleEnvironment blend.t) and P = the fog it last sent
+ * (provider +0x24: near, far, r, g, b), it computes  out = P + (keyA - P) * f  for the CURRENT key A, and sends it
+ * (CMapFogMsg, FUN_0081e470) only when the colour or the near/far pair moved by more than 0.001 (DAT_01b7e0cc,
+ * Euclidean); then P = out. Exactly on a key time, or with a single key, key A is applied directly (out = A).
+ * @param {{start:number,end:number,color:number[]}|null} last  P (null = nothing sent yet)
+ * @param {{start:number,end:number,color:number[]}} key  the current key's fog (sampleEnvironment fogKey)
+ * @param {number} f  blend factor 0..1 (1 when the key is applied directly)
+ * @returns {{fog:{start:number,end:number,color:number[]}, sent:boolean}}
+ */
+export const GLOBAL_FOG_SEND_EPS = 0.001;
+export function stepGlobalFog(last, key, f) {
+  if (!last) return { fog: { start: key.start, end: key.end, color: key.color.slice(0, 3) }, sent: true };
+  const t = Number.isFinite(f) ? f : 1;
+  const out = {
+    start: last.start + (key.start - last.start) * t, end: last.end + (key.end - last.end) * t,
+    color: [0, 1, 2].map(i => last.color[i] + (key.color[i] - last.color[i]) * t),
+  };
+  const dc = Math.hypot(out.color[0] - last.color[0], out.color[1] - last.color[1], out.color[2] - last.color[2]);
+  const dv = Math.hypot(out.start - last.start, out.end - last.end);
+  if (dc > GLOBAL_FOG_SEND_EPS || dv > GLOBAL_FOG_SEND_EPS) return { fog: out, sent: true };
+  return { fog: { start: last.start, end: last.end, color: last.color.slice(0, 3) }, sent: false };
+}
+
+/**
+ * Global interior rectangles (LANE-66): Environment::Provider tests the camera focus (CameraImpl +0x58 / +0x60, the
+ * look-at pivot; 32-bit vfunc +0x18, 64-bit +0x30) against the light file's interior list (Sketch +0x94, 64-bit +0xa0):
+ * (int)x in [x0, x1) and (int)z in [z0, z1) -> sky_type 0 (no sky dome / cloud / flare). FILE frame.
+ */
+export function interiorAt(env, fileX, fileZ) {
+  const list = env && env.interiors;
+  if (!list || !list.length || !Number.isFinite(fileX) || !Number.isFinite(fileZ)) return false;
+  const x = Math.trunc(fileX), z = Math.trunc(fileZ);
+  for (const r of list) if (x >= r[0] && x < r[2] && z >= r[1] && z < r[3]) return true;
+  return false;
+}
+
+/**
+ * Global sky selection (LANE-66): the sky packet carries the CURRENT key's sky_type (FUN_0081d010, not interpolated),
+ * forced to 0 inside an interior rect. The dome / cloud plane switch through a Blender (FUN_0159c000) set to
+ * flag ? 10000 : 10 ms, and the flag (QMap +0xbd, 64-bit +0x121) is only ever written 0 (ctor 011611c0 /
+ * 7ff67123a2e0) -> every sky change is a 10 ms fade (GLOBAL_SKY_FADE_MS), i.e. a switch.
+ */
+export const GLOBAL_SKY_FADE_MS = 10;
+export function globalSkyType(env, key, fileX, fileZ) {
+  if (interiorAt(env, fileX, fileZ)) return 0;
+  const t = key && key.sky ? key.sky.type : 0;
+  return Number.isFinite(t) ? t : 0;
+}
+
+/**
+ * Global cloud plane scroll (CloudPlane ctor 01586c70 / 01586e10: speed 0.002, direction (1, 0); update FUN_01586e70:
+ * offset += ms * 0.002 * 0.002 along the direction, wrapped to [0, 1)) = +0.004 UV per second on u, v fixed.
+ * cloud_type values do not change the speed.
+ */
+export const GLOBAL_CLOUD_UV_PER_MS = 0.002 * 0.002;
+export function stepGlobalCloud(offset, dtMs) {
+  const u = (offset && Number.isFinite(offset.u) ? offset.u : 0) + (Number.isFinite(dtMs) ? dtMs : 0) * GLOBAL_CLOUD_UV_PER_MS;
+  return { u: u - Math.floor(u), v: offset && Number.isFinite(offset.v) ? offset.v - Math.floor(offset.v) : 0 };
 }
 
 /** Convert a FILE-frame direction/position to three.js (mirror Z). */

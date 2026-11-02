@@ -89,6 +89,32 @@ export function weaponStations(blade, capacity) {
   const [from, to] = CHOSEN.STATION_SPAN, spacing = blade.length * (to - from) / capacity;
   return Array.from({length: capacity}, (_, index) => ({index, local: sampleLine(blade, blade.length * (from + (to - from) * (index + .5) / capacity)), spacing}));
 }
+
+/** Native blade socket attach bones from weapon skels and item_upgrade_10* scenes (SWD_W01..SWD_W04, _L twins).
+ * Prefer the socket-index bone SWD_W0{index+1}, then authored mid-blade SWD_W02, then SWD_W01 / SWD_W.
+ * Returns weapon-local Vector3 from the bone's world matrix — never invented constants. */
+export function socketBoneLocal(weapon, slot, index) {
+  if (!weapon) return null;
+  const n = Math.max(1, Math.min(4, (Number(index) | 0) + 1));
+  const left = slot === 'left';
+  const candidates = left
+    ? [`SWD_W0${n}_L`, 'SWD_W02_L', 'SWD_W01_L', 'SWD_W_L']
+    : [`SWD_W0${n}`, 'SWD_W02', 'SWD_W01', 'SWD_W'];
+  for (const name of candidates) {
+    let bone = null;
+    weapon.traverse(o => {
+      if (!bone && o.isBone && (o.userData?.raw === name || o.name === name)) bone = o;
+    });
+    if (!bone) continue;
+    weapon.updateWorldMatrix(true, true);
+    bone.updateWorldMatrix(true, false);
+    const local = new THREE.Vector3().setFromMatrixPosition(bone.matrixWorld);
+    _inv.copy(weapon.matrixWorld).invert();
+    return local.applyMatrix4(_inv);
+  }
+  return null;
+}
+
 /** Metres the station mist sprites are depth-shifted toward the camera (see SOCKET_GLOW_CHOSEN.MIST_DEPTH_BIAS); 0 without a mesh. */
 export function weaponDepthBias(root) {
   if (!root) return 0;

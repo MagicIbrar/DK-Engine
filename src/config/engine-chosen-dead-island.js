@@ -1,6 +1,9 @@
 // Dead Island (map551) in-run rules. NATIVE rows are read from the prepared
-// client tables; every ENGINE-CHOSEN value below says what it was derived from.
-// The Global server director for this map is not in any supplied source.
+// client tables; older-server-reference rows come from server-ref
+// map551 share (Arena==Normal). ENGINE-CHOSEN / UNRESOLVED values stay
+// only where no Global client, decompile pseudocode, or server-ref source gives
+// a duration/rule. The Global server director for this map is not in any
+// supplied source.
 // Admission (server/world/dead-island.mjs): runs 1-3 per server day take a Frontier ticket; runs 4-6 need one
 // Camouflage [Frontier] (NATIVE system_variable 51 = 1755139, desc 918 "3 additional entries"; itemcash Trade 0,
 // not for sale). It is a GM-event prize, awarded with the GM grant command /gm giveitem
@@ -24,22 +27,39 @@ export const DEAD_ISLAND_ABILITIES=Object.freeze([
  Object.freeze({menu:14007,item:7505,itemStatus:1237,trigger:7310,status:7232,kind:'self',type:13300}),   // Hermes
 ]);
 
-// ENGINE-CHOSEN timings. The native rows give magnitudes and the item cooldown
-// (itemetc Appraisal 2000ms, 15000ms for Midas/Shackle) but no effect length.
-// Self and guild buffs last 60s: four native 15s cooldown windows, so a stone
-// used once per stage covers a stage fight without permanent uptime.
-// Shackle lasts its own native 15s cooldown. Midas crystals keep the native
-// "disappear in time" rule with a 30s life (two Shackle windows).
+// NATIVE itemetc Appraisal cooldowns (ms): 7499-7502/7505-7508 = 2000; 7503/7504 = 15000; 7490 Igniter = 0.
+// status.csv for 7226..7235 / 7281..7296 / 7324 has no Time/Duration column — effect lengths are not in client tables.
+//
+// UNRESOLVED effect lengths (kept as ENGINE-CHOSEN working values; searched with zero hits):
+//   abilityMs, areaHealMs, midasCrystalMs, stonesPerStage,
+//   totem releaseMs/rechargeMs/comboMs/invincibleMs (except gaugeMs),
+//   Recollapse everyMs, boss radius, paid-run custody, igniter set drop policy.
+// Search paths (2026-10-29 America/Los_Angeles):
+//   server-ref — ini/txt/csv/scripts,
+//     map551 callmon/brick/npc/mon (no timer fields; RegenCycle=0), maplist (no 7200 field),
+//     DekaronServer.exe/ScriptProcess.dll string tables (Totem/AbilityCap only; no Dead Island director),
+//     DB .bak/.sql/.mdf as text (runtime DBs; no DI design timers);
+//   decompile Ghidra decompiled.c / README (no guide/stringtable assets; no DI timer/packet constants;
+//     numeric 1380/551/7200 hits are address noise);
+//   Scrubbed Global 0.0.1 + prepared prepared-client stringtables/status/itemetc
+//     (totem gauge 5000 NATIVE; reset prices NATIVE; Appraisal cooldowns NATIVE; no ability duration).
 export const DEAD_ISLAND_TIMING=Object.freeze({
- abilityMs:60000,shackleMs:15000,areaHealMs:5000,midasCrystalMs:30000,
- // One stone per chosen ability at each battle-stage start (stages 1-4): a
- // "consumable item" (native desc 898..907) that the run re-issues per stage.
+ // UNRESOLVED / ENGINE-CHOSEN: no Global/server-ref duration for ability buff length.
+ abilityMs:60000,
+ // UNRESOLVED / ENGINE-CHOSEN duration; NATIVE Appraisal cooldown for 7504 is 15000 (itemetc).
+ shackleMs:15000,
+ // UNRESOLVED / ENGINE-CHOSEN: Area Heal string says "Heals Guild member's HP" with no length.
+ areaHealMs:5000,
+ // UNRESOLVED / ENGINE-CHOSEN: Midas "disappear in time"; Appraisal cooldown 15000 NATIVE on 7503.
+ midasCrystalMs:30000,
+ // UNRESOLVED / ENGINE-CHOSEN: one stone per stage (desc 898..907 call them consumable; no count in tables).
  stonesPerStage:1,
 });
 
 // NATIVE totems: npc 5537 Earth, 5538 Forest, 5539 Fire, 5540 Wind,
 // 5541 Heaven (Sky), 5545 Water; job31:5003; dialog 30000/30001 with the
 // native 5000ms gauge and sound 22/1028/25/29; Igniter 7490 (code72, desc892).
+// older-server-reference: server-ref Normal/Arena npc_551_deadman_island.csv lists the same 18 indices.
 export const DEAD_ISLAND_TOTEMS=Object.freeze([
  Object.freeze({npc:5537,key:'earth',released:227}),Object.freeze({npc:5538,key:'woods',released:228}),
  Object.freeze({npc:5539,key:'fire',released:229}),Object.freeze({npc:5540,key:'wind',released:230}),
@@ -57,18 +77,25 @@ export const DEAD_ISLAND_COMBOS=Object.freeze([
  Object.freeze({missing:'woods',message:237,effect:'neutralize'}),
  Object.freeze({missing:'earth',message:241,effect:'triforce'}),
 ]);
-// ENGINE-CHOSEN totem timings: released power lasts 30s (six native 5s
-// resonance gauges, enough for one member to walk between totems); a used
-// totem recharges in 120s (four combination windows); combination statuses
-// last 30s, invincibility 10s (the native Qune/Dekaron invincible rows are
-// short buffs). Failure 238 is shown when a release expires unused.
-export const DEAD_ISLAND_TOTEM_TIMING=Object.freeze({gaugeMs:5000,releaseMs:30000,rechargeMs:120000,comboMs:30000,invincibleMs:10000});
+// Totem timings: gaugeMs is NATIVE (stringtable_dungeon_06 code 30001
+// "<guage,sec 5000,text Resonating with the Ancient Totem,snd 22 1028 25 29>").
+// releaseMs/rechargeMs/comboMs/invincibleMs remain UNRESOLVED / ENGINE-CHOSEN
+// (no duration in status.csv or server-ref; see search paths on DEAD_ISLAND_TIMING).
+export const DEAD_ISLAND_TOTEM_TIMING=Object.freeze({
+ gaugeMs:5000, // NATIVE
+ releaseMs:30000, // UNRESOLVED / ENGINE-CHOSEN
+ rechargeMs:120000, // UNRESOLVED / ENGINE-CHOSEN
+ comboMs:30000, // UNRESOLVED / ENGINE-CHOSEN
+ invincibleMs:10000, // UNRESOLVED / ENGINE-CHOSEN
+});
 export const DEAD_ISLAND_IGNITER=7490;
-// ENGINE-CHOSEN Igniter supply: native itemset 4852 "guild dungeon lever item"
+// UNRESOLVED / ENGINE-CHOSEN Igniter supply: native itemset 4852 "guild dungeon lever item"
 // (100% Igniter) is referenced by no Global monster. Every authored wave
 // monster (7982 Teracota, 7983 Dryad, 7984 Diver) killed in a running battle
 // drops that set once, so Igniters are earned by fighting, never bought.
 export const DEAD_ISLAND_IGNITER_SET=4852;
+// older-server-reference: server-ref map551 callmon_551_deadman_island.csv
+// CallIndex 1/2/3 -> MonsterIndex 7982/7983/7984 (Arena==Normal; mon file empty).
 export const DEAD_ISLAND_WAVE_MONSTERS=Object.freeze([7982,7983,7984]);
 
 // NATIVE bosses and their group130 rows.
@@ -89,10 +116,11 @@ export const DEAD_ISLAND_ABSORB_WEAKEN=7261;    // NATIVE Ancient Curse Absorb [
 // level instead (254..256). Triforce and vitality are applied when the boss
 // appears and last the whole run; Triforce makes the boss immune to damage
 // (its native "strong barrier" option) until the totem combination removes it.
-// ENGINE-CHOSEN self-destruct pressure: native 225/226 Recollapse 7986. From
+// UNRESOLVED / ENGINE-CHOSEN self-destruct pressure: native 225/226 Recollapse 7986. From
 // stage2 a Recollapse appears every 90s at a random living run member's
 // position (one at first, +1 each later stage; native 225 "summon stage
 // increased" at each step), keeping its native stats and result row.
+// everyMs 90000: zero evidence in server-ref / Global / decompile.
 export const DEAD_ISLAND_RECOLLAPSE=Object.freeze({monster:7986,everyMs:90000,firstStage:2});
 export const DEAD_ISLAND_RECOVERY_GEM=7985;
 
@@ -102,9 +130,10 @@ export const DEAD_ISLAND_RECOVERY_GEM=7985;
 // the first arena-region cell two cells past the wall on the straight line
 // from the gate NPC to the arena centre (250,272), searched in the prepared
 // collision at run time.
+// older-server-reference bricks: BrickIndex 36922 x3, RegenCycle 0 (server-ref brick_551).
 export const DEAD_ISLAND_GATES=Object.freeze([5660,5661,5662]);
 export const DEAD_ISLAND_ARENA_CENTRE=Object.freeze({x:250,z:272});
-// ENGINE-CHOSEN boss anchors: the three Helion NPCs stand in the landing ring,
+// UNRESOLVED / ENGINE-CHOSEN boss anchors: the three Helion NPCs stand in the landing ring,
 // which the arena wall separates from the fight, so bosses cannot use them.
 // Each boss stands 25 cells from the arena centre toward its own gate
 // (7979 west 5660, 7980 south 5661, 7981 east 5662: the same order as the
@@ -113,9 +142,42 @@ export const DEAD_ISLAND_BOSS_GATES=Object.freeze([[7979,5660],[7980,5661],[7981
 export const DEAD_ISLAND_BOSS_RADIUS=25;
 export const DEAD_ISLAND_TITLE=14;   // NATIVE title "Frontier Pioneer" (Type 9; earned by using the interior gate after entry)
 
-// Paid-run custody (ENGINE-CHOSEN): the guild's paid run is recorded in the
+// NATIVE reset prices from stringtable_dungeon_06 codes 21000..21400
+// ("Reset payment 10,000,000 DIL" … "160,000,000 DIL"). Used by dead-island-plan / host reset.
+export const DEAD_ISLAND_RESET_PRICES=Object.freeze([10000000,20000000,40000000,80000000,160000000]);
+
+// Paid-run custody (UNRESOLVED / ENGINE-CHOSEN): the guild's paid run is recorded in the
 // durable social document. After a host restart or after every member left,
 // a returning admitted member reattaches to the same run id until its native
 // 120-minute deadline. The battle restarts from preparation (no charge);
 // cleared runs are not recreated.
-export const DEAD_ISLAND_RUN_LABEL='ENGINE-CHOSEN paid-run reattachment; native deadline and reset prices retained';
+export const DEAD_ISLAND_RUN_LABEL='UNRESOLVED/ENGINE-CHOSEN paid-run reattachment; NATIVE deadline 7200s and NATIVE reset prices retained';
+
+// Explicit UNRESOLVED inventory for coordinator (zero evidence after full search).
+export const DEAD_ISLAND_UNRESOLVED=Object.freeze({
+ abilityMs:60000,
+ areaHealMs:5000,
+ midasCrystalMs:30000,
+ stonesPerStage:1,
+ totemReleaseMs:30000,
+ totemRechargeMs:120000,
+ totemComboMs:30000,
+ totemInvincibleMs:10000,
+ recollapseEveryMs:90000,
+ bossRadius:25,
+ igniterSetDropPolicy:'itemset 4852 on every authored wave kill',
+ paidRunCustody:true,
+ guideCate1380Body:true,
+ searchPaths:Object.freeze([
+  String.raw`audit\server-ref\Server 2014`,
+  String.raw`audit\server-ref`,
+  String.raw`audit\server-ref\DB Cleaned`,
+  String.raw`audit\server-ref\legacy`,
+  String.raw`audit\server-ref\SQL Server 2014`,
+  String.raw`audit\decompile`,
+  String.raw`audit\Scrubbed Global 0.0.1`,
+  String.raw`audit\4.2.0\global-prepared\engine\.client-cache\generations\prepared-client\data\script\string`,
+  String.raw`audit\4.2.0\global-prepared\engine\.client-cache\generations\prepared-client\data\share\skill\status.csv`,
+  String.raw`audit\4.2.0\global-prepared\engine\.client-cache\generations\prepared-client\data\share\item\itemetc.csv`,
+ ]),
+});

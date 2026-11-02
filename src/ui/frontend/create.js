@@ -183,8 +183,7 @@ export class CreateScreen {
       const battle = Number(pi?.targetStyle) === 1;
       ch.frontRest = battle ? 'idleCombat' : 'createPose';
     } else {
-      // the original framing: file anchor + maplist Camera_Height, the whole posed body inside the letterbox with
-      // head and foot room (selectinfo.js frameView)
+      // uniform card framing (selectinfo.js frameView): same centre, feet row and size for every class.
       const body = this.body || { x: ch.x, z: ch.z, bottom: ch.y, top: ch.y + ch.height * ch.scale };
       this._want = { ...frameView(si, body, this.fov, this.camH, { band: CREATE_BAND }), yaw: selectCharYaw(si) };
       ch.frontRest = 'createPose';
@@ -258,6 +257,38 @@ export class CreateScreen {
       Object.assign(this.nameColorSelect.style,{position:'absolute',left:'76px',top:'56px',width:'153px',height:'22px',pointerEvents:'auto',background:'#17130f',border:'1px solid #6a5630',color:'#fff'});
       this.nameColorSelect.addEventListener('change',()=>{if(this.nameEdit?.input)this.nameEdit.input.style.color=characterNameCSS(this.nameColorSelect.value);});
       this.nameColorSelect.addEventListener('pointerdown',e=>e.stopPropagation());colorParent.el.appendChild(this.nameColorSelect);
+      // Three separate staff checkboxes: GM / DEV / ADMIN (mutually exclusive). Each tags the character and stamps staffRole.
+      this.staffPrivilegesCheck = null;
+      this.staffRoleChecks = null;
+      try {
+        const session = await this.fe.accounts.request('/api/auth/me');
+        if (session.id === this.fe.account && session.capabilities?.includes('gm:commands')) {
+          const wrap = document.createElement('div');
+          Object.assign(wrap.style, { position:'absolute', left:'76px', top:'72px', display:'flex', flexDirection:'column', gap:'2px', color:'#f6df91', fontSize:'11px', whiteSpace:'nowrap', pointerEvents:'auto', zIndex:'5' });
+          const mk = (role, label, checked) => {
+            const lab = document.createElement('label');
+            lab.title = label + ' bracket — max staff privileges + [' + label + '] name tag';
+            Object.assign(lab.style, { display:'flex', alignItems:'center', gap:'6px', cursor:'pointer' });
+            const box = document.createElement('input'); box.type = 'checkbox'; box.checked = !!checked;
+            box.setAttribute('aria-label', label + ' staff privileges');
+            box.dataset.staffRole = role;
+            box.addEventListener('pointerdown', e => e.stopPropagation());
+            lab.append(box, document.createTextNode(' ' + label));
+            wrap.appendChild(lab);
+            return box;
+          };
+          const defaultRole = ['admin','gm','dev'].includes(String(session.id||'').toLowerCase()) ? String(session.id).toLowerCase() : 'admin';
+          const gm = mk('gm', 'GM', defaultRole === 'gm');
+          const dev = mk('dev', 'DEV', defaultRole === 'dev');
+          const admin = mk('admin', 'ADMIN', defaultRole === 'admin');
+          const boxes = [gm, dev, admin];
+          const pick = which => { for (const b of boxes) b.checked = b === which; this.staffPrivilegesCheck = which; };
+          for (const b of boxes) b.addEventListener('change', () => { if (b.checked) pick(b); else if (!boxes.some(x => x.checked)) pick(admin); });
+          pick(boxes.find(b => b.checked) || admin);
+          colorParent.el.appendChild(wrap);
+          this.staffRoleChecks = { gm, dev, admin };
+        }
+      } catch { /* ordinary create when session cannot be checked */ }
     }
     this.nameEdit?.on('enter', () => this._ok());
     this.nameEdit?.on('escape', () => this._back());
@@ -452,7 +483,8 @@ export class CreateScreen {
     }
     this.fe.uim.sound(1);
     try {
-      const options = { name:normalizeCharacterName(name), nameColor:this.nameColorSelect?.value||'white', classIndex: Number(def.index), className: def.name };
+      const staffRole = this.staffPrivilegesCheck?.checked ? (this.staffPrivilegesCheck.dataset.staffRole || 'admin') : undefined;
+      const options = { name:normalizeCharacterName(name), nameColor:this.nameColorSelect?.value||'white', classIndex: Number(def.index), className: def.name, staffPrivileges: !!(this.staffPrivilegesCheck?.checked), staffRole };
       const account = await this.fe.accounts.restore();
       if (!account || account !== this.fe.account) throw new Error('Your account session changed or expired. Log in again before creating a character.');
       const character = await createAccountCharacter(options);

@@ -34,8 +34,11 @@ export async function dispatchEnhancement(world,p,input){
  const all=[target,stone,...rates,...[safe,ruin].filter(Boolean)];if(new Set(all.map(i=>i.uid)).size!==all.length)fail('Each enhancement slot needs a different item.');
  for(const item of rates)if(supportOk(db,db.def(item.itemIndex),def,'rate')!==true)fail('This rate item cannot reinforce this target.');
  if(safe&&supportOk(db,db.def(safe.itemIndex),def,'safe')!==true)fail('This protector cannot reinforce this target.');
+ // Evidence (scan fix A): Global itemetc.csv:2933/2938 Ruin Argate 9908 Rank 5, Colosseum Argate 9913 Rank 6 (stone Rank = target Rank).
  const required={5:9908,6:9913}[Number(def.rank)];if(required&&ruin?.itemIndex!==required||ruin&&!required)fail('Choose the required special argate.');
  const cost=Number(row.costDil)||0;if(bag.dil<cost)fail('Not enough DIL.');bag.addDil(-cost);
+ // Evidence (scan fix A): code-21 protectors (itemcash.csv 1751027/1751067) use Global description 450 "Upgrade level can go down by up to 3."
+ // Other protectors state no cap, so 99 = no extra cap beyond itemupgrade_safe.csv BACKWARD_* (ENGINE-CHOSEN sentinel).
  let protect=safe?{kind:'safe',maxDrop:db.def(safe.itemIndex).code===21?3:99}:null;
  for(const item of rates){const support=db.T.upgradeSubItem.rows.find(r=>Number(r.ItemIndex)===item.itemIndex);const group=Number(support?.Group);if(group===9)protect={kind:'spirit'};else if(group===6)protect={kind:'glory'};else if(group===5&&def.itemLv>=1)protect={kind:'grace',maxDrop:3};}
  // + the running Holy Water ItemUpgradeRate (server-owned premium state; up to a +11 result, upgrade.js premiumUpgradeBonusFor)
@@ -43,7 +46,8 @@ export async function dispatchEnhancement(world,p,input){
  for(const item of [stone,...rates,...[ruin,...(row.penalty!=='NOT_FAIL'?[safe]:[])].filter(Boolean)])if(!bag.consumeEntry(item,1))fail('Missing enhancement materials.');
  const level=ok?Number(def.itemLv||0)+1:failLevel(db,row,Number(def.itemLv)||0,protect,world.random);
  if(level<0)bag.bag.take(target);else{const index=ok?def.next:indexAtLevel(db,def.index,level),next=db.def(index);if(!next)fail('The enhancement result is unavailable.');target.itemIndex=Number(index);target.name=next.name;}
- const kind={4:'weapon',3:'armor',2:'accessory'}[Number(def.type)],sub={weapon:17,armor:18,accessory:19}[kind];
+ // Global item type: 4=weapon, 5=armor, 2=accessory (type 3=use/scrolls). DekaPass REINFORCEM subs 17/18/19.
+ const kind={4:'weapon',5:'armor',2:'accessory'}[Number(def.type)],sub={weapon:17,armor:18,accessory:19}[kind];
  if(sub)progressDekaPass({...world,changed(){}},{...p,profile},4,sub,0,1);
  await commitLife(world,p,profile);world.emit(p.map,{type:'item:upgrade',actorId:p.id,kind,ok,level,destroyed:level<0});return true;
 }
@@ -58,6 +62,7 @@ async function craft(world,p,input){
   const row=db.T.optionUpgrade.rows.find(r=>Number(r.ITEM_OPTION)===Math.min(3,k)&&Number(r.ITEM_LEVEL)===Math.max(1,Math.min(250,Number(def.reqLv)||1)));
   if(!def.slot||!brandable(def)&&Number(def.type)!==2||k>=cap||!row)fail('This item cannot receive another option.');
   const hi=material.itemIndex===Number(row.HI_OPTION_STONE_INDEX);if(!hi&&material.itemIndex!==Number(row.LOW_OPTION_STONE_INDEX))fail('Choose the correct Marvric.');
+  // Evidence (scan fix A): Global itemetc.csv:2934/2939 Ruin Mavric 9909 Rank 5, Colosseum Mavric 9914 Rank 6 (stone Rank = target Rank).
   const ruin=input.ruin?find(input.ruin):null,support=input.support?find(input.support):null,protect=input.protect?find(input.protect):null,required={5:9909,6:9914}[Number(def.rank)];
   if(required&&ruin?.itemIndex!==required||ruin&&!required)fail('Choose the required special Marvric.');
   const kind=(i,c)=>{const d=db.def(i.itemIndex);return d.type===1&&d.code===c;};if(support&&!kind(support,13)||protect&&!kind(protect,15))fail('Invalid Alchemist support item.');

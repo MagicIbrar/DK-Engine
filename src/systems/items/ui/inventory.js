@@ -10,6 +10,7 @@
 import { gridItems, setReadyGridItems, footprintAt, slotIcon, itemPayload, itemSwapResult, cursorActionResult, fmt, isCtrl, isShift } from './common.js';
 import { buildTooltip, buildCompare } from '../tooltip.js';
 import {comparisonTargets} from '../compare.js';
+import { cursorStoneTarget, cursorStoneInsert } from './cursor-stone-insert.js';
 import { Equipment, S } from '../equip.js';
 import { confirmSort } from './dialogs.js';
 import { clonePresetSelect, unequipSelect } from './preset-select.js';
@@ -28,7 +29,7 @@ export function inventoryFootprint(grid, event, drag, w, h) {
 export function registerInventory(sys) {
   const g = sys.game;
   const st = { page: 0, costumeView: false, search: '', win: null };
-  st.dropOutside = (inst, ev) => sys.db.def(inst.itemIndex)?.slot && overPlayer(ev) ? sys.equipItem(inst) : sys.discardAsk(inst);
+  st.dropOutside = (inst) => sys.discardAsk(inst); // Global 008931d0: a world release only drops; it never wears the item
   sys.invState = st;
 
   g.uiwin.registerWindow('inventory', {
@@ -70,14 +71,15 @@ export function registerInventory(sys) {
         const inst = it.data;
         if (g.chatLinks?.fromClick?.(inst, e)) return null;   // CHAT-LINKS: Shift + click with the chat input open = link it
         if (sys.reserved?.has(inst.uid)) return null;   // registered in an item NPC window: locked in place
-        const split = (e?.shiftKey || isShift(g)) && (inst.count || 1) > 1;
-        const payload = itemPayload(sys, inst, 'bag', { split, page: st.page }, [grid.cw, grid.ch]);
+        // Global: Shift + click a stack opens StackDivideWnd first; the divided part then sticks to the cursor
+        if ((e?.shiftKey || isShift(g)) && (inst.count || 1) > 1) { void sys.splitPickup?.(inst); return null; }
+        const payload = itemPayload(sys, inst, 'bag', { page: st.page }, [grid.cw, grid.ch]);
         // The item already painted in this cell is the immediate cursor image.
         // A cold full-size render may replace it later, never leave pickup blank.
         if (!payload.icon) payload.icon = it.icon || null;
         return {
           ...payload,
-          // released over the world: on the character itself = wear it (equipment), anywhere else = discard (ground)
+          // released over the world: Global ground-drop flow (state gate, costume bag, map, binding, DropMsg confirm)
           onDropOutside: (ev) => st.dropOutside(inst, ev),
         };
       });
@@ -164,10 +166,10 @@ export function registerInventory(sys) {
       win.control('btn_LockBag').onClick(lockBag).onRightClick(lockBag);
       win.control('btn_drop').onClick(() => sys.dropDilAsk());
       // ui_invenwnd_base_renew btn_alignment (tooltip 2000:60) sorts the open bag, btn_alignment_all (2000:61) every unlocked
-      // bag; both confirm with Global's sort warning window (dialogs.js confirmSort, option sortMsg). Online the host sorts
+      // bag; both confirm with Global's sort warning window, lbl_msg = 260:41 (current) / 260:42 (all), not the 2000:60/61 tooltips, (dialogs.js confirmSort, option sortMsg). Online the host sorts
       // (network/items.js sortitems), offline the bag model (model.js sort).
       const sortBag = async (all) => {
-        if (!await confirmSort(sys, sys.str(2000, all ? 61 : 60) || '')) return;
+        if (!await confirmSort(sys, sys.str(260, all ? 42 : 41) || '')) return;
         const ok = await sys.bag.sort(all ? null : st.page);
         if (ok !== false) { sys.changed?.('inventory'); renderBag(); }
       };
@@ -213,6 +215,7 @@ export function registerInventory(sys) {
     if(d.from==='cursor'){
       const [w,h]=sys.bag.sizeOf(d.itemIndex),occ=sys.bag.occupants(page,x,y,w,h);
       if(occ.length>1||sys.bag.locked||occ.some(item=>sys.reserved?.has(item.uid)))return false;
+      const stoneTarget=cursorStoneTarget(sys,d.itemIndex,occ);if(stoneTarget)return cursorStoneInsert(sys,stoneTarget);
       return cursorActionResult(sys,sys.cursorPlace('bag',{page,x,y,targetUid:occ[0]?.uid??null}));
     }
     // A server profile refresh can replace instance objects while the cursor

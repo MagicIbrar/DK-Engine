@@ -1,13 +1,12 @@
 // UI effect banners: `@<effectui>id,a,ms,b` of the event messages = effect scene `id` of <cate> 8 UI
-// (property/effect/effectscene.*.txt; gamedata/events_effectui.json by tools/build-events-ui.mjs), drawn in the
-// original effect window (game2/ui_effectuiwnd.txt, pan_effect: centre top, y 80). The scene timeline (its controls'
+// (property/effect/effectscene.*.txt; gamedata/events_effectui.json by tools/build-events-ui.mjs), drawn at the
+// original effect anchor (game2/ui_effectuiwnd.txt, pan_effect: centre top, y 80). The scene timeline (its controls'
 // lifetimes, usually 0..1000) is stretched to `ms` (docs/formats/effects.md §1: the caller's time sets the length).
-// Each control animates one unit sprite: scale (x, y), alpha and rotation keyframes over its lifetime, blend add =
-// additive (screen), modulate = normal. Unit size 1 at scale 1 = PX reference pixels (the texture aspect is kept for
-// non-square textures). Particles are drawn as their texture sprite.
+// Each control animates one unit sprite: scale keyframes are [t, x, y, z] — width = size*x, height = size*z
+// (same as dungeons/uifx.js / Global UI camera: 1 unit = 64 reference pixels; 1024x64 lettering strips are authored
+// at scale 16 x 1). Blend add = additive, modulate = normal. Particles are drawn as their texture sprite.
 import { atlas } from '../../ui/atlas.js';
-
-const PX = 48;
+import { UNIT_PX } from '../dungeons/uifx.js';
 
 function lerpKeys(keys, t, n) {
   if (!keys || !keys.length) return null;
@@ -36,16 +35,22 @@ export class EffectBanners {
   async _host() {
     const ui = this.game.uiwin;
     if (!ui) return null;
+    // Open the original effect window for script ownership, but draw on a fixed overlay at the
+    // pan_effect anchor (center, top+80). pan_effect's 350x50 rect must not clip authored lettering
+    // that is 64+ px tall (Global UI camera billboards are not clipped to that panel).
     const w = ui.window('ev_effect') || await ui.open('ev_effect').catch(() => null);
     if (!w) return null;
     if (!w.isOpen) ui.openWindow(w);
-    const pan = w.control('pan_effect');
-    if (!this.layer || !pan.el.contains(this.layer)) {
+    if (!this.layer || !this.layer.isConnected) {
       this.layer = document.createElement('div');
-      this.layer.style.cssText = 'position:absolute;left:50%;top:50%;width:0;height:0;overflow:visible;pointer-events:none';
-      pan.el.style.overflow = 'visible';
-      pan.el.appendChild(this.layer);
+      this.layer.className = 'ev-effect-banners';
+      this.layer.style.cssText = 'position:fixed;left:50%;top:80px;width:0;height:0;overflow:visible;pointer-events:none;z-index:20';
+      const root = this.game.ui || document.body;
+      root.appendChild(this.layer);
     }
+    // Keep pan_effect overflow visible in case a caller still parents into it.
+    const pan = w.control('pan_effect');
+    if (pan?.el) pan.el.style.overflow = 'visible';
     return this.layer;
   }
 
@@ -61,11 +66,12 @@ export class EffectBanners {
     const parts = [];
     for (const c of scene.controls) {
       if (c.active === false) continue;
-      const u = eff.units?.[c.unit];
+      const u = eff.units?.[c.unit] || eff.units?.[String(c.unit)];
       if (!u?.texture) continue;
       const el = document.createElement('div');
       el.style.cssText = 'position:absolute;left:0;top:0;background-size:100% 100%;background-repeat:no-repeat;opacity:0;will-change:transform,opacity';
-      if (u.blend === 'add') el.style.mixBlendMode = 'screen';
+      // Global additive = lighter; plus-lighter is the closest CSS mix-blend (screen under-glows lettering).
+      if (u.blend === 'add') el.style.mixBlendMode = 'plus-lighter';
       host.appendChild(el);
       atlas.textureURL(u.texture).then(url => { if (url) el.style.backgroundImage = `url(${url})`; });
       parts.push({ el, c, u });
@@ -77,6 +83,8 @@ export class EffectBanners {
 
   update(dt) {
     if (!this.live.length) return;
+    const scale = Number(this.game.uiwin?.scale || this.game.settings?.uiScale || 1) || 1;
+    const PX = UNIT_PX * scale;
     for (const b of this.live.slice()) {
       b.t += dt * 1000;
       const st = (b.t / b.ms) * b.len;            // scene time
@@ -84,14 +92,14 @@ export class EffectBanners {
         const [l0, l1] = p.c.life || [0, b.len];
         if (st < l0 || st > l1) { p.el.style.opacity = '0'; continue; }
         const k = ((st - l0) / Math.max(1, l1 - l0)) * 999;
-        const sc = lerpKeys(p.c.scale, k, 2) || [1, 1];
+        // Global scale keys are [t, x, y, z]; width uses x, height uses z (uifx.js).
+        const sc = lerpKeys(p.c.scale, k, 3) || [1, 1, 1];
         const al = lerpKeys(p.c.alpha, k, 1)?.[0] ?? 1;
         const rot = lerpKeys(p.c.rotation, k, 1)?.[0] ?? 0;
         const pos = lerpKeys(p.c.position, k, 3) || p.c.pos || [0, 0, 0];
         const size = (p.u.size || 1) * PX;
-        let w = size * sc[0], h = size * (sc[1] ?? sc[0]);
-        const tex = p.u.tex;
-        if (tex && tex[0] !== tex[1] && Math.abs(sc[0] - (sc[1] ?? sc[0])) < 1e-6) { if (tex[0] > tex[1]) h *= tex[1] / tex[0]; else w *= tex[0] / tex[1]; }
+        const w = size * (sc[0] || 0);
+        const h = size * (sc[2] ?? sc[1] ?? sc[0] ?? 0);
         const s = p.el.style;
         s.width = `${Math.max(0, w)}px`; s.height = `${Math.max(0, h)}px`;
         s.transform = `translate(${-w / 2 + (pos[0] || 0) * PX}px, ${-h / 2 - (pos[1] || 0) * PX}px) rotate(${rot}deg)`;

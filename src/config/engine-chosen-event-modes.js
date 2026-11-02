@@ -9,55 +9,10 @@
 // host dungeon path by tools/test-event-modes.mjs. The BLUE / RED team mode of game2/forgottenshipwreck (startcondition.csv: 10
 // players at 6 weekly windows; ui_matchingwait / ui_scorewnd / team, buff and target skill windows; string cate 161 = the
 // "Monster Carnival" strings) has no rule, CP or score data in the shipped files; it is hosted by server/world/monster-carnival.mjs
-// with its own choices in src/config/engine-chosen-monster-carnival.js.
+// with its own choices in src/config/engine-chosen-monster-carnival.js - CLOSED by lane 71 (CARNIVAL_CHOSEN.closed: no Global
+// entrance and no source for its rules; registration is refused).
 
-export const RACE_CHOSEN = Object.freeze({
-  // ENGINE-CHOSEN (not in Global data): this host plays the list.csv rows of WorldIndex 1; the WorldIndex 10/20 rows belong to other game servers of the live cross-server directory and are not listed.
-  worldIndex: 1,
-  // ENGINE-CHOSEN (not in Global data): English texts of game2/race/ui_entreeinfo text2 210|1..7 (no shipped string table has the race codes; 210|1..5 are cash-shop tabs).
-  labels: Object.freeze({ server: 'Server', rank: 'Rank', level: 'Level', users: 'Users', status: 'Status', entry: 'Entry', refresh: 'Refresh' }),
-  // ENGINE-CHOSEN (not in Global data): playtime.csv DayOfWeek uses 0 = Sunday .. 6 = Saturday and fixed UTC+1 server time.
-  dayOfWeek: '0 = Sunday, UTC+1 server time',
-  // ENGINE-CHOSEN (not in Global data): entry opens at WaitingHour:WaitingMinute and stays open until EndHour (late entry joins the running competition) while fewer than LimitedCount are in.
-  entryWindow: 'Waiting .. EndHour, under LimitedCount',
-  // ENGINE-CHOSEN (not in Global data): the band = the WorldIndex row whose MinLevel..MaxLevel holds the character level.
-  band: 'MinLevel..MaxLevel of the character',
-  // ENGINE-CHOSEN (not in Global data): entrants wait at DefaultPosX/Y; at StartHour the n-th entrant (entry order) goes to the first bracket k with MinCount_k <= n <= MaxCount_k (PosX_k/PosY_k).
-  spawnRule: 'entry order -> first matching count bracket',
-  // ENGINE-CHOSEN (not in Global data): the competition is a free-for-all among the band's entrants from StartHour to EndHour.
-  combat: 'free-for-all of the band',
-  // ENGINE-CHOSEN (not in Global data): score = player kills; rank = kills high to low, then fewer deaths, then the earlier last kill, then name.
-  ranking: 'kills desc, deaths asc, earlier last kill, name',
-  // ENGINE-CHOSEN (not in Global data): a downed entrant returns at its bracket position after the PvP rules' reviveTick, with reviveHpRatio / reviveMpRatio.
-  respawn: 'pvp-rules reviveTick, own bracket',
-  // ENGINE-CHOSEN (not in Global data): no reward item, EXP or title is given (none is in the data); the result is the ranking.
-  reward: 'none (ranking only)',
-  // ENGINE-CHOSEN (not in Global data): seconds between the result and moving everyone back to where they entered.
-  finishWaitSec: 30,
-  // ENGINE-CHOSEN (not in Global data): the exit point = where each entrant entered (map kickTo 150 is not on every entry route).
-  exitPoint: 'entry point',
-  // ENGINE-CHOSEN (not in Global data): the Status column texts.
-  status: Object.freeze({ closed: 'Closed', entry: 'Entry', race: 'In Progress', full: 'Full', over: 'Finished' }),
-  // ENGINE-CHOSEN (not in Global data): no NPC opens the window in the data; the chat command /race opens it and the host announces the entry opening once.
-  opener: '/race + entry notice',
-  // ENGINE-CHOSEN (not in Global data): the client refreshes an open race window every refreshMs (the entered player's own state arrives with every state snapshot).
-  refreshMs: 1000,
-  // ENGINE-CHOSEN (not in Global data): the imagetable sprites race 2 / 3 / 4 (dashboard plate, entry-capacity title plate and row) point at regions of war_01.dds that are fully transparent in the shipped texture, so the plates are drawn as a dark panel with a bronze border.
-  plateArt: Object.freeze({ background: 'linear-gradient(#2c261d, #15120d)', border: '1px solid #8a7544' }),
-  // ENGINE-CHOSEN (not in Global data): English texts of the competition's refusals and notices (no shipped string covers them; only the window titles 100|128 / 100|129 are shipped).
-  text: Object.freeze({
-    closed: 'The Server Whole Competition is not open for entry now.',
-    band: 'Your level is not eligible for this competition.',
-    full: 'The competition is full.',
-    already: 'You have already entered the competition.',
-    busy: 'You cannot enter the competition right now. Finish your current activity first.',
-    dead: 'Dead characters cannot enter the competition.',
-    noEntry: 'You are not in the competition.',
-    cannotLeave: 'You cannot leave the competition right now.',
-    revive: 'You return to the competition automatically.',
-    open: 'The Server Whole Competition is open for entry. Type /race to enter.',
-  }),
-});
+// Lane 47: RACE_CHOSEN removed with the race host (no Global evidence for any race rule or window).
 
 export const TITLE_CHOSEN = Object.freeze({
   // ENGINE-CHOSEN (not in Global data): Type 1 = kill monster Type_Value1 Type_Value2 times (credited to the killing character).
@@ -75,4 +30,4 @@ export const TITLE_CHOSEN = Object.freeze({
 });
 
 const list = o => Object.entries(o).map(([k, v]) => `${k}=${typeof v === 'object' ? JSON.stringify(v) : v}`);
-export function eventModesChosenList() { return [...list(RACE_CHOSEN).map(s => 'race.' + s), ...list(TITLE_CHOSEN).map(s => 'title.' + s)]; }
+export function eventModesChosenList() { return list(TITLE_CHOSEN).map(s => 'title.' + s); }

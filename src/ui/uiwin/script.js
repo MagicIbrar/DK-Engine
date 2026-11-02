@@ -1,4 +1,4 @@
-// Parser for the original window scripts script/ui/**/*.txt (docs/formats/ui.md Â§2, docs/UIWIN.md).
+// Parser for the original window scripts script/ui/**/*.txt (docs/formats/ui.md §2, docs/UIWIN.md).
 // Pure (no DOM): runs in Node for tests and in the browser.
 //
 // Three formats live under script/ui:

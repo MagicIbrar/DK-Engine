@@ -3,6 +3,9 @@
 const number = value => Number.isFinite(Number(value)) ? Number(value) : 0;
 const keyOf = entry => String(entry.family || entry.key || `status:${entry.statusIndex}:spell:${entry.spellIcon}`);
 const signatureOf = entry => `${number(entry.statusIndex)}:${number(entry.spellIcon)}:${!!entry.spell}`;
+// lane70c: a modeleffect row persists while the status lasts when its Global eff_loop is 0 and plays once when it is 1
+// (see statuses.js). Spell auras (modeleffect 41, all eff_loop 1) keep looping: JUDGMENT, as in spells.js.
+const persists = ref => !!ref && Number(ref.loop) === 0;
 const stop = handle => { try { handle?.stop?.(true); } catch (error) { console.warn('[skills] status effect stop failed', error); } };
 
 export class SharedStatusPlayback {
@@ -18,25 +21,26 @@ export class SharedStatusPlayback {
   refs(entry, def) {
     if(entry.spell) {
       const keep=this.engine.data?.modelEffects?.spell?.[entry.spellIcon];
-      return keep ? {keep} : null;
+      return keep ? {keep,spellAura:true} : null;
     }
     return def?.effects || this.engine.data?.modelEffects?.status?.[def?.iconIndex] || null;
   }
-  play(actor, ref, loop, record) {
+  play(actor, ref, loop, record, isKeep=loop) {
     if(!ref)return;
+    const tracked=loop&&isKeep;
     const generation=this.generation,epoch=record.epoch;
-    if(loop)record.loading=true;
+    if(tracked)record.loading=true;
     const retain=handle=>{
-      if(epoch===record.epoch&&loop)record.loading=false;
+      if(epoch===record.epoch&&tracked)record.loading=false;
       if(!handle)return;
       if(this.disposed||generation!==this.generation||epoch!==record.epoch||record.stopped||performance.now()>=record.deadline||!this.valid(actor,record.entry))stop(handle);
-      else {record.handles.push(handle);if(loop){record.hasKeep=true;record.keepHandle=handle;}}
+      else {record.handles.push(handle);if(tracked){record.hasKeep=true;record.keepHandle=handle;}}
     };
     try {
       const handle=this.engine.fx?.play(actor,ref,{loop});
-      if(handle?.then)void Promise.resolve(handle).then(retain).catch(error=>{if(epoch===record.epoch&&loop)record.loading=false;console.warn('[skills] status effect failed',error);});
+      if(handle?.then)void Promise.resolve(handle).then(retain).catch(error=>{if(epoch===record.epoch&&tracked)record.loading=false;console.warn('[skills] status effect failed',error);});
       else retain(handle);
-    } catch(error) { if(loop)record.loading=false;console.warn('[skills] status effect failed',error); }
+    } catch(error) { if(tracked)record.loading=false;console.warn('[skills] status effect failed',error); }
   }
   retryData(actor,record,error) {
     const transient=!!error?.retryable||!error?.status&&['TypeError','AbortError'].includes(error?.name);
@@ -50,10 +54,13 @@ export class SharedStatusPlayback {
       if(performance.now()>=record.deadline){this.stopRecord(record);return;}
       record.loading=false;
       const refs=this.refs(record.entry,def);record.refs=refs;
-      record.wantsKeep=!!refs?.keep;
+      const keepLoops=!!refs?.keep&&(refs.spellAura||persists(refs.keep));
+      record.wantsKeep=keepLoops;
       if(!def&&!record.entry.spell)this.retryData(actor,record,this.engine.data?.statusLoadFailure);
-      if(fresh&&refs?.start)this.play(actor,refs.start,false,record);
-      if(refs?.keep)this.play(actor,refs.keep,true,record);
+      // A persistent start row (eff_loop 0) is retained like the keep row and stopped with the record; it is replayed on a
+      // restart only when the record has no handles left from the first start.
+      if(refs?.start&&(fresh||persists(refs.start)&&!record.handles.length))this.play(actor,refs.start,persists(refs.start),record,false);
+      if(refs?.keep)this.play(actor,refs.keep,keepLoops,record,keepLoops);
     };
     const data=this.engine.data,def=record.entry.spell?null:data?.status?.(record.entry.statusIndex);
     if(def||record.entry.spell)apply(def);

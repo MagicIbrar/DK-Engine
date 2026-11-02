@@ -169,7 +169,7 @@ export class ItemUse {
     if (t === 0) {
       switch (c) {
         case 63: { // Meister Change; the host runs this on its transaction copy.
-          const plan = planMeisterChange(g.save, { skills: g.skills?.list || g.classDef?.skills });
+          const plan = planMeisterChange(g.save, { skills: g.skills?.list || g.classDef?.skills }, g.data?.nameplateGrades || g.life?.grade?.G?.grades || g.life?.data?.grade?.grades);
           if (plan.error) { sys.error = plan.error; sys.msg(null, null, plan.error); return false; }
           sys.consume(inst, 1);
           const { meister, skills, skillPoints, normalSkillResetSuppressed } = plan;

@@ -1,9 +1,10 @@
-import {publishProfileChanges,persistInterveningProgress} from './profile-publication.mjs';
+﻿import {publishProfileChanges,persistInterveningProgress} from './profile-publication.mjs';
 import {ownedItems} from './item-ownership.mjs';
 import {randomUUID} from 'node:crypto';
 import {characterRef} from '../accounts/character-ref.mjs';
 import {gmInventoryRevision,gmTransferIdentity} from '../accounts/gm-transfers.mjs';
 import {Container} from '../../src/systems/items/model.js';
+import {canTradeOffer} from './item-flags.mjs';
 const fail=(status,message)=>{throw Object.assign(new Error(message),{status});};
 export function validateGMTransfer(input){
   if(Object.keys(input).some(k=>!['token','operation','ref','container','uid','count','revision','destinationRevision','requestId','reason'].includes(k))||input.operation!=='takeInventoryItem'||typeof input.ref!=='string'||!/^[a-f0-9]{64}$/.test(input.ref)||!['inventory','storage'].includes(input.container)||typeof input.uid!=='string'||input.uid.length<1||input.uid.length>160||!Number.isSafeInteger(input.count)||input.count<1||input.count>100000||![input.revision,input.destinationRevision].every(x=>typeof x==='string'&&/^[a-f0-9]{64}$/.test(x))||typeof input.requestId!=='string'||!/^[a-zA-Z0-9_-]{16,100}$/.test(input.requestId)||typeof input.reason!=='string'||!input.reason.trim()||input.reason.length>160)fail(400,'Send a current item UID, quantity, inventory revisions and transfer ID.');
@@ -46,7 +47,7 @@ export async function takeInventoryItem(world,user,input,{req}={}){
     const bag=grid(sourceProfile,world.data.itemDB,input.container),destination=grid(destinationProfile,world.data.itemDB,'inventory');gridValid(bag);gridValid(destination);
     const item=bag.byUid(input.uid),def=item&&world.data.itemDB.def(item.itemIndex);
     if(!def||owned(sourceProfile).filter(i=>i.uid===input.uid).length!==1||owned(destinationProfile).some(i=>i.uid===input.uid))fail(409,'This item UID is unavailable or duplicated.');
-    if(item.bound||Number(def.trade)===0||item.expiresAt&&item.expiresAt<=world.now()||item.pet?.active||item.pet?.inv?.length)fail(400,'Bound, untradeable, expired or occupied pet items cannot be transferred.');
+    if(!canTradeOffer(def,item,world.now()))fail(400,'Bound, untradeable, expired or occupied pet items cannot be transferred.');
     const available=item.count??1;if(input.count>available)fail(409,'The selected item quantity changed or exceeds its original stack limit.');
     const beforeCount=bag.count(item.itemIndex)+destination.count(item.itemIndex);
     const partial=input.count<available,removed=bag.take(item,input.count);if(partial)removed.uid=`gm-${randomUUID()}`;for(const key of ['page','x','y'])delete removed[key];
@@ -65,3 +66,4 @@ export async function takeInventoryItem(world,user,input,{req}={}){
   });world.saveQueue=task.catch(()=>{});
   try{const result=await task;if(!result.replayed){result.progressPending=await persistInterveningProgress(world,participants);result.state=world.snapshot(operator);if(result.progressPending)result.message+=' Newer character progress is retained and awaiting a save retry.';}return result;}finally{participants.forEach((p,i)=>{p.sceneTransition=barriers[i];});}
 }
+

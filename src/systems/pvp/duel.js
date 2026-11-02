@@ -1,4 +1,4 @@
-import { declineBlockedInvitation } from '../hud-options/invitation-policy.js';
+﻿import { declineBlockedInvitation } from '../hud-options/invitation-policy.js';
 // PVP-DUEL client windows (original scripts, strings stringtable_pvp.txt cate 280 / 1008, pcpop 240). The host owns the
 // duel (server/world/pvp.mjs); these windows only show network.pvp state and send its intents.
 //   pcpop           game2/ui_pcpopwnd.txt                   player menu from the target plate (btn_showpcpop); 240:5 Duel
@@ -10,13 +10,15 @@ import { declineBlockedInvitation } from '../hud-options/invitation-policy.js';
 import { str, needStrings } from '../hud-options/util.js';
 import { ENGINE_CHOSEN } from '../../game/pvp-rules.js';
 import { measureText } from '../../ui/uiwin/fonts.js';
+import { nonPkChannel, onOxMap } from './pk-channel.js';
 
 const S = (c, code) => str(c, code) || '';
 const plain = s => String(s || '').replace(/<\/?center>/gi, '').replace(/<color=0x[0-9a-f]{2}([0-9a-f]{6})>/gi, '').trim();
 const sound = (game, k) => { try { game.audio?.ui?.(k); } catch { /* optional */ } };
 
-/** pcpop entries other systems can add to: {code (240:n, also the row order), visible(target), run(target)}; a row
- *  whose text is not in 240 names its string with cate + label (INSPECT: 2000:16 "Preview"). */
+/** pcpop entries other systems can add to: {code (240:n, also the row order), visible(target), run(target)}.
+ *  Global's PcPopWnd builds only rows 240:0..13 (lane 62, PLAYER-CARD-PARITY.md); cate + label stay for callers
+ *  that pass a row label (chartrade row 11 = Global RequestCharTrade, label 240:11). */
 export function installPcPop(game) {
   if (game.pcpop) return game.pcpop;
   const entries = [];
@@ -58,7 +60,7 @@ export function installPcPop(game) {
     create(win) { win.control('btn_popup').setVisible(false); win.control('pan_sentrypop').setVisible(false); win.control('pan_pcpop_gm').setVisible(false); win.data.rows = []; },
     onOpen(win, arg) {
       const d = win.data; for (const c of d.rows) c.remove?.(); d.rows = []; d.target = arg?.target || null;
-      // ENGINE-CHOSEN fit: retain the native pcpop normal/hover row art,
+      // JUDGMENT (lane 51 g; layout fit only, no value): retain the native pcpop normal/hover row art,
       // but fit real labels instead of letting them escape its authored 70px row.
       const list = arg?.list || [], font = win.control('btn_popup').spec?.titles?.[0]?.font ?? 4;
       const label = e => S(e.cate ?? 240, e.label ?? e.code);
@@ -99,11 +101,17 @@ export function installPcPop(game) {
 export function installDuelWindows(game, network) {
   const P = () => network.pvp, st = () => P()?.state() || {};
   const now = () => P()?.serverNow() ?? Date.now();
-  void needStrings([['NORMAL', 280, 14], ['NORMAL', 1008, 1], ['NORMAL', 240, 5]]).catch(() => {});
+  void needStrings([['NORMAL', 280, 14], ['NORMAL', 1008, 1], ['NORMAL', 240, 5], ['NORMAL', 240, 31], ['SYSTEM', 101, 167]]).catch(() => {});
   const ui = game.uiwin;
   const pop = installPcPop(game);
   const valid=t=>t?.kind==='player'&&t!==game.player&&!t.disposed&&!!network.active&&network.ready!==false&&!network.disposed&&(!network.players?.get||network.players.get(t.networkId)===t);
-  pop.add({ code: 5, visible: valid, run: t => { if (valid(t)&&!st().id) void P()?.request(t); } });
+  // 240:5 Duel (Global PcPopWnd click): OX Quiz map -> SYSTEM 101:167, non-PK channel -> 240:31 (pk-channel.js), else request.
+  const refuse = text => { const s = plain(text); if (s) game.chat?.system?.(s, 'err'); return false; };
+  pop.add({ code: 5, visible: valid, run: async t => {
+    if (onOxMap(network)) return refuse(str(101, 167, 'SYSTEM'));
+    if (await nonPkChannel(network) === true) return refuse(S(240, 31));
+    if (valid(t)&&!st().id) void P()?.request(t);
+  } });
 
   ui.registerWindow('pvp_ask', {
     script: 'game2/msgbox/ui_pvpask.txt', remember: false, escClose: false, band: 'modal',
@@ -154,11 +162,14 @@ export function installDuelWindows(game, network) {
       win.control('lbl_total').setText(plain(S(280, 10)));
       win.control('lbl_totalpoint').setText(String(r.total));
     },
+    // resultShowSec 5 = PVPBattleWnd 5000 ms close (FINAL 64-bit decompile FUN_7ff670cfb450; src/game/pvp-rules.js).
     update(win) { const r = st().result; if (!r || r.at !== win.data.at || now() - r.at > ENGINE_CHOSEN.resultShowSec * 1000) win.close(); },
   });
   ui.registerWindow('pvp_restore', {
     script: 'game2/pvpbattlewnd/ui_restorewnd.txt', remember: false, escClose: false, band: 'system',
     create(win) { win.control('btn_accept').onClick(() => { void P()?.restore(); }); win.control('lbl_waittime').setText(plain(S(280, 3))); },
+    // The bar runs from the result to restoreAt = the host's 15 s DeadRestoreWnd wait (restoreWaitSec, FINAL 64-bit decompile
+    // FUN_7ff670cfcbb0); then pan_respawn and btn_accept show.
     update(win) {
       const s = st(); if (!s.restoreAt || !game.player?.dead) { win.close(); return; }
       const left = s.restoreAt - now(), ready = left <= 0;

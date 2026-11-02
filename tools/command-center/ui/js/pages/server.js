@@ -12,7 +12,7 @@ export function create({navigate}) {
   const ids = ['overview', 'players', 'world', 'capacity'];
   const panels = Object.fromEntries(ids.map(i => [i, h('div', {class: 'tab-panel', id: 'panel-' + i, role: 'tabpanel', 'aria-labelledby': 'tab-' + i, hidden: i !== 'overview'})]));
   let active = 'overview'; const built = {};
-  const bar = tabs([{id: 'overview', label: 'Overview', ico: 'server'}, {id: 'players', label: 'Players & accounts', ico: 'users'}, {id: 'world', label: 'World settings', ico: 'gear'}, {id: 'capacity', label: 'Capacity', ico: 'cpu'}], {current: 'overview', label: 'Server sections', onSelect: t => select(t)});
+  const bar = tabs([{id: 'overview', label: 'Overview', ico: 'server'}, {id: 'players', label: 'Players & accounts', ico: 'users'}, {id: 'world', label: 'World settings', ico: 'gear'}, {id: 'capacity', label: 'Capacity', ico: 'cpu'}], {current: 'overview', label: 'Server categories', onSelect: t => select(t), onOverview: () => { for (const b of Object.values(built)) b.hide?.(); history.replaceState(null, '', '#/server'); }});
   function select(t) { active = t; for (const [k, p] of Object.entries(panels)) p.hidden = k !== t; if (!built[t]) built[t] = ({overview, players, world: worldSettings, capacity})[t](); built[t].show?.(); for (const [k, b] of Object.entries(built)) if (k !== t) b.hide?.(); history.replaceState(null, '', `#/server/${t}`); }
   const el = h('div', {class: 'stack loose'}, bar, ...Object.values(panels));
 
@@ -55,7 +55,7 @@ export function create({navigate}) {
 
   function players() {
     const p = panels.players, accBox = h('div', {class: 'stack tight'}), rosterBox = h('div', {class: 'stack tight'}), storageNote = h('p', {class: 'faint', text: 'Start your world to manage its registered accounts.'}), search = h('input', {class: 'input', type: 'search', placeholder: 'Search account or role', 'aria-label': 'Search accounts'});
-    p.append(h('div', {class: 'split'}, card({title: 'Player accounts', id: 'accounts', desc: 'Grant or revoke GM on your own world. The player must re-enter their character afterwards.', children: [storageNote, search, accBox]}), card({title: 'Who is online', children: [h('div', {id: 'online-now', class: 'stack tight'})]})), card({title: 'Character roster', id: 'roster', desc: 'Read-only, from the world server (the authoritative record).', children: [rosterBox]}));
+    p.append(h('div', {class: 'split'}, card({title: 'Player accounts', id: 'accounts', desc: 'Grant or revoke Admin / GM / Dev (one max staff privilege) on your own world. The player must re-enter their character afterwards.', children: [storageNote, search, accBox]}), card({title: 'Who is online', children: [h('div', {id: 'online-now', class: 'stack tight'})]})), card({title: 'Character roster', id: 'roster', desc: 'Read-only, from the world server (the authoritative record).', children: [rosterBox]}));
     let rows = [];
     async function loadAccounts() {
       try { const result = await call('world.accounts'); rows = result.accounts; storageNote.textContent = result.storageMode === 'sqlserver' ? 'Accounts loaded from this running SQL Server world. GM roles apply to these accounts after they re-enter.' : 'Accounts loaded from this running local-file world. GM roles apply after players re-enter.'; render(); } catch (e) { replace(accBox, notice(e.status === 409 ? 'info' : 'warn', e.message)); }
@@ -71,7 +71,7 @@ export function create({navigate}) {
           fieldId: `gm-${r.id}`,
           onChange: async want => {
             const role = want ? 'gm' : 'player';
-            if (!await confirm({title: `${want ? 'Grant GM to' : 'Revoke GM from'} ${r.id}?`, message: 'The player will leave their active character and must re-enter.', confirmLabel: want ? 'Grant GM' : 'Revoke GM'})) return false;
+            if (!await confirm({title: `${want ? 'Grant Admin / GM / Dev to' : 'Revoke Admin / GM / Dev from'} ${r.id}?`, message: 'The player will leave their active character and must re-enter.', confirmLabel: want ? 'Grant Admin / GM / Dev' : 'Revoke Admin / GM / Dev'})) return false;
             const res = await call('world.accounts.setRole', {account: r.id, role});
             toast(res.message, 'ok');
             await loadAccounts();
@@ -113,7 +113,7 @@ export function create({navigate}) {
     async function load() {
       let c; try { c = await call('world.capacity.get'); } catch (e) { replace(body, notice('warn', e.message)); return; }
       const s = c.settings, r = c.memoryRange;
-      const maxP = textField({label: 'Maximum human players', type: 'number', value: String(s.maxPlayers), help: '1-500. The owner and GM accounts may always join.', applies: c.live ? 'now' : 'next-start', attrs: {min: '1', max: '500', step: '1'}, fieldId: 'cap-players'});
+      const maxP = textField({label: 'Maximum human players', type: 'number', value: String(s.maxPlayers), help: '1-500. The owner and Admin / GM / Dev accounts may always join.', applies: c.live ? 'now' : 'next-start', attrs: {min: '1', max: '500', step: '1'}, fieldId: 'cap-players'});
       const auto = switchRow({title: 'Automatic memory (Node default)', checked: !s.memoryMB, applies: 'next-start'});
       const mem = textField({label: 'Server memory (MB)', type: 'number', value: String(s.memoryMB || r.recommended), help: `${f.n(r.min)}-${f.n(r.max)} MB on this PC (recommended ${f.n(r.recommended)} MB of ${f.n(r.totalMB)} MB).`, applies: 'next-start', attrs: {min: String(r.min), max: String(r.max), step: String(r.step)}, fieldId: 'cap-mem'});
       mem.input.disabled = auto.input.checked; auto.input.addEventListener('change', () => { mem.input.disabled = auto.input.checked; });
@@ -129,5 +129,5 @@ export function create({navigate}) {
     }
     return {show() { load(); }};
   }
-  return {el, show(tab) { bar.select(ids.includes(tab) ? tab : active); }, hide() { for (const b of Object.values(built)) b.hide?.(); }};
+  return {el, show(tab) { bar.show(tab); }, hide() { for (const b of Object.values(built)) b.hide?.(); }};
 }

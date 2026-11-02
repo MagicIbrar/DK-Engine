@@ -13,11 +13,16 @@
 //              machines ship Enable 0 / Usable 0 (server-fed in the original), so every machine shows "CLOSED"
 //              (91/4) and Start answers 90/32; "extra purchase" (btn_addcash 90/6) opens the D-Shop.
 import { T, itemInfo, itemInfoFull, itemIcon, itemTooltip, bag, dil, addDil, str, say, notice, confirmBox, fmtNum, COLORS, uiSound, weightedPick } from './common.js';
+import { gfxC } from '../../ui/gfx-parity-c.js';
 import {atlas} from '../../ui/atlas.js';
 import {repairNativeShopStateArt} from '../../ui/native-shop-state-art.js';
+import {
+  ORBIS_PAY_ITEMS, ORBIS_SLOTS, ORBIS_DAILY, ORBIS_MIX_COST, ORBIS_MIN_LEVEL,
+  multiMachinesClosed, multiMachineStartCode, multiMachineTagClosed,
+} from './supply-rules.js';
 
-const PAY_ITEMS = [1756038, 1192509, 1756037];
-const SLOTS = 10, DAILY = 10, MIX_COST = 500000, MIN_LEVEL = 80;
+const PAY_ITEMS = ORBIS_PAY_ITEMS;
+const SLOTS = ORBIS_SLOTS, DAILY = ORBIS_DAILY, MIX_COST = ORBIS_MIX_COST, MIN_LEVEL = ORBIS_MIN_LEVEL;
 const CX = 256, CY = 314, R = 121;          // plate centre and slot radius (from the slot rects of the script)
 const S96 = (game, c, fb = '') => str(game, 96, c, T.shops?.supplyMachine?.strings?.[96]?.[c] ?? fb);
 const S90 = (game, c, fb = '') => str(game, 90, c, T.shops?.supplyMachine?.strings?.[90]?.[c] ?? fb);
@@ -232,7 +237,7 @@ export function createSupply(game, api) {
       sel(0);
       const closed = str(game, 91, 4, 'CLOSED');
       for (let k = 0; k < 3; k++) {
-        const on = !!M?.uiMachines?.[k]?.[1];
+        const on = !multiMachineTagClosed(M, k);
         win.control(`lbl_tagmachine_${k}`).setText(on ? str(game, 91, M.uiMachines[k][2], '') : closed);
         win.control(`btn_machine_${k}`).onClick(() => {
           for (let j = 0; j < 3; j++) win.control(`btn_machine_${j}`).setChecked(j === k);
@@ -240,7 +245,7 @@ export function createSupply(game, api) {
           showMsg(win, !m || !m[1] ? S90(game, 32, "It isn't a selling machine.") : S90(game, 33, 'It is a sold-out machine.'));
         });
       }
-      win.control('btn_start').onClick(() => showMsg(win, M?.machinesEnabled ? S90(game, 33, 'It is a sold-out machine.') : S90(game, 28, 'There is no information of the requested machine.')));
+      win.control('btn_start').onClick(() => showMsg(win, S90(game, multiMachineStartCode(M), multiMachinesClosed(M) ? "It isn't a selling machine." : 'It is a sold-out machine.')));
       win.control('btn_addcash').onClick(() => api.dshop?.open());
       win.control('lbl_remainsupplycount').setText(S90(game, 4, 'Remaining Initialization : %d times').replace('%d', 0));
       win.control('lbl_needitemcount').setText('');
@@ -266,7 +271,9 @@ export function createSupply(game, api) {
   });
   let alarmChecked = false;
   function syncAlarm() {
-    const on = (game.save?.level || 1) >= MIN_LEVEL && game.settings?.orbisAlarm !== false;
+    // gfxC4 [alarms]: Global shows the private-supply alarm at Lv 1 (recording, 50 100 under the clock); the Lv 80 rule
+    // is enforced when it is used (96:5 "Available for those above Level 80." in open() above), not by hiding it.
+    const on = (gfxC('alarms') || (game.save?.level || 1) >= MIN_LEVEL) && game.settings?.orbisAlarm !== false;
     if (on && !game.uiwin.isOpen('shops.orbis_alarm')) game.uiwin.open('shops.orbis_alarm');
     else if (!on && game.uiwin.isOpen('shops.orbis_alarm')) game.uiwin.close('shops.orbis_alarm');
     if (!game.uiwin.isOpen('shops.supply_alarm')) game.uiwin.open('shops.supply_alarm');

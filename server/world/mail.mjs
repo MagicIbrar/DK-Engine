@@ -8,6 +8,7 @@ import {socialError as fail,socialRef,socialIntent,socialTransaction,socialLive}
 import {mailDeliveryPolicy,expiredMail,expireInboxOnClone,ORIGINAL_INBOX_POLICY,PRESERVED_SYSTEM_POLICY} from './mail-policies.mjs';
 import {MAIL_ATTACH_DIL_MAX,MAIL_TEXT,trimSent} from '../../src/systems/life/mail-rules.js';
 import {pendingGifts} from './dshop-gifts.mjs';
+import {canMailAttachment} from './item-flags.mjs';
 
 export const MAIL_SCHEMAS={mail:['token','type','operation','revision','requestId','toName','title','content','dil','uid','count','id','attachment','box','level','premium','all']};
 const MAX_DIL=10_000_000_000;
@@ -116,7 +117,7 @@ export async function mailCommand(world,p,input){
       if(input.uid!==undefined){
         if(typeof input.uid!=='string'||!Number.isInteger(input.count)||input.count<1||!world.data.itemDB)fail('Choose one owned bag item and quantity.');
         const bag=new AuthoritativeInventory(profile,world.data.itemDB,{now:world.now}).bag,source=bag.byUid(input.uid),def=source&&world.data.itemDB.def(source.itemIndex);
-        if(!def||source.bound||Number(def.trade)===0||source.expiresAt||Number(def.period)>0||source.pet?.active||source.pet?.inv?.length||input.count>(source.count||1))fail('That item cannot be mailed.');
+        if(!canMailAttachment(def,source)||input.count>(source.count||1))fail('That item cannot be mailed.');
         item=bag.take(source,input.count);for(const k of ['page','x','y'])delete item[k];
       }else if(input.count!==undefined)fail('An attachment quantity needs an item UID.');
       profile.dil-=dil+postage;

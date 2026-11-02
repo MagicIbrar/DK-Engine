@@ -26,6 +26,35 @@ export function storageSwitch() {
   return el;
 }
 
+
+/** The host's requested launch mode, independent of this machine's default. */
+export function gameGuardSwitch() {
+  const el = h('div', {class: 'gameguard-switch', id: 'act-gameguard'}); let enabled = true, loaded = false;
+  const render = () => {
+    const locked = !loaded || state.world?.status !== 'stopped' || !!state.world?.busy;
+    replace(el, h('span', {class: 'ss-label eyebrow', text: 'Server GameGuard request'}),
+      seg([{value: 'on', label: 'ON'}, {value: 'off', label: 'OFF'}], enabled ? 'on' : 'off', async v => {
+        const want = v === 'on';
+        try {
+          await call('settings.set', {patch: {serverGameGuardRequired: want}});
+          enabled = want;
+          toast(want ? 'Joining DX11 clients will try to start GameGuard; protection is not verified.' : 'Joining DX11 clients will skip the GameGuard start request.', 'ok');
+        } catch (e) { toast(e.message, 'err'); }
+        render();
+      }, {label: 'Server GameGuard request', disabled: locked, title: locked ? 'Stop your server before changing this request.' : 'Applies to your server at its next start. Guard startup and protection are not verified.'}),
+      h('span', {class: 'ss-note faint', text: !loaded ? 'Loading…' : (locked ? 'Stop your server to change this request' : (enabled ? 'Requested for DX11; not verified' : 'Not requested for DX11'))}));
+  };
+  render();
+  const apply = async () => {
+    try {
+      const r = await call('settings.get');
+      enabled = r.settings?.serverGameGuardRequired !== false; loaded = true; render();
+    } catch (e) { replace(el, notice('warn', e.message)); }
+  };
+  apply();
+  on('world', () => render());
+  return el;
+}
 export async function startWorld({mode = 'local', reviewed = false, host} = {}) {
   let job; try { job = await call('world.start', {mode, reviewed}); } catch (e) { toast(e.message, 'err'); return null; }
   return show(job, host, {onReview: async data => { if (await review(mode, data)) return startWorld({mode, reviewed: true, host}); return null; }});

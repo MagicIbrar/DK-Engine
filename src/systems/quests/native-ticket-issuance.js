@@ -20,11 +20,20 @@
 //    Repeat_Count per round, Reward_Dupl_Check=1, Item_Limit + Limit_Time 3600,
 //    Take_Index "4002293/7550" x2) give the row layout the engine already plays for quest 261.
 //
-// DELIBERATE ENGINE CHOICES: the Rank A/B and Infinite Battle 1 ticket alternatives that 262/272 offer
-// for rounds 3-5 are not recovered, because the dialog's "Fighter's"/"Warrior's" names do not exactly
-// match an item and the engine has no "2 of X or 1 of Y" cost. Only the Super Pass cost is offered.
+//  - Quest 262's offer (stringtable_quest_200.txt cate 262) adds "or Infinite Battle1 ticket x1" for rounds 3-5.
+//    The only items with that name are the bound/unbound pair 7285 "Infinite Battle1 Entrance Ticket (Bind)"
+//    and 171041 "Infinite Battle1 Entrance Ticket" (share/item/itemetc.csv), whose description 254 reads
+//    "Cartel, Colosseum, Stardion [Infinite Battle] can be used." It is offered as an OR-cost (takeAny).
+//    Quest 272's offer does not list it, so 272 does not accept it.
+//
+// DELIBERATE ENGINE CHOICES: the "Warrior's Infinite Battle B rank ticket" (262) and "A fighter's Infinity
+// Battle A rank admission ticket" (272) alternatives are NOT recovered: no item carries those names (the
+// nearest are "Gladiator's ..." 171039/171040 and the unprefixed/event Rank tickets), so choosing one would be
+// invented. Only the evidenced Super Pass and Infinite Battle1 costs are offered.
 // The daily reset is the quest engine's existing period key (also used by native quest 261).
 export const SUPER_PASSES = Object.freeze([4002293, 7550]);
+export const INFINITE_BATTLE1 = Object.freeze([7285, 171041]);
+const BATTLE1_NAMES = Object.freeze({ 7285: 'Infinite Battle1 Entrance Ticket (Bind)', 171041: 'Infinite Battle1 Entrance Ticket' });
 const PAGES = Object.freeze([10000, 10010, 10020, 10030, 10040]);
 const MENUS = Object.freeze([10001, 10011, 10021, 10031, 10041]);
 
@@ -34,7 +43,7 @@ const BINDINGS = Object.freeze([
     messages: { 1000: 'already have at least one ticket', 1001: 'not enough super pass', 1002: 'Only full-power Seongsu users can receive additional issuance', 1003: 'admission ticket to Norak Secret Arena has been issued' }, holyWater: true }),
   Object.freeze({ quest: 262, npc: 4156, job: 57, item: 4002358, itemName: '[Cartel] Infinite battle admission ticket', file: 'share/quest/quest_00262_python_entering_plus.csv',
     title: 'Cartel [Infinite Battle] ticket issuance', offer: ['issued 2 times for a day with free of charge', 'cannot have the item 1 or more', 'used within 60 minutes', '3rd round ~ 5th round', 'Super Pass x2'],
-    messages: { 1000: 'already have 1 or more tickets', 1001: 'enough Super Pass for the extra issuance', 1003: 'Cartel [Infinite Battle] ticket issued' } }),
+    messages: { 1000: 'already have 1 or more tickets', 1001: 'enough Super Pass for the extra issuance', 1003: 'Cartel [Infinite Battle] ticket issued' }, battle1: true }),
   Object.freeze({ quest: 272, npc: 4157, job: 57, item: 4002359, itemName: 'Colosseum[Infitite battle] admission ticket', file: 'share/quest/quest_00272_elleghos_entering_plus.csv',
     title: 'Colosseum [Infinite Battle] Ticket Issuance', offer: ['issued for free only twice a day', 'cannot have more than one of these items', 'used within 60 minutes', '3rd ~ 5th round', 'Super Pass 2ea'],
     messages: { 1000: 'already have more than one ticket', 1001: 'not enough Super Passes for additional issuance', 1003: 'Colosseum [Infinite Battle] tickets have been issued' } }),
@@ -61,13 +70,17 @@ export function ticketIssuanceMismatch(b, quests, dialogs, game) {
   const def = itemDef(game, b.item);
   if (!def || def.name !== b.itemName || Number(def.period) !== 3600 || Number(def.type) !== 0 || ![4, 5].includes(Number(def.code))) return 'issued item differs';
   for (const index of SUPER_PASSES) if (!/^Super Pass( \(Bind\))?$/.test(itemDef(game, index)?.name || '')) return 'Super Pass item differs';
+  if (b.battle1) {
+    if (!/or Infinite Battle1 ticket x1/i.test(offer)) return 'offer text lacks the Infinite Battle1 alternative';
+    for (const index of INFINITE_BATTLE1) { const d = itemDef(game, index); if (d?.name !== BATTLE1_NAMES[index] || Number(d?.desc) !== 254) return 'Infinite Battle1 item differs'; }
+  } else if (/Infinite Battle1/i.test(offer)) return 'unexpected Infinite Battle1 alternative';
   return null;
 }
 
 function recovered(b, q) {
   const timedItem = { item: b.item, seconds: 3600 }, raw = { Repeat_Check: 1, Reward_Dupl_Check: 1 };
   const round = n => ({ id: n === 1 ? String(b.quest) : `${b.quest}.0${n - 1}`, repeat: n, msg: PAGES[n - 1],
-    reward: n <= 2 ? { timedItem, raw } : { take: [{ item: [...SUPER_PASSES], count: 2 }], timedItem, raw, ...(b.holyWater ? { requireHolyWater: true } : {}) } });
+    reward: n <= 2 ? { timedItem, raw } : { take: [{ item: [...SUPER_PASSES], count: 2 }], ...(b.battle1 ? { takeAny: [[{ item: [...SUPER_PASSES], count: 2 }], [{ item: [...INFINITE_BATTLE1], count: 1 }]] } : {}), timedItem, raw, ...(b.holyWater ? { requireHolyWater: true } : {}) } });
   return { ...q, kind: 'exchange', require: { ...(q.require || {}), instant: true }, repeat: { ...(q.repeat || {}), daily: true, perPeriod: 5 },
     rewards: { timedItem, raw }, rewardVariants: { mode: 'repeat', list: [1, 2, 3, 4, 5].map(round) }, recoveredFrom: b.file };
 }

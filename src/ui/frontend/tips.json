@@ -1,0 +1,213 @@
+{
+  "source": "Global loading_map_info.csv (Scrubbed 0.0.1)",
+  "tips": [
+    {
+      "map": 65535,
+      "text": "Tip: It is best to change your password on a regular basis <color=fdb602>to protect your personal information</color>."
+    },
+    {
+      "map": 65535,
+      "text": "Tip: Press Hot Key <color=fdb602>N</color> to talk to a nearby NPC."
+    },
+    {
+      "map": 65535,
+      "text": "Tip: Press Hot Key <color=fdb602>B</color> to see information regarding various content."
+    },
+    {
+      "map": 65535,
+      "text": "Tip: Clear <color=fdb602>Main Quests</color> to level up quickly."
+    },
+    {
+      "map": 65535,
+      "text": "Tip: If you reach Lv. 170 you will be qualified for <color=fdb602>Meister Skill</color> Test."
+    },
+    {
+      "map": 65535,
+      "text": "Tip: If you want to know about the location of Monsters and NPCs please use the <color=fdb602>DK Witch Tool</color> on the Dekaron website."
+    },
+    {
+      "map": 65535,
+      "text": "Tip: Please visit the <color=fdb602>Dekaron Guide</color> on the website. It will help you to fully enjoy the game."
+    },
+    {
+      "map": 65535,
+      "text": "Tip: 6 times a day <color=fdb602>Dead Front</color> shares good habits with you."
+    },
+    {
+      "map": 3,
+      "text": "Tip: The <color=fdb602>Deneb</color> Main Quest NPC is <color=fdb602>Mustafa</color>."
+    },
+    {
+      "map": 5,
+      "text": "Tip: The <color=fdb602>Heihaff</color> Main Quest NPC is <color=fdb602>Dunan</color>."
+    },
+    {
+      "map": 6,
+      "text": "Tip: The <color=fdb602>Parca Temple</color> Main Quest NPC is <color=fdb602>Kata</color>."
+    },
+    {
+      "map": 11,
+      "text": "Tip: The <color=fdb602>Frozen Valley of Vengeance</color> Main Quest NPC is <color=fdb602>Wilde</color>."
+    },
+    {
+      "map": 12,
+      "text": "Tip: <color=fdb602>Karon's Remnants</color> are in the Instance Dungeon at <color=fdb602>Abyss of Crespo</color>."
+    },
+    {
+      "map": 12,
+      "text": "Tip: The <color=fdb602>Infinite Battle Colosseum</color> is in <color=fdb602>Crespo</color>. (Lv. 131+)"
+    },
+    {
+      "map": 12,
+      "text": "Tip: The <color=fdb602>Crespo</color> Main Quest NPC is <color=fdb602>Iyad</color>."
+    },
+    {
+      "map": 13,
+      "text": "You passed out due to the hot weather of the Desert."
+    },
+    {
+      "map": 13,
+      "text": "Tip: <color=fdb602>Infinite Battle Cartell</color> are in <color=fdb602>Draco Desert</color>. (Lv. 90 - 130)"
+    },
+    {
+      "map": 13,
+      "text": "Tip: The <color=fdb602>Draco Desert</color> Main Quest NPC is <color=fdb602>Guila</color>."
+    },
+    {
+      "map": 14,
+      "text": "Tip: The <color=fdb602>Norak Cave</color> Main Quest NPC is <color=fdb602>Maffeo</color>."
+    },
+    {
+      "map": 17,
+      "text": "Tip: The <color=fdb602>Requies Beach</color> Main Quest NPC is <color=fdb602>Zulu</color>."
+    },
+    {
+      "map": 18,
+      "text": "Akelucia Boatman is totally exhausted so you must row the boat instead."
+    },
+    {
+      "map": 18,
+      "text": "Tip: The <color=fdb602>Avalon Island</color> Main Quest NPC is <color=fdb602>Molokai</color>."
+    },
+    {
+      "map": 19,
+      "text": "Tip: The <color=fdb602>Python Castle</color> Main Quest NPC is <color=fdb602>Erwin</color>."
+    },
+    {
+      "map": 21,
+      "text": "Tip: The Solo Instance Dungeon <color=fdb602>Python Donjon</color> is in <color=fdb602>Doomed Maze</color>"
+    },
+    {
+      "map": 21,
+      "text": "Tip: The <color=fdb602>Doomed Maze</color> Main Quest NPC is <color=fdb602>Lost</color>."
+    },
+    {
+      "map": 26,
+      "text": "Learn how to swim."
+    },
+    {
+      "map": 45,
+      "text": "Tip. To enter Dead Front you must have a <color=fdb602>Fortress Map</color>."
+    },
+    {
+      "map": 46,
+      "text": "Tip: The <color=fdb602>Acquirai Ruins</color> Main Quest NPC is <color=fdb602>New Helion Mia</color>."
+    },
+    {
+      "map": 47,
+      "text": "Tip: In order to go to <color=fdb602>Quilue Liana</color> you need the <color=fdb602>Ruby Eye</color>."
+    },
+    {
+      "map": 47,
+      "text": "Tip: If you take Dark Roshu when Incarnation of Helion is collecting it you will be able to get the <color=fdb602>Ruby Eye</color>."
+    },
+    {
+      "map": 47,
+      "text": "Tip: The <color=fdb602>Space of Pilgrimage</color> Main Quest NPC is <color=fdb602>Undo Masochie</color>."
+    },
+    {
+      "map": 63,
+      "text": "Tip: 3 times per day there will be a <color=fdb602>battle against the Army of Destruction</color> in <color=fdb602>the Deadlands</color>."
+    },
+    {
+      "map": 63,
+      "text": "Tip: In the Deadlands you will be able to select the difficulty between <color=fdb602>Infinite Battle Battlefield (Hard) and Fight (Normal)</color>."
+    },
+    {
+      "map": 72,
+      "text": "Tip: The <color=fdb602>Abyss of Crespo</color> Main Quest NPC is <color=fdb602>Tamala</color>."
+    },
+    {
+      "map": 73,
+      "text": "Tip: The <color=fdb602>Abyss of Crespo</color> Main Quest NPC is <color=fdb602>Tamala</color>."
+    },
+    {
+      "map": 74,
+      "text": "Tip: The <color=fdb602>Abyss of Crespo</color> Main Quest NPC is <color=fdb602>Tamala</color>."
+    },
+    {
+      "map": 75,
+      "text": "Tip: The <color=fdb602>Abyss of Crespo</color> Main Quest NPC is <color=fdb602>Tamala</color>.,,,`"
+    },
+    {
+      "map": 76,
+      "text": "Tip: The <color=fdb602>Abyss of Crespo</color> Main Quest NPC is <color=fdb602>Tamala</color>."
+    },
+    {
+      "map": 150,
+      "text": "Run as fast as you can to evade Moth."
+    },
+    {
+      "map": 157,
+      "text": "Tip: You will be able to enter <color=fdb602>Shadow Shield</color> and <color=fdb602>Magic Field of Crack</color> through <color=fdb602>Phantom Shield</color>."
+    },
+    {
+      "map": 158,
+      "text": "Tip: When the <color=fdb602>Elonohm Shrine Event begins</color> all characters will be teleported to <color=fdb602>Valley Rift</color>."
+    },
+    {
+      "map": 166,
+      "text": "Tip. To enter Ice Castle you must have a <color=fdb602>Fortress Key</color>."
+    },
+    {
+      "map": 182,
+      "text": "Tip: You will be able to enter the <color=fdb602>Instance Dungeon</color> through <color=fdb602>Ancient Creature</color> which is at Dravice Town."
+    },
+    {
+      "map": 182,
+      "text": "Tip: The <color=fdb602>Mitera</color> Main Quest NPC is <color=fdb602>Mater</color>."
+    },
+    {
+      "map": 533,
+      "text": "You passed out due to unknown poisonous gas."
+    },
+    {
+      "map": 533,
+      "text": "Tip: When <color=fdb602>the Red Hole cracks</color> a number of monsters will be summoned around the area."
+    },
+    {
+      "map": 533,
+      "text": "Tip: The <color=fdb602>Mitera</color> Main Quest NPC is <color=fdb602>Devaney</color>."
+    },
+    {
+      "map": 534,
+      "text": "Tip: When the Hidden Monster <color=fdb602>Hidnil</color> appears you will have to defeat it within a specified timeframe otherwise it will vanish again."
+    },
+    {
+      "map": 534,
+      "text": "Tip: If you clear all quests <color=fdb602>very quickly</color> you will be able to fight against the Final Boss Monster and you will be able to acquire better rewards."
+    },
+    {
+      "map": 535,
+      "text": "Tip: When the Hidden Monster <color=fdb602>Hidnil</color> appears you will have to defeat it within a specified timeframe otherwise it will vanish again."
+    },
+    {
+      "map": 535,
+      "text": "Tip: If you clear all quests <color=fdb602>very quickly</color> you will be able to fight against the Final Boss Monster and you will be able to acquire better rewards."
+    },
+    {
+      "map": 150,
+      "text": "Tip: The <color=fdb602>Ardeca</color> Main Quest NPC is <color=fdb602>Iron Blood Kale</color>."
+    }
+  ]
+}

@@ -15,6 +15,7 @@
 import { PVP_OPTION_CODES } from './pvp-rules.js';
 import { awakeningShield } from './awakening-shield.js';
 import { applyStatReset } from './point-resets.js';
+import { globalBattleStats } from './global-battle-stats.js';
 
 const DEFAULT_FORMULA = {
   fSTRDamageRatio: 0.4, fDEXDamageRatio: 0.4, fSPRDamageRatio: 0.4, fLEVELDamageRatio: 0.4,
@@ -24,7 +25,10 @@ const DEFAULT_FORMULA = {
   fSTRFactorForCritical: 1.4, fDEXFactorForCritical: 2, fSPRFactorForCritical: 1.5,
   byGuardProbability: 15, byGuardEfficiency: 50,
   byHPRecoveryFactor: 35, byMPRecoveryFactor: 35, wHPFullRecoveryTime: 360, wMPFullRecoveryTime: 360,
-  byRespawnExpCostRatio: 3, wMinLevelToLoseExp: 0, wMaxLevel: 250, byStatPointPerLevel: 5,
+  // Revive* = skill/duel/event reincarnation; Respawn* = ordinary town/field Accept (game.js + field-respawn).
+  byReviveHPRatio: 100, byReviveMPRatio: 100, byReviveExpCostRatio: 5, dwReviveTick: 4000,
+  byRespawnHPRatio: 100, byRespawnMPRatio: 100, byRespawnExpCostRatio: 3,
+  wMinLevelToLoseExp: 0, wMaxLevel: 250, byStatPointPerLevel: 5,
   fMonAttDamageRatio: 1, fMonDefRatio: 1, fMonEXPRatio: 1, fMonItemDropRatio: 1, fMonMoneyDropRatio: 1,
   fSkillCoolTimeRate: 1,
 };
@@ -34,6 +38,8 @@ const DEFAULT_FORMULA = {
  *  stats.speedFromRootMotion.run: 3.445 for the 7 classic classes, 4.278 Dragon Knight, 4.444 Segita Shooter,
  *  5.004 Conserra ...), so the run animation's feet never slide (Player.groundSpeed picks the
  *  clip of the current stance). pcclass Speed_WALK (2.5, every class) is a server validation value, not a run speed. */
+// ENGINE-DEFAULT (configurable) only as a fallback: every Global class gets its speed from root motion (classes.json);
+// 3.445 is the measured Global value of the 7 classic classes, used only for a class with no RUN clip data.
 export const BASE_RUN_SPEED = 3.445;
 /** Walk (R) speed as a fraction of the run speed: the WALK clip's root-motion speed / the RUN clip's (classes.json
  *  stats.speedFromRootMotion; the peace stance walks with walkPeace where the class has it). The shared host moves a
@@ -46,9 +52,28 @@ export function walkSpeedRatio(classDef, peace = false) {
 }
 /** Out-of-combat regeneration multiplier and how long after the last hit a character counts as "in combat". */
 export const OUT_OF_COMBAT_REGEN = 4;
+// ENGINE-DEFAULT (configurable): 6 s in-combat window. No formula.ini / pcclass key; the client decompile has no battle-state
+// timer constant (scan-fix 2026-10-29 search). Server owners may change it.
 export const COMBAT_TIMEOUT = 6;
-/** Skill points granted per level (the original gave 1 per level; the client carries no table for it). */
+/** Skill points granted per level-up for every class.
+ *  Evidence (no formula.ini skill-per-level key; no per-class column in pcclass / classes.json):
+ *    - server/world/npc-builds.mjs npcPointBudget: skillPoints = level - 1 (creation starts at 0 in save.js)
+ *    - in-client guide stringtable_helper: each level-up grants Status Points and Skill Points
+ *    - older DekaronServer.exe: OnLevelUp@Skill / SKILLPOINT load-save tokens; LevelUp.cpp skips only when
+ *      SkillManager unavailable — implies a skill-point grant path exists, count not embedded as a string
+ *    - all 15 Global classes share the same budget identity (no class-specific skill-point column)
+ *  Recovered count = 1 / level for all classes. Not taken from prior 4.2.0 alone. */
 export const SKILL_POINTS_PER_LEVEL = 1;
+
+/** Stat/skill points granted on each level-up from Global-authored tables (classes.json / formula.ini).
+ *  Returns 0 for stats when no authored value is present — never invents a substitute curve or count. */
+export function pointsPerLevel(data, classDef) {
+  const F = formulaOf(data);
+  const statPoints = num(data?.classesFile?.statPointsPerLevel, 0)
+    || num(classDef?.growth?.statPointsPerLevel, 0)
+    || num(F.byStatPointPerLevel, 0);
+  return { statPoints, skillPoints: SKILL_POINTS_PER_LEVEL };
+}
 
 const _formulaCache = new WeakMap();
 /** formula.ini values from classes.json merged over defaults (so tests / partial data still work). */
@@ -58,6 +83,37 @@ export function formulaOf(data) {
   let f = _formulaCache.get(src);
   if (!f) { f = { ...DEFAULT_FORMULA, ...src }; _formulaCache.set(src, f); }
   return f;
+}
+
+/** Ordinary town/field Accept ratios from formula.ini byRespawnHP/MPRatio (not byRevive*). */
+export function respawnVitalRatios(data) {
+  const F = formulaOf(data);
+  const hp = num(F.byRespawnHPRatio, 100);
+  const mp = num(F.byRespawnMPRatio, 100);
+  return { hpRatio: hp > 0 ? hp : 100, mpRatio: mp > 0 ? mp : 100 };
+}
+
+/** Apply byRespawn* ratios to a live actor (maxHp/maxMp already current). */
+export function applyRespawnVitals(actor, data) {
+  const { hpRatio, mpRatio } = respawnVitalRatios(data);
+  const maxHp = Math.max(1, Number(actor?.maxHp) || 1);
+  const maxMp = Math.max(0, Number(actor?.stats?.maxMp ?? actor?.maxMp) || 0);
+  const hp = Math.max(1, Math.round(maxHp * hpRatio / 100));
+  const mp = Math.round(maxMp * mpRatio / 100);
+  if (actor) { actor.hp = hp; actor.mp = mp; }
+  return { hp, mp, hpRatio, mpRatio };
+}
+
+/** Profile-level death EXP penalty (same math as applyDeathPenalty). For host authority.
+ *  Uses byRespawnExpCostRatio % of expToNext; never de-levels. Returns exp lost. */
+export function applyDeathPenaltyToProfile(profile, data, { disabled = false } = {}) {
+  if (!profile || disabled) return 0;
+  const F = formulaOf(data);
+  if (num(profile.level, 1) < num(F.wMinLevelToLoseExp)) return 0;
+  const loss = Math.floor(expToNext(num(profile.level, 1), data) * num(F.byRespawnExpCostRatio, 3) / 100);
+  const lost = Math.min(num(profile.exp), Math.max(0, loss));
+  if (lost > 0) profile.exp = num(profile.exp) - lost;
+  return lost;
 }
 
 /** Sum of an option code over a status list ([{options:[{code,value}], remaining}]). */
@@ -112,7 +168,32 @@ export function deriveStats(save, classDef, data, buffs = save?.buffs) {
     regen: num(raw.SHIELD_RPS, 30) + out.level * num(raw.SHIELD_RPS_LF, 0.1) + sumStatus(buffs, 'SHIELD_RECOVERY_ADD') / 200,
   }));
   for (const fn of statPostHooks) { try { fn(out, save, classDef, data); } catch (err) { console.error('[progression] stat post hook', err); } }
+  applyGlobalBattleStats(out, classDef, data, buffs);
   return refreshDerivedShield(out);
+}
+
+/** MATH-VERIFY 4.3.2: replace the engine's invented hit/crit/block/guard numbers with the Global server calculation
+ *  (src/game/global-battle-stats.js, DekaronServer 0x7c0950) whenever the class carries its pcclass.csv factors.
+ *  Options: statuses / passives in `buffs` (the items provider's own entries excluded) + every worn item option (stats.itemOptions).
+ *  ENGINE-CHOSEN (open in MATH-VERIFY): baseBlockRate = the worn items' "Level 0 Blocking Rate" (the candidate for the
+ *  unidentified byte +0x0c), baseCritRate = 0 (Global Wear:CriticalRate is 0 on every weapon), RESIST_MAGIC_ADD stands in
+ *  for the untraced magic-resist add (Provider +0xe2). */
+export function applyGlobalBattleStats(out, classDef, data, buffs) {
+  const raw = classDef?.stats?.raw;
+  if (!out || !raw || !Number.isFinite(Number(raw.MISSRATE_LEVEL_FACTORY)) || !Number.isFinite(Number(raw.GUARDRATE_LEVEL_FACTORY))) return out;
+  const own = (buffs || []).filter(s => s?.source !== 'items');
+  const items = out.itemOptions || {};
+  const opt = (code) => sumStatus(own, code) + (Number(items[code]) || 0);
+  const G = globalBattleStats({ level: out.level, str: out.str, dex: out.dex, spr: out.spr, defense: out.defense, raw, formula: formulaOf(data), opt,
+    baseCritRate: 0, baseBlockRate: Number(out.itemBlockRate) || 0, magicResistAdd: opt('RESIST_MAGIC_ADD') });
+  Object.assign(out, {
+    globalBattle: true, missRate: G.missRate, critRate: G.critRate, critDamagePct: G.critDamagePct, critMultiplier: G.critMultiplier,
+    blockRate: G.blockRate, guardRate: G.guardRate, guardEfficiency: G.guardEfficiency, critResist: G.critResist,
+    reductionFactors: Object.fromEntries(['MELEEDAMAGE_DECREASERATE_LEVEL_FACTOR', 'MELEEDAMAGE_DECREASERATE_DEFENSE_FACTOR',
+      'MAGICDAMAGE_DECREASERATE_LEVEL_FACTOR', 'MAGICDAMAGE_DECREASERATE_RESIST_FACTOR'].map(k => [k, Number(raw[k]) || 0])),
+    magicResist: G.magicResist, meleeReduction: G.meleeReduction, magicReduction: G.magicReduction, elementReduction: G.elementReduction,
+  });
+  return out;
 }
 
 /** Stat extension points (additive; used by src/systems/items): providers add buff entries, post hooks edit the result. */
@@ -216,7 +297,9 @@ function deriveStatsBase(save, classDef, data, buffs) {
   const runAnimSpeed = moveSpeedMul;
 
   // Regeneration per second (in combat). pcclass HP_RPS/MP_RPS plus a full refill over
-  // wHP/MPFullRecoveryTime seconds; out of combat tickRegen multiplies this by OUT_OF_COMBAT_REGEN.
+  // wHP/MPFullRecoveryTime seconds; out of combat tickRegen multiplies this by OUT_OF_COMBAT_REGEN (ENGINE-CHOSEN 4).
+  // byHPRecoveryFactor / byMPRecoveryFactor (=35) load into the native formula struct but have NO client apply site
+  // in decompile decompiled.c beyond FUN_00e5ed40 loaders — left unwired (do not invent).
   // HP/MP_RECOVERY_ADD statuses (e.g. Mana force 1443) are read as value/200 per second (approximation).
   // HP/MP_RECOVERY_IMPOSSIBLE ("Temporarily Can Not Regain HP", "Block MP Recovery"): no regeneration while the status lasts
   // (ENGINE-CHOSEN reading of the status text; skill heals are refused the same way by the skill engine).
@@ -263,7 +346,9 @@ export function expToNext(level, data) {
     const row = L.find(r => r.level === level) || L[level - 1];
     if (row) return num(row.exp ?? row.toNext, Infinity);
   }
-  return 40 * Math.pow(2, Math.max(0, level - 1));
+  // No Global exp.csv / exp.json row: do not invent a curve (early levels coincidentally
+  // matched 40*2^(n-1) but diverge from level 5 onward). Callers treat non-finite as unavailable.
+  return Infinity;
 }
 
 /** exp % for a kill, from share/pc/levelcap.csv (monster level minus player level). */
@@ -308,7 +393,7 @@ export function grantExp(game, amount, monsterLevel = null) {
   const gained = Math.max(1, Math.round((amount * rate / 100) * mult));
 
   const maxLevel = maxLevelOf(data);
-  const perLevel = num(data?.classesFile?.statPointsPerLevel, 0) || num(game.classDef?.growth?.statPointsPerLevel, 0) || F.byStatPointPerLevel || 5;
+  const perLevel = pointsPerLevel(data, game.classDef).statPoints;
   save.exp += gained;
   const levels = [];
   while (save.level < maxLevel) {
@@ -333,14 +418,8 @@ export function grantExp(game, amount, monsterLevel = null) {
 export function applyDeathPenalty(game) {
   const save = game?.save;
   if (!save || game.settings?.deathPenalty === false) return 0;
-  const F = formulaOf(game.data);
-  if (num(save.level, 1) < num(F.wMinLevelToLoseExp)) return 0;
-  const loss = Math.floor(expToNext(num(save.level, 1), game.data) * num(F.byRespawnExpCostRatio, 3) / 100);
-  const lost = Math.min(num(save.exp), Math.max(0, loss));
-  if (lost > 0) {
-    save.exp -= lost;
-    game.events?.emit('exp', { amount: -lost, penalty: true });
-  }
+  const lost = applyDeathPenaltyToProfile(save, game.data);
+  if (lost > 0) game.events?.emit('exp', { amount: -lost, penalty: true });
   return lost;
 }
 
@@ -354,9 +433,17 @@ export function allocateStat(game, stat, count = 1) {
     if (Number.isInteger(count) && count > 0) void game.network?.action?.('allocate', { stat: key, count });
     return 0;
   }
-  const n = Math.min(Math.max(0, Math.floor(count)), num(save.statPoints));
+  // Cap: classes.json stats.raw STR_MAX/DEX_MAX/CON_MAX/SPR_MAX (same keys server data.mjs statCap reads).
+  // Base: classes.json stats.base. No invented defaults — refuse without evidenced classDef.
+  const base = game.classDef?.stats?.base;
+  const raw = game.classDef?.stats?.raw;
+  const capKey = key.toUpperCase() + "_MAX";
+  const cap = Number(raw && raw[capKey]);
+  if (!base || !Number.isFinite(cap) || cap <= 0) return 0;
+  if (!save.stats) save.stats = { ...base };
+  const room = Math.max(0, cap - num(save.stats[key]));
+  const n = Math.min(Math.max(0, Math.floor(count)), num(save.statPoints), room);
   if (n <= 0) return 0;
-  if (!save.stats) save.stats = { ...(game.classDef?.stats?.base || { str: 5, dex: 5, con: 5, spr: 5 }) };
   save.stats[key] = num(save.stats[key]) + n;
   save.statPoints = num(save.statPoints) - n;
   if (typeof game.refreshPlayerStats === 'function' && game.player) game.refreshPlayerStats(false);
@@ -372,7 +459,9 @@ export function allocateStat(game, stat, count = 1) {
 export function resetStats(game, row) {
   const save = game?.save;
   if (!save) return { error: 'nothing' };
-  const r = applyStatReset(save, { base: game.classDef?.stats?.base || { str: 5, dex: 5, con: 5, spr: 5 }, row });
+  const base = game.classDef?.stats?.base;
+  if (!base) return { error: 'no-class-base' };
+  const r = applyStatReset(save, { base, row });
   if (r.error) return r;
   if (r.cost) { if (game.items?.spendDil) game.items.spendDil(r.cost); else save.dil = num(save.dil) - r.cost; }
   if (typeof game.refreshPlayerStats === 'function' && game.player) game.refreshPlayerStats(false);

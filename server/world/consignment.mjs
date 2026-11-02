@@ -1,4 +1,4 @@
-// Server-authoritative Consignment / Agency (Middleman JobType 46, store/ui_storeconsignment_2 + ui_new_storesearch_2 +
+﻿// Server-authoritative Consignment / Agency (Middleman JobType 46, store/ui_storeconsignment_2 + ui_new_storesearch_2 +
 // ui_receiptwnd_2). Listings, escrowed items and seller receipts live in the durable social state (state.consign), so a
 // buyer, a cancel, an expiry and a receipt commit atomically with the acting character's bag and DIL through
 // socialTransaction (one CAS write of users + social). An offline seller's profile is never written: sales wait in
@@ -25,6 +25,7 @@ import {nearbyNpc} from './npc-services.mjs';
 import {premiumHas} from './premium-service.mjs';
 import {socialError as fail,socialRef,socialIntent,socialTransaction,socialLive} from './social-state.mjs';
 import {progressDekaPass} from './dekapass.mjs';
+import {canConsignItem,isBoundInst,isTradableDef,hasPeriod} from './item-flags.mjs';
 
 export const CONSIGN_SCHEMAS={consign:['token','type','operation','revision','requestId','uid','count','unit','id','all']};
 const MAX_DIL=10_000_000_000,DAY=86_400_000,RECEIPT_DAYS=15,MIDDLEMAN_JOB=46;
@@ -67,7 +68,10 @@ const listingRow=(l,ref)=>({id:l.id,itemIndex:l.itemIndex,count:l.count,unit:l.u
 export function consignmentSnapshot(world,p){
   const policy=policyOf(world),state=world.socialState;
   if(!policy||!state)return {available:false,revision:state?.revision||0,listings:[],receipts:[]};
-  const view=sweepConsignment(structuredClone({consign:state.consign||{listings:[],receipts:{}}}),policy,world.now()),ref=socialRef(p);
+  // NET-REALM (DK_CONSIGN_MEMO, default on): the swept market view depends only on the market + the clock, not on the viewer;
+  // inside one snapshot scope (SSE broadcast slice / coalesced /state batch) it is cloned + swept once instead of once per viewer.
+  const now=world.now(),build=()=>sweepConsignment(structuredClone({consign:state.consign||{listings:[],receipts:{}}}),policy,now);
+  const view=(process.env.DK_CONSIGN_MEMO!=='0'&&typeof world.broadcastMemo==='function')?world.broadcastMemo(`consignView:${state.revision}:${now}`,build):build(),ref=socialRef(p);
   return {available:true,revision:state.revision,policy:{deposit:policy.deposit,fee:policy.fee,days:policy.days,max:policy.max,receiptDays:policy.receiptDays},
     listings:view.listings.filter(l=>l.sellerRef===ref).map(l=>listingRow(l,ref)),
     receipts:(view.receipts[ref]||[]).map(({item,...r})=>({...r,item:publicItem(item)}))};
@@ -103,9 +107,12 @@ export async function consignCommand(world,p,input){
       if(!Number.isSafeInteger(unit*count)||unit*count>MAX_DIL)fail('The desired amount has exceeded the limit.');
       const source=bag.byUid(input.uid),def=source&&world.data.itemDB.def(source.itemIndex);
       if(!def)fail('There are no item(s).');
-      if(source.bound||Number(def.trade)===0)fail('Binded Items cannot be registered');
-      if(source.expiresAt||Number(def.period)>0)fail('Periodical/Timed Items cannot be registered');
-      if(source.pet?.active||source.pet?.inv?.length)fail('This item cannot be registered');
+      // Lane42: refuse via canConsignItem; keep distinct Global refusal strings.
+      if(!canConsignItem(def,source)){
+        if(isBoundInst(source)||!isTradableDef(def))fail('Binded Items cannot be registered');
+        if(source.expiresAt||hasPeriod(def))fail('Periodical/Timed Items cannot be registered');
+        fail('This item cannot be registered');
+      }
       if(count>(source.count||1))fail('That item quantity is unavailable.');
       if(!Number.isSafeInteger(profile.dil)||profile.dil<policy.deposit)fail('Insufficient Deposit');
       const item=bag.take(source,count);for(const k of ['page','x','y'])delete item[k];
@@ -167,3 +174,4 @@ export async function consignCommand(world,p,input){
     return {received};
   });
 }
+

@@ -5,10 +5,13 @@
 // An acknowledged item swap may return {heldItem: payload} for the displaced, still-owned item.
 // Targets: control.acceptDrop({ accept(data, e, ctrl) -> bool, drop(data, e, ctrl) -> any, hover(data, e, ctrl), leave(ctrl) })
 // Both styles of the original work: press-drag-release, and click-to-pick-up then click-to-place (the icon sticks
-// to the cursor until the next click). Right click or Esc cancels. Releasing over the game canvas (no window)
+// to the cursor until the next click). Esc cancels (Global WM_CHAR 0x1b -> CCharEscapeMsgInDS); right click does
+// not cancel. The cursor keeps its normal shape: Global 0082f820 only draws the held icon. Releasing over the game canvas (no window)
 // calls payload.onDropOutside(e) (e.g. "drop this item on the ground?").
 import { div, paintIcon, UIControl } from './controls.js';
 
+// Global 01188d40: a press-drag starts once the squared pointer travel exceeds DAT_01b7e2d8 = 15.0.
+const DRAG_START_SQ = 15;
 export class DragDrop {
   constructor(mgr) {
     this.mgr = mgr;
@@ -37,7 +40,6 @@ export class DragDrop {
       // Android can emit contextmenu after a touch hold. That is the same lift
       // gesture, not a separate mouse right-click asking to cancel the item.
       if(this._lastPointer?.pointerType==='touch'&&e.pointerType!=='mouse'){e.stopPropagation();return;}
-      this.cancel();
     } };
     // the click that follows a pick-up / sticky drop must not reach the controls underneath
     this._click = (e) => { this._suppressDoubleClick = !!this._swallow; if (this._swallow) { this._swallow = false; e.stopPropagation(); e.preventDefault(); } };
@@ -58,7 +60,9 @@ export class DragDrop {
     return true;
   }
   _onMove(e) {
-    if (this.cand && !this.cur && Math.hypot(e.clientX - this.cand.x, e.clientY - this.cand.y) > 4) {
+    // Global 01188d40: another button pressed during a press-drag releases the drag first, so the item drops there
+    if (this.cur && !this.cur.pending && this.cur.mode === 'hold' && e.button > 0) { this._swallow = true; this.drop(e); return; }
+    if (this.cand && !this.cur && (e.clientX - this.cand.x) ** 2 + (e.clientY - this.cand.y) ** 2 > DRAG_START_SQ) {
       const c = this.cand; this.cand = null;
       this.start(c.ctrl, c.e, 'hold');
     }
@@ -77,6 +81,7 @@ export class DragDrop {
     if (this.cur && this.cur.mode === 'hold' && e.button === 0) this.drop(e);
   }
   _onDownGlobal(e) {
+    if (this.cur && !this.cur.pending && this.cur.mode === 'hold' && e.button > 0) { e.stopPropagation(); e.preventDefault(); this._swallow = true; this.drop(e); return; }
     if (!this.cur || this.cur.pending || this.cur.mode !== 'sticky') return;
     if (e.button !== 0) return;
     // The inventory toggle and its close button only change panel visibility.
@@ -140,7 +145,8 @@ export class DragDrop {
     this._lastPointer = e;
     const p = this.mgr.toLayer(e.clientX, e.clientY);
     const [hx, hy] = this.cur?.payload.hotspot || [(this.cur?.payload.size?.[0] || 32) / 2, (this.cur?.payload.size?.[1] || 32) / 2];
-    this.icon.style.left = `${p.x - hx}px`; this.icon.style.top = `${p.y - hy}px`;
+    // Global CCursorControl keeps the held icon's top-left on screen (never negative), centred on the cursor otherwise
+    this.icon.style.left = `${Math.max(0, p.x - hx)}px`; this.icon.style.top = `${Math.max(0, p.y - hy)}px`;
   }
   _targetAt(e) {
     let el = document.elementFromPoint(e.clientX, e.clientY);

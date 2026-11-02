@@ -1,3 +1,4 @@
+﻿import {canDropToGround} from '../items/flags.js';
 const PICKUP_FLIGHT_MS = 4000; // a pickup request counts as "in flight" at most this long (a lost answer must not lock the key)
 export function installSharedLoot(game,network){
   const loot=game.loot;if(!loot)return;const actors=new Map(),flight=new Map();
@@ -14,8 +15,9 @@ export function installSharedLoot(game,network){
     for(const[id,marker]of actors)if(!live.has(id)){loot._removeDrop(marker);actors.delete(id);}
   };
   if(game.items)game.items.discardAsk=async item=>{
-    const destroy=item.bound||Number(game.items.db.def(item.itemIndex)?.trade)===0;
+    const destroy=!canDropToGround(game.items.db.def(item.itemIndex),item);
     const result=await game.uiwin?.msgbox?.(`${destroy?'Permanently destroy':'Drop'} ${item.name}?`,{kind:'yesno'});if(result!=='yes')return false;
     return !!await network.action('discard',{uid:item.uid,count:item.count||1});
   };
 }
+

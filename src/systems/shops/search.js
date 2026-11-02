@@ -61,7 +61,8 @@ export function createSearch(game, api) {
     }
     m.receipts = m.receipts.filter(r => now - r.at < RECEIPT_DAYS * 86400000 || r.kind === 'expired');
   }
-  setInterval(() => { if (game.save) tick(); }, 15000);
+  // kept so dispose() can stop it: otherwise a reinstall (disposeSystems) leaves the old timer ticking the old game
+  let marketTimer = setInterval(() => { if (game.save) tick(); }, 15000);
 
   // ------------------------------------------------------------------------------------------ the three pages
   const pages = { search: 'shops.storesearch', consignment: 'shops.consignment', receipt: 'shops.receipt' };
@@ -401,6 +402,7 @@ export function createSearch(game, api) {
     openReceipt: () => go('receipt'),
     register: openRegister,
     tick,
+    dispose() { if (marketTimer) clearInterval(marketTimer); marketTimer = null; },
     get market() { return M(); },
   };
 }

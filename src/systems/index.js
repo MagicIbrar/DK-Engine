@@ -31,7 +31,6 @@ sys('charwin', () => import('./charwin/index.js'));
 sys('gm', () => import('./gm/index.js'));
 sys('network', () => import('./network/index.js'));
 sys('extras', () => import('./extras/index.js'));   // mini help, map item list, bounty ... (docs: extras/index.js)
-sys('inspect', () => import('./inspect/index.js'));   // Inspect player (game2/previewplayer), after network + mounts
 sys('chartrade', () => import('./chartrade/index.js'));   // Character trade (game2/chartradewnd), after network + items
 sys('skillmaster', () => import('./skillmaster/index.js'));   // Learn Skill popup + skill blind (game2/skill), after skills + network
 
@@ -63,6 +62,7 @@ export function getSystem(name) { return installed.find(s => s.name === name)?.m
  */
 export async function installSystems(game, onProgress = () => {}) {
   game.systems = { get: getSystem, status: systemStatus, list: registeredSystems };
+  game.systemInstallErrors = new Map();
   if (game.save.authority === 'server') {
     game.accountPermissions = { role: 'player', capabilities: [] };
     try {
@@ -91,6 +91,7 @@ export async function installSystems(game, onProgress = () => {}) {
       installed.push({ name: r.name, mod });
     } catch (error) {
       failed.push({ name: r.name, error });
+      game.systemInstallErrors.set(r.name,error);
       console.error(`[systems] ${r.name} failed to install`, error);
     }
     done++; progress(r.name);
@@ -105,17 +106,37 @@ export async function installSystems(game, onProgress = () => {}) {
  * or the skills for good); only an update that keeps throwing for 600 frames in a row is disabled.
  */
 export function updateSystems(game, dt) {
+  // Items' ordinary update stays in registry order; wing effects sample after the mount rig advances.
+  const itemsIndex = installed.findIndex(s => s.name === 'items');
+  const mountsIndex = installed.findIndex(s => s.name === 'mounts');
+  const items = itemsIndex >= 0 ? installed[itemsIndex] : null;
+  const deferEffects = items && mountsIndex > itemsIndex;
+  const updateEffects = () => {
+    const fn = items?.mod?.updateEquipmentEffects;
+    if (typeof fn !== 'function' || items.broken || items.equipmentEffectsBroken) return;
+    try { fn.call(items.mod, dt, game); items.equipmentEffectsFails = 0; }
+    catch (err) {
+      items.equipmentEffectsFails = (items.equipmentEffectsFails || 0) + 1;
+      const seen = (items.equipmentEffectsErrors ||= new Set());
+      const msg = String(err?.message || err);
+      if (!seen.has(msg)) { seen.add(msg); console.error('[systems] items equipment effects update threw (kept running)', err); }
+      if (items.equipmentEffectsFails >= 600) { items.equipmentEffectsBroken = true; console.error('[systems] items equipment effects keeps throwing; disabled'); }
+    }
+  };
   for (const s of installed) {
     const fn = s.mod?.update;
-    if (typeof fn !== 'function' || s.broken) continue;
-    try { fn.call(s.mod, dt, game); s.fails = 0; }
-    catch (err) {
-      s.fails = (s.fails || 0) + 1;
-      const seen = (s.errSeen ||= new Set());
-      const msg = String(err?.message || err);
-      if (!seen.has(msg)) { seen.add(msg); console.error(`[systems] ${s.name}.update threw (kept running)`, err); }
-      if (s.fails >= 600) { s.broken = true; console.error(`[systems] ${s.name}.update keeps throwing; disabled`); }
+    if (typeof fn === 'function' && !s.broken) {
+      try { fn.call(s.mod, dt, game); s.fails = 0; }
+      catch (err) {
+        s.fails = (s.fails || 0) + 1;
+        const seen = (s.errSeen ||= new Set());
+        const msg = String(err?.message || err);
+        if (!seen.has(msg)) { seen.add(msg); console.error(`[systems] ${s.name}.update threw (kept running)`, err); }
+        if (s.fails >= 600) { s.broken = true; console.error(`[systems] ${s.name}.update keeps throwing; disabled`); }
+      }
     }
+    if (s === items && !deferEffects) updateEffects();
+    else if (deferEffects && s.name === 'mounts') updateEffects();
   }
 }
 

@@ -10,7 +10,11 @@
 //   hud_reception  ui_receptionwnd.txt                "Network Status Display" (View option)
 //   hud_helpalarm  helpwindow/ui_helpalarmwnd.txt     the Game Guide button (opens 'guide')
 //   tutorialbasic  ui_tutorialbasicwnd.txt            the new-character tips (script/string/stringtable_poptip.txt)
+import { gfxC } from '../../ui/gfx-parity-c.js';
 import { str, plainMarkup, plainText, clamp } from './util.js';
+// Lane 47: Global death window wait text = stringtable_pc 40:125 'You will resurrect in <color=FFFFFF>(%02d)</color> seconds.'
+// formatted with remaining ms / 1000 (integer division; decompile 32-bit-main FUN_00b3b4d0, decompiled.c:703654-703672). No invented fallback.
+function waitText(win,ms){const t=str(40,125),c=win.control('lbl_waittime');if(!t){c.setText('');return;}const text=t.replace('%02d',String(Math.floor(Math.max(0,ms)/1000)).padStart(2,'0'));if(c.setRichText)c.setRichText(text);else c.setText(plainText(text));}
 import { strings } from '../../ui/uiwin/strings.js';
 import { installHudAlarmLayout } from '../extras/alarm-slots.js';
 import {ORDINARY_RESPAWN_WAIT_MS} from '../../config/engine-chosen-respawn.js';
@@ -33,7 +37,8 @@ export function registerNotices(game, ctx, { request = (...args) => globalThis.f
       win.data.t = 0;
       win.control('lbl_message').setVisible(false);
       win.control('lbl_bigmessage').setVisible(false);
-      ctx.notice = (text, { big = false, seconds = 5 } = {}) => {
+      // Global SystemMessageWnd (decompile FUN_00b81fd0): a [message] line shows 7000 ms, then the tick hides it (no fade).
+      ctx.notice = (text, { big = false, seconds = 7 } = {}) => {
         const id = big ? 'lbl_bigmessage' : 'lbl_message';
         const c = win.control(id);
         const t = plainMarkup(text);
@@ -50,7 +55,6 @@ export function registerNotices(game, ctx, { request = (...args) => globalThis.f
         if (!(win.data[id] > 0)) continue;
         win.data[id] -= dt;
         const c = win.control(id);
-        c.el.style.opacity = String(clamp(win.data[id] / 0.8, 0, 1));
         if (win.data[id] <= 0) c.setVisible(false);
       }
     },
@@ -189,7 +193,7 @@ export function registerNotices(game, ctx, { request = (...args) => globalThis.f
     hud: true, escClose: false, script: 'game2/ui_localtimewnd.txt', remember: false,
     update(win) {
       const d = new Date(), p = n => String(n).padStart(2, '0');
-      const t = `${d.getFullYear()}.${p(d.getMonth() + 1)}.${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+      const t = gfxC('hudfmt') ? `${p(d.getMonth() + 1)}.${p(d.getDate())}.${d.getFullYear()} ${p(d.getHours())} : ${p(d.getMinutes())}` /* Global 43.19 recording '10.29.2026 08 : 18' */ : `${d.getFullYear()}.${p(d.getMonth() + 1)}.${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
       if (win.data.t !== t) { win.data.t = t; win.control('lbl_localtime').setText(t); }
     },
   });
@@ -208,8 +212,8 @@ export function registerNotices(game, ctx, { request = (...args) => globalThis.f
       const ms = rtt === null ? null : Math.round(rtt);
       const bars = ms === null ? 11 : ms < 30 ? 16 : ms < 50 ? 15 : ms < 80 ? 14 : ms < 120 ? 13 : ms < 200 ? 12 : 11;
       win.control('pan_reception').setSprite('Pantheon', bars);
-      win.control('lbl_ping').setText(ms === null ? '—' : ms+'ms');
-      win.control('lbl_ping').setTooltip?.(ms !== null ? 'Game server round trip '+ms+' ms (HTTP, includes server processing)\nFrame '+Math.round(ctx.frameMs || 16)+' ms' : net?.active ? 'Game server ping unavailable: connecting, disconnected, or no recent network timing.' : 'Local play: no game server connection.');
+      win.control('lbl_ping').setText(ms === null ? '—' : (gfxC('hudfmt') ? ms+' ms' : ms+'ms')); // Global 43.19 recording '1 ms'
+      win.control('lbl_ping').setTooltip?.(ms !== null ? 'Recent game-server HTTP response time '+ms+' ms (network, server work and response transfer; not network-only ping)\nFrame '+Math.round(ctx.frameMs || 16)+' ms' : net?.active ? 'Game server ping unavailable: connecting, disconnected, or no recent network timing.' : 'Local play: no game server connection.');
     },
   });
 
@@ -218,8 +222,11 @@ export function registerNotices(game, ctx, { request = (...args) => globalThis.f
     hud: true, escClose: false, script: 'game2/helpwindow/ui_helpalarmwnd.txt', remember: false,
     create(win) {
       const b = win.control('btn_alarm');
-      b.setVisible(true);
-      b.setEnabled(true);   // the script ships it enable false / visible false: the client turns it on in game
+      // gfxC4 [alarms]: Global keeps the script's enable false / visible false (helpwindow/ui_helpalarmwnd.txt); the
+      // recording (Lv 1, Ardeca) shows no guide button in the top-left grid.
+      const showHelp = !gfxC('alarms');
+      b.setVisible(showHelp);
+      b.setEnabled(showHelp);   // the script ships it enable false / visible false: the client turns it on in game
       // tooltip 100:152 "Game Guide": the helpwindow family's guide window (helpwindow/ui_infownd2.txt)
       b.onClick(() => { game.uiwin.toggle('guide'); b.setBlink(false); if (game.save) game.save.guideSeen = true; });
     },
@@ -304,26 +311,26 @@ export function registerNotices(game, ctx, { request = (...args) => globalThis.f
         if(how==='item'||how==='blessing'){
           const state=beadState(),blessed=how==='blessing',item=blessed?state.blessed:state.normal;
           const owned=ownedLifeBead(game.save,game.items?.db||game.items,item?.uid,state.now);
-          if(!state.scope||!state.valid||!owned||owned.rule.blessed!==blessed||!blessed&&state.cooldown>0){ctx.chat?.system(str(40,75)||'No such item exists.','err');return;}
+          if(!state.scope||!state.valid||!owned||owned.rule.blessed!==blessed||!blessed&&state.cooldown>0){{const t=str(40,75);if(t)ctx.chat?.system(t,'err');}return;}
           if(online())request=()=>game.network?.revive(item.uid)??null;
           else request=()=>{if(!ctx.consumeItem?.(item))return false;const result=ctx.reviveHere(owned.rule.hp/100,owned.rule.mp/100);if(result!==false&&owned.rule.cooldown>0)game.save.lifeBeadReadyAt=beadNow()+owned.rule.cooldown;return result;};
         }
         d.pending=true;
         const epoch=d.epoch;
-        Promise.resolve().then(request).then(result=>{if(d.epoch!==epoch)return;if(result===false||result===null){d.pending=false;d.retryAt=clock()+1000;return;}win.close('revive');},error=>{if(d.epoch!==epoch)return;d.pending=false;d.retryAt=clock()+1000;ctx.chat?.system(error?.message||'Respawn failed. Please try again.','err');});
+        Promise.resolve().then(request).then(result=>{if(d.epoch!==epoch)return;if(result===false||result===null){d.pending=false;d.retryAt=clock()+1000;return;}win.close('revive');},error=>{if(d.epoch!==epoch)return;d.pending=false;d.retryAt=clock()+1000;if(error?.message)ctx.chat?.system(error.message,'err');});
       }
       d.done = done;
     },
     onOpen(win, onRevive) {
       const d = win.data;
       d.onRevive = typeof onRevive === 'function' ? onRevive : null;
-      void strings.need([{cate:81},{cate:20}]).catch(()=>{});
+      void strings.need([{cate:81},{cate:20},{cate:40}]).catch(()=>{});
       const net=game.network,ready=net?.self?.respawnReadyAt,serverNow=net?._serverClock?net._serverClock.time+performance.now()-net._serverClock.at:Date.now();
       const wait=net?.active&&Number.isFinite(ready)?Math.max(0,ready-serverNow):ORDINARY_RESPAWN_WAIT_MS;
       d.waitUntil=clock()+wait;d.waitDuration=wait;d.pending=false;d.retryAt=0;d.epoch=(d.epoch||0)+1;
       d.auto = ctx.options.get('autoRevive') ? wait/1000 : 0;
       win.control('pan_waittime').setVisible(wait>0);
-      win.control('lbl_waittime').setText(`Respawn in ${Math.ceil(wait/1000)} seconds`);
+      waitText(win,wait);
       win.control('processbar').setValue(0);
       respawnControl(win,'btn_rebirth').setEnabled(wait<=0);
       win.control('check_autorevive').setChecked(!!ctx.options.get('autoRevive'));
@@ -338,7 +345,7 @@ export function registerNotices(game, ctx, { request = (...args) => globalThis.f
       if(game.player&&!game.player.dead){win.close('restored');return;}
       const remaining=Math.max(0,d.waitUntil-clock()),waiting=remaining>0;
       win.control('pan_waittime').setVisible(waiting);
-      win.control('lbl_waittime').setText(`Respawn in ${Math.ceil(remaining/1000)} seconds`);
+      waitText(win,remaining);
       win.control('processbar').setValue(d.waitDuration?1-remaining/d.waitDuration:1);
       respawnControl(win,'btn_rebirth').setEnabled(!waiting&&!d.pending);
       beadControls(win,waiting);

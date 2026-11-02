@@ -1,15 +1,20 @@
-// Effect unit renderers (docs/formats/effects.md Ã‚Â§5.4): sprite (camera / yaxis / carpet / stand billboards), decal,
+import { glowTimeScale } from '../../config/glow-time-scale.js';
+// Effect unit renderers (docs/formats/effects.md §5.4): sprite (camera / yaxis / carpet / stand billboards), decal,
 // skinned effect mesh, particle emitter, sound, camera quake and meshstatus (overlay pass).
 //
 // FRAME: every object here lives under the effect root (a child of game.worldRoot) in the raw FILE frame, like the
-// rest of the world (ARCHITECTURE.md Ã‚Â§1). Camera vectors are converted with (x, y, -z). Textures keep NoColorSpace
+// rest of the world (ARCHITECTURE.md §1). Camera vectors are converted with (x, y, -z). Textures keep NoColorSpace
 // and flipY = false (TextureCache does both).
 //
 // Blending (billboard.fx / tracemesh.fx are fixed-function): 'add' = SrcAlpha, One; 'modulate' = SrcAlpha,
-// InvSrcAlpha; meshes are additive unless the unit is `transparent` (then alpha blended). Colour = texture x control
-// colour x alpha; no lighting; depth test on, depth write off.
+// InvSrcAlpha. Meshes (gfx-B globalAlphaModes, LANE-54): Global's Bone::Normal routing of the unit's packed colour
+// (global-alpha-modes.js globalEffectMeshMode) - blended / '#' additive / cut-out 240 / opaque, re-evaluated every frame as
+// the alpha track moves; with the switch off, the previous additive-unless-`transparent` rule. Colour = texture x control
+// colour x alpha; no lighting; depth test on. Mesh layers never camera-billboard: Global's Mesh unit render
+// (64-bit FUN_7ff67128a880) builds a yaw-only rotation from the unit and reads no camera, whatever billboardtype says.
 import * as THREE from 'three';
 import { AURA, auraValue } from '../../config/engine-chosen-aura.js';
+import {gfxB} from '../../config/gfx-b-switches.js'; // gfx-B2
 import { LoopClock } from './loop-clock.js';
 import { BILLBOARD_SAMPLER } from '../../engine/sampler-state.js';
 import { warmThenShow } from '../../engine/shader-prewarm.js';
@@ -17,6 +22,9 @@ import { patchSpecular, releaseMaterial } from '../../engine/matfx.js';
 import { SKILL_FX_QUALITY } from '../../config/engine-chosen-skill-fx.js';
 import { applyDistort } from './fx-distort.js';
 import { trailSpec, SpriteRibbon, MeshTrail, TrailSchedule, trailFade, fileFramePosition } from './fx-trails.js';
+import { globalEffectMeshMode, isDdsFormat } from '../../engine/global-alpha-modes.js';   // LANE-54
+import { applyBillboardFogScale } from '../../engine/fog-model.js';   // LANE-66: CSpriteRenderer billboard fog range x 2.5
+import { globalEmitCount, globalWeatherEmitCount, globalSpawnRotation, globalStepRotation, globalAgeFraction } from './global-particle-rules.js'; // LANE-63
 
 const _v = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
@@ -26,10 +34,55 @@ const MIRROR = new THREE.Matrix4().makeScale(1, 1, -1);
 const UP = new THREE.Vector3(0, 1, 0);
 const _leafColor = new THREE.Color(), _leafFwd = new THREE.Vector3(0, 0, 1);
 
-export const blendOf = (b, transparentMesh) => {
-  if (b === 'modulate' || transparentMesh) return THREE.NormalBlending;
-  return THREE.AdditiveBlending;
+/** Global billboard.fx / tracemesh.fx: 'add' = SrcAlpha, One; 'modulate' = SrcAlpha, InvSrcAlpha.
+ *  Three.AdditiveBlending becomes ONE, ONE when the renderer uses premultipliedAlpha (WebGL default),
+ *  which over-brightens every additive FX/anim vs native D3D9. Force CustomBlending with Global factors.
+ *  Bloom stays untouched (its add pass already sets CustomBlending ONE, ONE explicitly). */
+// ENGINE-DEFAULT (configurable), scan-fix 2026-10-29: a Mesh unit with transparent=false (e.g. the quest mark
+// mh_quest_mark_P_yellow#, whose Global alpha key pulses 0.3..1, effectscene.02 1:2551) is drawn additive. Global's Unit::Mesh
+// render (32-bit FUN_011ac990 / 64-bit FUN_7ff67128a880) passes paint byte +0x23 and flags 0xc00 to a renderer vtable slot
+// (+0x94 / +0x138) that the decompile does not resolve, so whether Global alpha-tests, blends or draws it opaque at the dim
+// point is not recoverable. Sources searched: effectscene.02 / effectdata.02 / modeleffect.csv, 32- and 64-bit decompiles,
+// LANE-54/56 reports. The keyed alpha itself is Global (lane 56).
+export const isFxAdditive = (b, transparentMesh) => !(b === 'modulate' || transparentMesh);
+export const fxBlendFields = (b, transparentMesh) => {
+  if (!isFxAdditive(b, transparentMesh)) return { blending: THREE.NormalBlending };
+  return {
+    blending: THREE.CustomBlending,
+    blendEquation: THREE.AddEquation,
+    blendSrc: THREE.SrcAlphaFactor,
+    blendDst: THREE.OneFactor,
+    blendSrcAlpha: THREE.SrcAlphaFactor,
+    blendDstAlpha: THREE.OneFactor,
+  };
 };
+/** Prefer fxBlendFields / isFxAdditive. Returns the blending enum only. */
+export const blendOf = (b, transparentMesh) => fxBlendFields(b, transparentMesh).blending;
+
+/** LANE-54: { format, key } of an effect-mesh map for globalEffectMeshMode (DDS header format, else the D3DX load format
+ *  textures.js resolved), or null when there is no map / no resolved format (previous handling). */
+export function effectMeshTexInfo(map) {
+  const ud = map?.userData;
+  if (!ud) return null;
+  const format = isDdsFormat(ud.format) ? ud.format : (ud.d3dFormat || null);
+  return format ? { format, key: ud.key || map.name || '' } : null;
+}
+
+/** LANE-54: three.js fields of a Global effect-mesh mode. cut-out / opaque: blend off (ALPHAREF 240 / no test), depth write
+ *  on; blended: SrcAlpha/InvSrcAlpha, ALPHAREF 1; '#': SrcAlpha/One, ALPHAREF 1. Depth write (pass 5): on in every bucket -
+ *  Bone::Normal vf02 FUN_7ff6716ab000 and the transparent-bucket draw FUN_7ff6716ab050 only call the bucket draw, and the
+ *  bucket presets FUN_7ff6716c9870 set ALPHABLEND / ALPHATEST / ALPHAFUNC / ALPHAREF / SRC/DESTBLEND but never
+ *  D3DRS_ZWRITEENABLE (0xe). gfx-B effectMeshDepthWrite off restores the earlier transparent-unit depth write off. */
+export function effectMeshModeFields(g, transparentUnit) {
+  const additive = g.mode === 'additive';
+  const blended = additive || g.mode === 'blend';
+  return {
+    ...(additive ? fxBlendFields(null, false) : { blending: THREE.NormalBlending }),
+    transparent: blended,
+    depthWrite: gfxB('effectMeshDepthWrite') ? true : !(transparentUnit && blended),
+    alphaTest: g.alphaTest,
+  };
+}
 
 /** Camera position and axes in the FILE frame (THREE world (x,y,z) -> FILE (x,y,-z)). */
 export function cameraFrame(camera, out = {}) {
@@ -75,7 +128,9 @@ export function flipFrame(unit, ms, nFrames, seed = 0) {
  * bound, which samples (0,0,0,1); under additive blend that adds nothing. Additive + no map -> black (no white fallback).
  * Any other case keeps white. Textured meshes (incl. mesh-named tpack fallbacks) are unchanged. */
 export function nullTextureColor(map, blending) {
-  return !map && blending === THREE.AdditiveBlending ? 0x000000 : 0xffffff;
+  // Additive (Global SrcAlpha,One OR legacy THREE.AdditiveBlending): null texture samples black.
+  const additive = blending === THREE.AdditiveBlending || blending === THREE.CustomBlending;
+  return !map && additive ? 0x000000 : 0xffffff;
 }
 
 /** Whether an effect mesh keeps its source material's env specular (boneanimation.fx psEnvSpecular). 'safe' quality skips it. */
@@ -143,7 +198,7 @@ export class SpriteUnit extends Unit {
     if (bb === 'camera') {
       // THREE.Sprite faces the camera in the shader whatever the parent transform (mirror / bone rotation)
       mat = new THREE.SpriteMaterial({
-        transparent: true, depthWrite: false, blending: blendOf(unit.blend), color: 0xffffff, opacity: 1, fog: true,
+        transparent: true, depthWrite: false, ...fxBlendFields(unit.blend), color: 0xffffff, opacity: 1, fog: true,
         depthTest,
       });
       // A sprite that sits inside its owner's mesh (gem mist on a blade) keeps its place and size but its DEPTH is shifted toward
@@ -160,11 +215,12 @@ export class SpriteUnit extends Unit {
         };
         mat.customProgramCacheKey = () => 'sprite-depth-bias';
       }
+      applyBillboardFogScale(mat);   // Global FUN_0156afc0: g_f2FogValue.y = -1 / (range * 2.5) for billboard sprites (LANE-66)
       mesh = new THREE.Sprite(mat);
       if (unit.distort) applyDistort(mesh);    // DISTORT.MODE 'off' by default: drawn as an ordinary sprite
     } else {
       mat = new THREE.MeshBasicMaterial({
-        transparent: true, depthWrite: false, blending: blendOf(unit.blend), side: THREE.DoubleSide,
+        transparent: true, depthWrite: false, ...fxBlendFields(unit.blend), side: THREE.DoubleSide,
         // This single planar quad has only one visible face. The other pass
         // would be entirely culled; retaining DoubleSide preserves both views.
         forceSinglePass: true,
@@ -186,7 +242,7 @@ export class SpriteUnit extends Unit {
     const keys = unit.frames?.length ? unit.frames : unit.texture ? [unit.texture] : [];
     this.seed = Math.random();
     const spec = trailSpec(unit);
-    if (spec && ctx.fx?.root) { this.trail = new SpriteRibbon(ctx.fx, unit, spec, blendOf(unit.blend)); this._head = { p: new THREE.Vector3(), w: 1, color: null, alpha: 1, map: null }; }
+    if (spec && ctx.fx?.root) { this.trail = new SpriteRibbon(ctx.fx, unit, spec, fxBlendFields(unit.blend)); this._head = { p: new THREE.Vector3(), w: 1, color: null, alpha: 1, map: null }; }
     this.readyTask = Promise.all(keys.map(k => loadTex(this.game, k, BILLBOARD_SAMPLER))).then(ts => {
       if (this.disposed) return;
       this.textures = ts.filter(Boolean);
@@ -224,7 +280,9 @@ export class SpriteUnit extends Unit {
       m.rotation.set(0, rot, 0);
       return;
     }
-    m.scale.set(size * s[0], size * (s[1] ?? s[0]), 1);
+    // gfx-B2: a Global yaxis billboard is authored upright in z (sp_red_vertical (3,1,10), lightning (0,0,35)); height = scale.z
+    const sh = this.bb === 'yaxis' && gfxB('yaxisHeightZ') ? (s[2] ?? s[1] ?? s[0]) : (s[1] ?? s[0]);
+    m.scale.set(size * s[0], size * sh, 1);
     if (this.bb === 'camera') { mat.rotation = rot; return; }
     if (this.bb === 'stand') { m.rotation.set(0, rot, 0); return; }
     // yaxis (cylindrical) billboard: turn about the up axis towards the camera, in the FILE frame. The anchor's own
@@ -253,7 +311,7 @@ export class DecalUnit extends Unit {
     geo.rotateX(-Math.PI / 2);
     this.base = geo.attributes.position.array.slice();
     const mat = new THREE.MeshBasicMaterial({
-      transparent: true, depthWrite: false, blending: blendOf(unit.blend), side: THREE.DoubleSide,
+      transparent: true, depthWrite: false, ...fxBlendFields(unit.blend), side: THREE.DoubleSide,
       polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4,
     });
     mat.visible = false;
@@ -318,7 +376,8 @@ export function meshUnitSize(unit) {
   return Number.isFinite(n) ? n : 1;
 }
 
-/** Skinned effect mesh (mesh + skel + anim), unlit, additive unless `transparent`, two-sided when `twoSide`. */
+/** Skinned effect mesh (mesh + skel + anim), two-sided. LANE-54 pass 5 (gfx-B effectMeshLit): lit like boneanimation.fx
+ *  (Lambert: ambient + N.L x sun, the scene's environment lights); with the switch off or without a Global texture mode, unlit. */
 export class MeshUnit extends Unit {
   constructor(ctx, unit, parent, animSeconds) {
     super(ctx, unit);
@@ -376,10 +435,18 @@ export class MeshUnit extends Unit {
     root.traverse(o => {
       if (!o.isMesh) return;
       const src = o.material;
-      const mat = new THREE.MeshBasicMaterial({
-        map: src?.map || null, transparent: true, depthWrite: false, blending: blendOf(null, !!u.transparent),
+      // LANE-54 globalAlphaModes: Global routes the layer by texture class + packed unit alpha (globalEffectMeshMode);
+      // the former hand-picked opaque pumpkin bases are covered by that rule and were removed.
+      const gTex = gfxB('globalAlphaModes') ? effectMeshTexInfo(src?.map) : null;
+      const g = gTex ? globalEffectMeshMode(gTex, { transparent: !!u.transparent, alpha: this._alpha ?? 1 }, this.game.models?._dxtFilter) : null;
+      // Lit only when the scene carries lights: every Global scene has the environment LightImpl (ambient + direction, base
+      // 1.0); a three.js scene with no light (component harness, light-less preview) has no Global counterpart and stays unlit.
+      const Mat = g && gfxB('effectMeshLit') && !!this.game?.scene?.children?.some(o => o.isLight) ? THREE.MeshLambertMaterial : THREE.MeshBasicMaterial;
+      const mat = new Mat({
+        map: src?.map || null, ...(g ? effectMeshModeFields(g, !!u.transparent) : { transparent: true, depthWrite: false, ...fxBlendFields(null, !!u.transparent) }),
         side: THREE.DoubleSide, color: nullTextureColor(src?.map, blendOf(null, !!u.transparent)), fog: true,
       }); mat.userData.dkNullTexture = nullTextureColor(src?.map, mat.blending) === 0x000000;
+      if (g) { mat.userData.dkGlobalTex = gTex; mat.userData.dkGlobalBucket = g.bucket; }
       // A skinned effect mesh whose material slot authors a specular texture draws, like every boneanimation.fx body, with
       // psEnvSpecular: diffuse + specularMap x COLOR0 x envCube(reflect). ModelCache built that patch (matfx.js 'env');
       // keep it on the unlit effect material instead of dropping the map. Glow maps ('+' diffuse) ride the emissive slot of
@@ -407,8 +474,18 @@ export class MeshUnit extends Unit {
     this.object.scale.set(size * s[0], size * (s[1] ?? s[0]), size * (s[2] ?? s[0]));
     this.object.rotation.set(0, THREE.MathUtils.degToRad(st.rot || 0), 0);
     const a = Math.max(0, Math.min(1, st.alpha ?? 1));
+    const filter = this.game.models?._dxtFilter;
     for (const m of this.mats) {
-      m.opacity = a;
+      m.opacity = a;   // stage 0 MODULATE: output alpha = texel alpha x unit alpha (f4GlobalColor.w)
+      const gTex = m.userData.dkGlobalTex;
+      if (gTex) {
+        const g = globalEffectMeshMode(gTex, { transparent: !!u.transparent, alpha: a }, filter);
+        if (g.bucket !== m.userData.dkGlobalBucket) {
+          Object.assign(m, effectMeshModeFields(g, !!u.transparent));
+          m.userData.dkGlobalBucket = g.bucket;
+          m.needsUpdate = true;
+        }
+      }
       if (st.color && !m.userData.dkNullTexture) m.color.setRGB(st.color[0], st.color[1], st.color[2]);   // null texture stays black
     }
     if (this.action && this.clipLen > 0) {
@@ -452,14 +529,10 @@ export class MeshUnit extends Unit {
 // Four vertices per particle in Uint16 topology. Refuse unrepresentable authored
 // pools explicitly rather than silently reducing visible density.
 export function particleCapacity(emitter){const n=Number(emitter.max);if(!Number.isInteger(n)||n<1||n>16384)throw Error('Unsupported authored particle pool '+emitter.max);return n;}
-export function particleEmissionRate(emitter,pool){
- const n=Number(emitter.rate);if(Number.isFinite(n)&&n>=0)return n;
- // Negative emitrate occurs in original data; its native meaning is unproven.
- // Preserve the prior pool/lifetime compatibility only for that unresolved case
- // (and omitted legacy engine fields), rather than suppressing existing effects.
- const life=emitter.lifetimeMs||[500,500],avg=Math.max(.05,(life[0]+(life[1]||life[0]))/2000);
- return (pool??particleCapacity(emitter))/avg;
-}
+// LANE-63: emission follows Global FUN_011a65e0 (global-particle-rules.js): emitrate > 0 = milliseconds per particle,
+// < 0 = particles per frame, max 10 per tick, every activestate. The engine fill rate and burst-at-start are gone.
+// 'weather' units (MapSnowWeatherUnit) use Global's weather emit FUN_011a9d00 instead (globalWeatherEmitCount: ms per
+// particle, unsigned, no per-tick cap) and spin on the age after the life decrement (FUN_011aa570). LANE-63.
 /** Both triangles of every drawn quad must face the same way. Mixed-facing
  * emitters retain Three's back-then-front alpha ordering, without approximation.
  * Use the actual Float32 positions, including signed scale and followDir pose. */
@@ -477,12 +550,20 @@ export function consistentParticleFacing(positions,count,cameraPosition){
  }return true;
 }
 /**
- * CPU particle emitter (effects.md Ã‚Â§5.5), one draw call per emitter: camera-facing (or yaxis / carpet) quads built
- * every frame in the FILE frame. explode* = burst of `max` at start, direct/plane = continuous at authored emitrate
- * per second, gather = from startRange towards endPos. Per particle: velocity along the spawn direction (random in the
- * sphere when spawnDir is 0), acceleration along the velocity, gravity, addRotate spin, size x particleSize,
+ * CPU particle emitter (effects.md §5.5), one draw call per emitter: camera-facing (or yaxis / carpet) quads built
+ * every frame in the FILE frame. Every state emits through Global's emit tick (emitrate > 0 = ms per particle,
+ * < 0 = particles per frame, max 10 per tick; LANE-63), gather = from startRange towards endPos. Per particle: velocity along the spawn direction (random in the
+ * sphere when spawnDir is 0), acceleration along the velocity, gravity, addRotate spin (addrotate x age fraction), size x particleSize,
  * followDir stretching; control colour / alpha / scale multiply; each particle fades over its last 30 %.
  */
+/** Global random unit vector (FUN_0077a380): a point in the [-1,1]^3 cube, normalized; (0,1,0) when its squared
+ * length is below the client's 1e-6 (DAT_01b7e0b8, read from the 32-bit memory image). */
+export function nativeRandUnit(out = new THREE.Vector3()) {
+  out.set(Math.random() * 2 - 1, Math.random() * 2 - 1, Math.random() * 2 - 1);
+  const l2 = out.lengthSq();
+  return l2 >= 1e-6 ? out.multiplyScalar(1 / Math.sqrt(l2)) : out.set(0, 1, 0);
+}
+
 export class ParticleUnit extends Unit {
   constructor(ctx, unit, parent) {
     super(ctx, unit);
@@ -499,7 +580,6 @@ export class ParticleUnit extends Unit {
     this.attachmentRotation = this.followAttachment ? new THREE.Quaternion() : null;
     this.emitAcc = 0;
     this._ms = 0;
-    this.burstDone = false;
     this.alive = true;
     const geo = new THREE.BufferGeometry();
     // tailstep on a particle unit: every particle leaves frozen copies at its past positions (fx-trails.js). The copies
@@ -520,7 +600,7 @@ export class ParticleUnit extends Unit {
     geo.setIndex(new THREE.BufferAttribute(idx, 1));
     geo.setDrawRange(0, 0);
     const mat = new THREE.MeshBasicMaterial({
-      transparent: true, depthWrite: false, blending: blendOf(unit.blend), side: THREE.DoubleSide,
+      transparent: true, depthWrite: false, ...fxBlendFields(unit.blend), side: THREE.DoubleSide,
       vertexColors: true, fog: true,
     });
     mat.visible = false;
@@ -553,7 +633,7 @@ export class ParticleUnit extends Unit {
       if (!src) return;
       // A leaf mesh whose own tpack resolves no texture (the strikeshot arrows) takes the particle unit's texture.
       const map = src.material?.map || this.textures[0] || null;
-      const mat = new THREE.MeshBasicMaterial({ map, transparent: true, depthWrite: false, blending: blendOf(unit.blend), side: THREE.DoubleSide, color: 0xffffff, fog: true });
+      const mat = new THREE.MeshBasicMaterial({ map, transparent: true, depthWrite: false, ...fxBlendFields(unit.blend), side: THREE.DoubleSide, color: 0xffffff, fog: true });
       const inst = new THREE.InstancedMesh(src.geometry, mat, this.max);
       inst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       inst.setColorAt(0, new THREE.Color(1, 1, 1));
@@ -574,7 +654,7 @@ export class ParticleUnit extends Unit {
       m.compose(p.p, q, _v2.set(sz * (scl[0] ?? 1), sz * (scl[1] ?? scl[0] ?? 1), sz * (scl[2] ?? scl[0] ?? 1)));
       inst.setMatrixAt(i, m);
       // additive copies: the per-particle fade rides the colour (alpha x colour is the same under SrcAlpha, One)
-      const t = p.tint, f = blendOf(this.unit.blend) === THREE.AdditiveBlending ? fade : 1;
+      const t = p.tint, f = isFxAdditive(this.unit.blend) ? fade : 1;
       c.setRGB(col[0] * (t ? t[0] : 1) * f, col[1] * (t ? t[1] : 1) * f, col[2] * (t ? t[2] : 1) * f);
       inst.setColorAt(i, c);
     }
@@ -604,49 +684,47 @@ export class ParticleUnit extends Unit {
     const M = this._anchorFrame();
     const origin = new THREE.Vector3().setFromMatrixPosition(M);
     const rot = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().extractRotation(M));
-    const scl = this.st.scale || [1, 1, 1];
     for (let i = 0; i < count && this.parts.length < this.max; i++) {
       const lr = em.lifetimeMs || [500, 500];
       const life = (lr[0] + Math.random() * Math.max(0, (lr[1] || lr[0]) - lr[0])) / 1000;
       const vr = em.velocity || [0, 0];
       const speed = vr[0] + Math.random() * Math.max(0, (vr[1] ?? vr[0]) - vr[0]);
       const sd = em.spawnDir || [0, 0, 0];
-      let dir = new THREE.Vector3(sd[0], sd[1], sd[2]);
       const state = em.state || 'explode';
-      const planar = state === 'explodeplane' || state === 'directplane' || state === 'plane';
-      if (dir.lengthSq() < 1e-6) {
-        dir.set(Math.random() * 2 - 1, planar ? 0 : Math.random() * 2 - 1, Math.random() * 2 - 1);
-        if (dir.lengthSq() < 1e-6) dir.set(1, 0, 0);
-      } else {
-        dir.normalize();
-        // a little spread around the given direction
-        dir.x += (Math.random() - 0.5) * 0.3; dir.y += (Math.random() - 0.5) * 0.3; dir.z += (Math.random() - 0.5) * 0.3;
-      }
-      dir.normalize();
-      if (!em.spawnDirAbs) dir.applyQuaternion(rot);
+      // Global particle emit (FUN_011a6910 -> FUN_011a6da0 / FUN_011a7130 / FUN_011a7470):
+      // startrange r = arg1 + rand*(arg2-arg1) (signed), offset = r * random unit vector (cube sample, normalized);
+      // plane / directplane / explodeplane keep the emitter's Y; explode has no offset.
       const sr = em.startRange || [0, 0];
-      const rad = (sr[0] + Math.random() * Math.max(0, (sr[1] ?? sr[0]) - sr[0])) * (scl[0] || 1);
-      let p = origin.clone();
-      if (rad > 0) {
-        const a = Math.random() * Math.PI * 2;
-        let off;
-        if (state === 'exploderange' || planar || state === 'gather') off = new THREE.Vector3(Math.cos(a) * rad, 0, Math.sin(a) * rad);
-        else off = dir.clone().multiplyScalar(rad);
-        if (state === 'gather' && !planar) off.y = (Math.random() - 0.5) * rad;
-        p.add(off.applyQuaternion(em.spawnDirAbs ? new THREE.Quaternion() : rot));
+      const p = origin.clone();
+      if (state !== 'explode') {
+        const r = sr[0] + Math.random() * ((sr[1] ?? sr[0]) - sr[0]);
+        p.addScaledVector(nativeRandUnit(_v), r);
+        if (state === 'plane' || state === 'directplane' || state === 'explodeplane') p.y = origin.y;
       }
-      let vel = dir.multiplyScalar(speed);
+      let vel, dirv = null;
       if (state === 'gather') {
+        // gather motion toward endposition stays 4.2.0's (native gather center/update UNRESOLVED, LANE-55)
         const ep = em.endPos || [0, 0, 0];
         const target = new THREE.Vector3(ep[0], ep[1], ep[2]).applyQuaternion(rot).add(origin);
         vel = target.sub(p).divideScalar(Math.max(0.05, life));
+      } else {
+        // direction = spawndirection (+ random unit for explode / explodeplane / exploderange / plane), normalized,
+        // rotated by the emitter unless spawndirabs, times |spawndirection| (1 when zero)
+        const dir = new THREE.Vector3(sd[0], sd[1], sd[2]);
+        const mag = dir.length() || 1;
+        if (state === 'explode' || state === 'explodeplane' || state === 'exploderange' || state === 'plane') dir.add(nativeRandUnit(_v2));
+        if (dir.lengthSq() > 1e-6) dir.normalize();           // DAT_01b7e0b8 = 1e-6
+        if (!em.spawnDirAbs) dir.applyQuaternion(rot);
+        dirv = dir.multiplyScalar(mag);
+        vel = dirv.clone().multiplyScalar(speed);
       }
+      // particle size: particlesize sample when either bound > 0, else the unit size (render = scale x size)
       const ps = em.particleSize || [0, 0];
-      const sz = (Number(u.size) || 1) * ((ps[0] || ps[1]) ? ps[0] + Math.random() * Math.max(0, (ps[1] ?? ps[0]) - ps[0]) : 1);
+      const sz = (ps[0] > 0 || ps[1] > 0) ? ps[0] + Math.random() * ((ps[1] ?? ps[0]) - ps[0]) : (Number(u.size) || 1);
       const cr = (Number(em.colorRange) || 0) / 100;
       this.spawned = (this.spawned || 0) + 1;
     this.parts.push({
-        p, v: vel, t: 0, life, size: sz, rot: Math.random() * Math.PI * 2, frameSeed: Math.random(),
+        p, v: vel, dir: dirv, speed, gv: dirv ? new THREE.Vector3() : null, t: 0, life, size: sz, rot: globalSpawnRotation(em.addRotate), frameSeed: Math.random(),
         trail: this.trailCopies > 0 ? { clock: new TrailSchedule(this.trailSpec), copies: [] } : null,
         tint: cr > 0 ? [1 - Math.random() * cr, 1 - Math.random() * cr, 1 - Math.random() * cr] : null,
       });
@@ -661,38 +739,50 @@ export class ParticleUnit extends Unit {
       this.attachmentRotation.setFromRotationMatrix(this.attachmentDelta);
       for (const particle of this.parts) {
         particle.p.applyMatrix4(this.attachmentDelta);
-        if (!this.em.spawnDirAbs) particle.v.applyQuaternion(this.attachmentRotation);
+        if (!this.em.spawnDirAbs) { particle.v.applyQuaternion(this.attachmentRotation); if (particle.dir) particle.dir.applyQuaternion(this.attachmentRotation); }
       }
       this.previousAttachment.copy(current);
     }
     this._ms += Math.max(0, dt) * 1000;
     const em = this.em;
     const state = em.state || 'explode';
-    const burst = state.startsWith('explode');
     if (this.alive) {
-      if (burst) {
-        if (!this.burstDone) { this._spawn(this.max); this.burstDone = true; }
+      if (this.unit.type === 'weather') {
+        // Global weather emit FUN_011a9d00: emitAcc is the unsigned millisecond accumulator, no per-tick cap
+        const k = globalWeatherEmitCount(this, Math.max(0, dt) * 1000, em.rate);
+        if (k > 0) this._spawn(k);
       } else {
-        // Preserve authored emitrate. Its native time unit still requires validation.
-        const rate = particleEmissionRate(em,this.max);
-        this.emitAcc += rate * dt;
-        const k = Math.floor(this.emitAcc);
-        if (k > 0) { this.emitAcc -= k; this._spawn(k); }
+        // Global FUN_011a65e0: emitAcc is the millisecond accumulator
+        const k = globalEmitCount(this, Math.max(0, dt) * 1000, em.rate);
+        if (k > 0) this._spawn(k);
       }
     }
     const g = em.gravity || [0, 0, 0];
     const acc = Number(em.acceleration) || 0;
-    const spin = THREE.MathUtils.degToRad(Number(em.addRotate) || 0);
+    const weatherSpin = this.unit.type === 'weather';   // Global weather step FUN_011aa570 spins on the age after the decrement
     // Stable linear compaction preserves transparent draw order without repeated tail shifts.
+    // plane (activestate 4) particles stay on the emitter's current Y every step (FUN_011a77e0 case 4)
+    const planeY = state === 'plane' && this.unit.type === 'particle' ? new THREE.Vector3().setFromMatrixPosition(this._anchorFrame()).y : null;
     let liveCount=0;
     for (let i = 0; i < this.parts.length; i++) {
       const q = this.parts[i];
+      const age0 = globalAgeFraction(q.t, q.life);   // Global spins on the age before this tick's decrement
       q.t += dt;
       if (q.t >= q.life) continue;
-      if (acc && q.v.lengthSq() > 1e-8) q.v.addScaledVector(_v.copy(q.v).normalize(), acc * dt);
-      q.v.x += g[0] * dt; q.v.y += g[1] * dt; q.v.z += g[2] * dt;
+      if (q.dir) {
+        // Global particle step (FUN_011a7c00): speed -= acceleration*dt (floor 0); gravity velocity += gravity*dt;
+        // position += direction*speed*dt + gravity velocity*dt
+        q.speed = Math.max(0, q.speed - acc * dt);
+        q.gv.x += g[0] * dt; q.gv.y += g[1] * dt; q.gv.z += g[2] * dt;
+        q.v.copy(q.dir).multiplyScalar(q.speed).add(q.gv);
+      } else {
+        if (acc && q.v.lengthSq() > 1e-8) q.v.addScaledVector(_v.copy(q.v).normalize(), acc * dt);
+        q.v.x += g[0] * dt; q.v.y += g[1] * dt; q.v.z += g[2] * dt;
+      }
       q.p.addScaledVector(q.v, dt);
-      q.rot += spin * dt;
+      if (planeY !== null && q.dir) q.p.y = planeY;
+      if (weatherSpin) q.rot = globalStepRotation(em.addRotate, globalAgeFraction(q.t, q.life), q.rot);
+      else q.rot = globalStepRotation(em.addRotate, age0, q.rot);   // Global FUN_011a7980: addrotate x age fraction
       if (q.trail) this._trailStep(q, dt * 1000);
       this.parts[liveCount++]=q;
     }
@@ -826,9 +916,12 @@ export class MeshStatusUnit extends Unit {
     // Matched by the native tier texture (the unit name carries a file prefix in the real data). Shell size tells the
     // slot apart: armor 0.01, weapon 0.005, inventory 0.0001.
     const tierTex = /effect\/levelup\/eff_upgrade_/i.test(String(unit.texture || '').replace(/\\/g, '/'));
-    this.glowGain = !tierTex ? 1 : (Number(unit.size) >= 0.009 ? 2.5 : Number(unit.size) >= 0.004 ? 2 : 2.2);
+    this.tierTex = tierTex;
+    // gfx-B2 refineShellAuthored: Global's shell is texture x colour x alpha (effectscene 7:10), no gain, rim or hue table.
+    const dkAuthored = gfxB('refineShellAuthored');
+    this.glowGain = dkAuthored || !tierTex ? 1 : (Number(unit.size) >= 0.009 ? 2.5 : Number(unit.size) >= 0.004 ? 2 : 2.2);
     // Rim light only on worn gear (shell > 0.004); the tier hue follows the native texture family.
-    this.glowRim = tierTex && Number(unit.size) >= 0.004 ? (Number(unit.size) >= 0.009 ? 5 : 4) : 0;
+    this.glowRim = !dkAuthored && tierTex && Number(unit.size) >= 0.004 ? (Number(unit.size) >= 0.009 ? 5 : 4) : 0;
     const tierId = /eff_upgrade_(\d+)/i.exec(String(unit.texture || ''))?.[1];
     const HUES = { 15: [0.85, 0.15, 1.0], 79: [1.0, 0.62, 0.18], 1114: [1.0, 0.22, 0.15], 46: [0.45, 0.65, 1.0], 13: [0.82, 0.88, 1.0] };
     this.glowHue = new THREE.Vector3(...(HUES[tierId] || [1, 1, 1]));
@@ -840,12 +933,27 @@ export class MeshStatusUnit extends Unit {
       // UV transforms belong to this effect, never the shared TextureCache map.
       this.texture = tex?.clone();
       if(this.texture){this.texture.needsUpdate=true;this.texture.wrapS=this.texture.wrapT=THREE.RepeatWrapping;this.texture.center.set(.5,.5);}
-      const fresh = [];   // the overlays of this unit, shown once their programs are built (engine/shader-prewarm.js)
-      for (const src of inst.meshes) {
+      this.shell = shell;
+      await this._bind(inst);
+      this.ready = true;
+    });
+    this.t = 0;
+  }
+  /** The overlays copy the owner's CURRENT body meshes (Global CMeshStatus draws the mesh it is attached to every frame,
+   *  it never keeps a copy of an old body). Called at load and again by _rebindIfNeeded() whenever the body is rebuilt. */
+  _bind(inst) {
+    const unit = this.unit, shell = this.shell;
+    this._boundInst = inst;
+    this._boundMeshes = inst?.meshes ? [...inst.meshes] : [];
+    this._boundSkel = this._boundMeshes.map(m => m.skeleton || null);
+    const fresh = [];   // the overlays of this unit, shown once their programs are built (engine/shader-prewarm.js)
+    {
+      for (const src of this._boundMeshes) {
+        if (!src?.parent) continue;
         // The tier texture is the colour source (eff_upgrade_13/46 silver, 79 red-gold, 1114 red, 15 purple);
         // mesh_color is the authored neutral 230 grey. No substitute tint is applied.
         const mat = new THREE.MeshBasicMaterial({
-          map: this.texture, transparent: true, depthWrite: false, blending: blendOf(unit.blend || 'add'),
+          map: this.texture, transparent: true, depthWrite: false, ...fxBlendFields(unit.blend || 'add'),
           color: this.baseColor, opacity: this.baseAlpha, side: THREE.FrontSide,
           polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2,
         });
@@ -903,34 +1011,57 @@ outgoingLight = outgoingLight * ${gain.toFixed(3)} + dkR / dkA;
         // authored alpha animation (apply() sets auraLevel)
         if (this.glowRim > 0) this.game.gfx?.glow?.add(m, { hue: this.glowHue.toArray(), gain: () => this.auraLevel * (Number(unit.size) >= 0.009 ? auraValue('ARMOR_REFINE') : auraValue('WEAPON_REFINE')) });
       }
-      // 2.2.1: the status shell's program (a skinned copy of the body, the first cast of a buff / awakening) used to link in the frame that first drew it
-      // (a 59-75 ms frame, measured): build it first, hidden, show the shell at once when it is ready (never later than 220 ms)
-      await warmThenShow(this.game, fresh, () => { if (!this.disposed) for (const o of fresh) o.visible = true; });
-      this.ready = true;
-    });
-    this.t = 0;
+    }
+    // 2.2.1: the status shell's program (a skinned copy of the body, the first cast of a buff / awakening) used to link in the frame that first drew it
+    // (a 59-75 ms frame, measured): build it first, hidden, show the shell at once when it is ready (never later than 220 ms)
+    return warmThenShow(this.game, fresh, () => { if (!this.disposed) for (const o of fresh) if (this.overlays.includes(o)) o.visible = true; });
+  }
+  _unbind() {
+    for (const m of this.overlays) { this.game.gfx?.glow?.remove(m); m.removeFromParent(); m.material.dispose(); }
+    this.overlays = [];
+  }
+  /** glowrate 2026-10-30 strip-all root cause: player.js refreshAppearance rebuilds the body (replaceParts swaps part meshes,
+   *  a Trans-Up / shapeshift look or a remote player's appearance update installs a whole new SkinnedInstance and disposes the
+   *  old one). Overlays built on the old meshes were left on removed geometry, so every base refine glow and every buff shell on
+   *  that actor vanished and never came back (tools/test-meshstatus-rebind.mjs). Re-bind to the current meshes; the texture,
+   *  UV clock and authored keys are kept, so the effect continues where it was. */
+  _rebindIfNeeded() {
+    if (!this.ready || !this.texture || this.disposed || this.failed) return;
+    const inst = this.owner?.instance, cur = inst?.meshes || [];
+    const b = this._boundMeshes || [];
+    let same = inst === this._boundInst && cur.length === b.length;
+    if (same) for (let i = 0; i < cur.length; i++) if (cur[i] !== b[i] || (cur[i]?.skeleton || null) !== this._boundSkel[i]) { same = false; break; }
+    if (same) return;
+    this._unbind();
+    if (cur.length) this._bind(inst);
+    else { this._boundInst = inst; this._boundMeshes = []; this._boundSkel = []; }
   }
   apply(st) {
-    const a = Math.max(0, Math.min(1, st.alpha ?? 1)) * this.baseAlpha;
+    this._rebindIfNeeded();
+    // Global MeshStatus replaces the unit alpha when the scene supplies alpha keys.
+    const a = Math.max(0, Math.min(1, st.alpha ?? 1)) * (this.ctx.control?.def?.alpha?.length ? 1 : this.baseAlpha);
     this.auraLevel = Math.min(1, Math.max(0, (st.alpha ?? 1) / auraValue('REFINE_ALPHA_REF')));
     const ms = this.unit.meshStatus || {};
     for (const m of this.overlays) {
       m.material.opacity = a;
       // Preserve the authored RGB key, alpha and texture; do not add a synthetic flash.
       m.material.color.copy(this.baseColor);
-      if (st.color) m.material.color.setRGB(this.baseColor.r * st.color[0], this.baseColor.g * st.color[1], this.baseColor.b * st.color[2]);
+      // Global CMeshStatus::Update (32-bit FUN_011bc000): with colour keys the keyed RGB REPLACES mesh_color (no multiply); without keys mesh_color stays.
+      if (st.color && this.ctx.control?.def?.color?.length) m.material.color.setRGB(st.color[0], st.color[1], st.color[2]);
       if (m.material.map) {
         // mesh_status <mode> a b, as authored and at real time. Across the game's 10,515 mesh_status units `a` is always an angle in
         // degrees (0, +-45, +-90, 135, 180, 190, 200, 360 ...) and `b` a signed speed (+-0.01 .. +-1 per second): the texture scrolls
         // at `b` UV per second along direction `a`. Armor 360 / .15 and weapon 0 / .2 are a slow vertical sweep. No pacing factor.
-        const seconds=this.loopClock.tick(st.ms,this.ctx.play?.loop?this.ctx.play.timeMs:0)/1000;
-        const [x,y]=uvScrollOffset({angle:ms.a,speed:ms.b},seconds);m.material.map.offset.set(x,y);
+        // glowrate2: gear refinement scroll runs on the same scaled clock as its pulse (src/config/glow-time-scale.js).
+        const seconds=this.loopClock.tick(st.ms,this.ctx.play?.loop?this.ctx.play.timeMs:0)/1000*(this.tierTex?glowTimeScale():1);
+        // Global parser (FUN_0095c680 mesh_status) stores the scroll direction as normalize(-sin a, -cos a): g_f2UV is added to the D3D texcoord
+        // (boneanimation.fx EdgeBone: UV2 = UV1 + g_f2UV), and these textures keep D3D texcoords (flipY=false), so the offset is negated here.
+        const [x,y]=uvScrollOffset({angle:ms.a,speed:ms.b},seconds);m.material.map.offset.set(-x||0,-y||0);
       }
     }
   }
   dispose() {
-    for (const m of this.overlays) { this.game.gfx?.glow?.remove(m); m.removeFromParent(); m.material.dispose(); }
-    this.overlays = [];
+    this._unbind();
     this.texture?.dispose();this.texture=null;
     this.disposed = true;
   }

@@ -12,7 +12,7 @@ import {event} from '../core/events.mjs';
 import {spawnOutside, runTool, alive} from '../core/proc.mjs';
 import {native} from '../core/native.mjs';
 import {UserError, readJson, readText, writeText, fetchJson, sleep, isPortFree, clip} from '../core/util.mjs';
-import {settings} from './settings.mjs';
+import {settings, ensureServerGameGuardRequest, serverPolicyChangeInProgress} from './settings.mjs';
 import {storageConfig, assertWorldDatabase, prepareSqlWorld} from './storage.mjs';
 import {hostingEnvironment, onWorldStarted, onWorldStopping} from './hosting.mjs';
 
@@ -66,7 +66,7 @@ export async function discover() {
       Object.assign(world, {status: st.data.stopping ? 'stopping' : 'running', port, url: api(port), pid: control.pid, control, identity: pub.data, mode: pub.data.accountScope === 'friends' ? 'hosted' : 'local', owned: world.spawnedPids.has(control.pid), adopted: !world.spawnedPids.has(control.pid), startedAt: st.data.startedAt || Date.now()});
       if (world.adopted) event('info', 'world', `Found this engine's world already running on port ${port} (pid ${control.pid}); it is attached, not owned.`);
     }
-    world.lastStatus = st.data; world.lastStatusAt = Date.now(); return world;
+    world.lastStatus = st.data; world.lastStatusAt = Date.now(); if (world.statusNote) { world.statusNote = false; world.lastError = null; } return world;   // STATUS-BUSY-CLEAR
   }
   if (world.status === 'running' || world.status === 'stopping') { event(world.status === 'stopping' ? 'info' : 'warn', 'world', world.status === 'stopping' ? 'World stopped.' : 'The world is no longer answering.'); }
   if (world.status !== 'starting') Object.assign(world, {status: 'stopped', pid: null, control: null, url: null, port: null, owned: false, adopted: false, lastStatus: null});
@@ -83,10 +83,13 @@ export async function refresh({maxAgeMs = 1500} = {}) {
     if (world.control && world.status !== 'starting') {
         const st = await launcher('status');
         lastRefresh = {at: Date.now(), ok: st.ok, status: st.status, error: st.error || null, pid: st.data?.pid ?? null, controlPid: world.control.pid};
-        if (st.ok && Number(st.data?.pid) === world.control.pid) { world.lastStatus = st.data; world.lastStatusAt = Date.now(); world.failures = 0; world.status = st.data.stopping ? 'stopping' : 'running'; return world; }
+        // STATUS-BUSY-CLEAR (2026-10-30): a status check that answers again clears the busy / unavailable note it left (before, one slow
+        // check while the world was loading kept 'The world is busy and did not answer...' on the dashboard for the whole session).
+        if (st.ok && Number(st.data?.pid) === world.control.pid) { world.lastStatus = st.data; world.lastStatusAt = Date.now(); world.failures = 0; world.status = st.data.stopping ? 'stopping' : 'running'; if (world.statusNote) { world.statusNote = false; world.lastError = null; } return world; }
         world.failures++;
         if (!alive(world.control.pid)) { await discover(); return world; }
         world.lastError = st.error === 'timeout' ? 'The world is busy and did not answer the last status check.' : (st.data?.error || 'Status unavailable.');
+        world.statusNote = true;   // STATUS-BUSY-CLEAR: cleared by the next status check that answers
         return world;
     }
     if (world.status !== 'starting') await discover();
@@ -106,7 +109,7 @@ function population(s) {
 }
 export function snapshot() {
   const s = world.lastStatus, stale = world.status === 'running' && Date.now() - world.lastStatusAt > 8000;
-  return {status: world.status, mode: world.mode, storageMode: s?.storageMode || null, storage: s?.storage || null, url: world.url, port: world.port, pid: world.pid, owned: world.owned, adopted: world.adopted,
+  return {status: world.status, gameGuardRequired: !!(world.lastStatus?.gameGuardRequired ?? (()=>{ try { const pref=path.join(ENGINE,'runtime','server-gameguard.enabled'),legacy=path.join(ENGINE,'runtime','gameguard.enabled'),p=fs.existsSync(pref)?pref:legacy; if(!fs.existsSync(p)) return true; const v=String(fs.readFileSync(p,'utf8')).trim().toLowerCase(); return v!=='0'&&v!=='false'&&v!=='off'; } catch { return true; } })()), mode: world.mode, storageMode: s?.storageMode || null, storage: s?.storage || null, url: world.url, port: world.port, pid: world.pid, owned: world.owned, adopted: world.adopted,
     startedAt: world.startedAt, uptimeMs: world.startedAt && world.status === 'running' ? Date.now() - world.startedAt : null,
     name: s?.name || null, population: population(s), stale, lastStatusAt: world.lastStatusAt || null, lastError: world.lastError,
     ownerAvailable: !!s?.ownerAvailable, accountsAvailable: !!s?.accountsAvailable, settingsAvailable: !!s?.settingsAvailable, builderReady: !!s?.builderReady, primary: s?.primary || null,
@@ -118,7 +121,10 @@ export function snapshot() {
 function serverArgs() {
   const cap = readJsonSync(path.join(ENGINE, 'server', 'capacity.json'));
   const mb = Number(cap?.memoryMB);
-  return Number.isInteger(mb) && mb >= 1024 && mb <= 1048576 ? [`--max-old-space-size=${mb}`, 'server.mjs'] : ['server.mjs'];
+  // SERVER-SPLIT opt-in: when server/pipeline.enabled exists, start ServerOn (Hub + Gate + Realm) instead of server.mjs alone.
+  // Same PORT, same stdout ready line, /api/client/status and the control file report the Hub pid, stop goes through Realm.
+  const entry = fs.existsSync(path.join(ENGINE, 'server', 'pipeline.enabled')) ? 'server/pipeline/serveron.mjs' : 'server.mjs';
+  return Number.isInteger(mb) && mb >= 1024 && mb <= 1048576 ? [`--max-old-space-size=${mb}`, entry] : [entry];
 }
 function readJsonSync(f) { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return null; } }
 
@@ -156,6 +162,7 @@ async function measureUpload(ctx) {
 }
 
 export function startWorld({mode = 'local', reviewed = false} = {}) {
+  if (serverPolicyChangeInProgress()) throw new UserError('Wait for the server GameGuard setting to finish saving.', 409);
   return startJob({kind: 'world.start', key: 'world.start', lane: 'world', area: 'world', title: mode === 'hosted' ? 'Start hosted world' : 'Start world', run: async ctx => {
     const port = mode === 'hosted' ? HOSTED_PORT : WORLD_PORT;
     ctx.phase('Verify installation', INSTALL ? 'Checking the engine and its prepared Global data' : 'Checking the sandbox engine and its prepared Global data');
@@ -181,7 +188,7 @@ export function startWorld({mode = 'local', reviewed = false} = {}) {
       const rows = await native('sql.query', {server: storage.instance, database: 'master', mode: 'catalog', sql: "SELECT DB_ID(@db) AS id", params: {db}, timeout: 10});
       // First SQL start stays one click: create the disposable DKPREVIEW_ test database with the engine's own schema.
       if (!rows.sets?.[0]?.rows?.[0]?.[0]) { ctx.phase('Set up SQL test database', `Creating ${db} on ${storage.instance} with the engine's schema`); await prepareSqlWorld(ctx, {scope: mode === 'hosted' ? 'hosted' : 'local'}); }
-      Object.assign(env, {DEKARON_DEDICATED_STORAGE: 'sqlserver', DEKARON_SQL_INSTANCE: storage.instance, DEKARON_DEDICATED_SQL_DB: db});
+      Object.assign(env, {DEKARON_DEDICATED_STORAGE: 'sqlserver', DEKARON_SQL_INSTANCE: storage.instance, DEKARON_DEDICATED_SQL_DB: db, DEKARON_SQL_POOL: process.env.DEKARON_SQL_POOL || '2', DK_ROWS_DELTA: process.env.DK_ROWS_DELTA || '1'});
       ctx.log(`SQL storage: ${db} on ${storage.instance}${INSTALL ? '' : ' (preview test database)'}.`);
     } else ctx.log(INSTALL ? 'Local file storage: server/accounts.' : 'Local file storage: sandbox/engine/server/accounts.');
     ctx.phase('Review world settings', 'First start requires the existing world-settings review');
@@ -196,11 +203,12 @@ export function startWorld({mode = 'local', reviewed = false} = {}) {
       try { await measureUpload(ctx); } catch (e) { ctx.log('Host internet test unavailable; saved upload setting kept. ' + e.message); }
     }
     ctx.throwIfCancelled();
+    await ensureServerGameGuardRequest();
     ctx.phase('Start server', 'Starting the world process');
     const run = new Date().toISOString().replace(/[:.]/g, '-');
     const out = path.join(LOGS, `world-${run}.log`), err = path.join(LOGS, `world-${run}.err.log`);
     writable(out);
-    const h = await spawnOutside({exe: NODE, args: serverArgs(), cwd: ENGINE, env, stdout: out, stderr: err});
+    const h = await spawnOutside({exe: NODE, args: serverArgs(), cwd: ENGINE, env, stdout: out, stderr: err, window: false});
     world.spawnedPids.add(h.pid);
     Object.assign(world, {status: 'starting', mode, port, logs: {out, err}, lastError: null});
     event('info', 'world', `World process started (pid ${h.pid}, port ${port}${h.breakaway ? ', outside the launcher job' : ''}).`);

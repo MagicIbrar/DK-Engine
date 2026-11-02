@@ -7,6 +7,7 @@ import { declineBlockedInvitation } from '../hud-options/invitation-policy.js';
 // 100% ratio. `matchingMaps` (the party-finder board's map list) backs a read-only recruiting board
 // (`game2/party/ui_partylistwnd_renew.txt`) that is honestly empty (no other players exist to post there) rather
 // than faked with invented entries.
+import { gfxC } from '../../ui/gfx-parity-c.js';
 import { str, strNow, msg, state } from './common.js';
 import { PartyHud } from './party-hud.js';
 import { globalAsk } from '../../ui/uiwin/global-asks.js';
@@ -287,7 +288,7 @@ export class Party {
     const me = g.save?.name || g.player?.name || '';
     if (on && name) st.name = name.slice(0, 24);
     if (on && !st.name) st.name = `${me}${strNow(g, 70, 67) || "'s Party"}`;
-    msg(g, on ? (strNow(g, 70, 59) || 'The Party has been formed.') : `${me} ${strNow(g, 70, 1) || 'has left the Party.'}`, 'sys');
+    msg(g, on ? (strNow(g, 70, 59) || 'The Party has been formed.') : `${me} ${strNow(g, 70, 1) || 'has left the Party.'}`, on && gfxC('chatcolor') ? 'party' : 'sys'); // gfxC: Global 43.19 70:59 = #6495ED
     g.persist?.();
     g.events?.emit?.('life:party', { active: on });
     if (this.win?.isOpen) this._refresh(this.win);

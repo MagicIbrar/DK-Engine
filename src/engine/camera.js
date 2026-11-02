@@ -27,6 +27,75 @@ export class FollowCamera {
     this.firstPersonFov = 70;
     this.eyeOffset = opts.eyeOffset || (() => null);
     this.eyeHeight = opts.eyeHeight || (() => this.height);
+    // Lane 64: map-event SetCamera state (Global Ghost::GameHandler::Dungeon::Reference camera override +0xa8, target +0xac).
+    this._mapEvent = null;
+    this._mapEventClock = 0;
+    // game.camera is this THREE camera; expose the CameraImpl f0..f2 snapshot there for the map-event runner hook.
+    camera.mapEventParams = () => this.mapEventParams();
+  }
+
+  /**
+   * Lane 64: Global CameraImpl param block f0..f2 as [distance, pitch, yaw].
+   * f0 is clamped to Camera::Limit [l0,l1], f1 to [l2,l3], f2 is wrapped into [0, 2pi) (FUN_7ff67124e280). 4.2.0 already maps the
+   * same three Global camera quantities 1:1 from maplist (DefaultZoom -> distance, Default_V_Angle -> pitch, Default_H_Angle -> yaw;
+   * configure() and network/dungeon-arrival.js), so map events use that same mapping (source: Global client + Global maplist).
+   */
+  mapEventParams() { return [this.distance, this.pitch, this.yaw]; }
+
+  setMapEventParams(p) {
+    if (!Array.isArray(p) || p.length < 3 || !p.slice(0, 3).every((v) => Number.isFinite(Number(v)))) return false;
+    const TWO_PI = Math.PI * 2;
+    this.distance = THREE.MathUtils.clamp(Number(p[0]), this.minDistance, this.maxDistance);
+    this.pitch = THREE.MathUtils.clamp(Number(p[1]), this.minPitch, this.maxPitch);
+    let yaw = Number(p[2]) % TWO_PI; if (yaw < 0) yaw += TWO_PI;
+    this.yaw = yaw;
+    return true;
+  }
+
+  /** Lane 64: consume a map-event:camera message (runner SetCamera Execute FUN_7ff6716352c0). */
+  applyMapEvent(m) {
+    if (!m) return;
+    const v3 = (t) => (t && [t.x, t.y, t.z].every(Number.isFinite) ? new THREE.Vector3(t.x, t.y, -t.z) : null); // file -> three (z mirror)
+    const me = this._mapEvent || (this._mapEvent = { override: false, flag: true, target: null, drift: null });
+    if (m.op === 'set') {
+      // mode 1: CameraImpl+0x10d = (p7=="1"), override +0xa8 = 1, target (p2,p1,p3) -> Reference +0xac, f0..f2 = (p4, rad p5, rad p6).
+      me.override = true; me.flag = !!m.cameraFlag; me.target = v3(m.target);
+      this.setMapEventParams(m.params);
+      this.snap();
+    } else if (m.op === 'drift') {
+      // mode 2 (FUN_7ff6714e4480 / FUN_7ff6714e3f70): per camera update, target += delta while now < start+p8 ms,
+      // f0..f2 += delta while now < start+p9 ms. Applied once per 4.2.0 camera update (per frame, as in Global).
+      const td = m.targetDelta, pd = m.paramsDelta;
+      me.drift = {
+        target: td && [td.x, td.y, td.z].every(Number.isFinite) ? new THREE.Vector3(td.x, td.y, -td.z) : null,
+        targetUntil: this._mapEventClock + Math.max(0, Number(m.targetMs) || 0),
+        params: Array.isArray(pd) && pd.length >= 3 ? pd.slice(0, 3).map(Number) : null,
+        paramsUntil: this._mapEventClock + Math.max(0, Number(m.paramsMs) || 0),
+      };
+    } else if (m.op === 'restore') {
+      // mode 0: CameraImpl+0x10d = 1, override off, restore the f0..f2 saved by the mode 1 Init.
+      me.override = false; me.flag = true;
+      if (m.params) this.setMapEventParams(m.params);
+      this.snap();
+    }
+  }
+
+  /** Lane 64: Reference End (FUN_7ff6714e4020) clears the override (+0xa8 = 0) and the drift flags (+0xd0 = 0). */
+  endMapEvent() {
+    const was = !!this._mapEvent?.override;
+    this._mapEvent = null;
+    if (was) this.snap();
+  }
+
+  _mapEventStep(dt) {
+    this._mapEventClock += Math.max(0, Number(dt) || 0) * 1000;
+    const d = this._mapEvent?.drift;
+    if (!d) return;
+    if (d.target && this._mapEventClock < d.targetUntil && this._mapEvent.target) this._mapEvent.target.add(d.target);
+    if (d.params && this._mapEventClock < d.paramsUntil) {
+      const p = this.mapEventParams();
+      this.setMapEventParams([p[0] + d.params[0], p[1] + d.params[1], p[2] + d.params[2]]);
+    }
   }
 
   /** Apply per-map camera settings from maplist.csv (Camera_Near_Distance, Camera_Far_Distance, Camera_Height, Camera_MinAngle, Camera_MaxAngle, DefaultZoom). */
@@ -44,8 +113,24 @@ export class FollowCamera {
     const deg = (v) => (Math.abs(v) < 2 ? v : THREE.MathUtils.degToRad(v));
     const lo = num('Camera_MinAngle', null), hi = num('Camera_MaxAngle', null);
     if (lo != null && hi != null && hi > lo) {
-      this.minPitch = Math.max(deg(lo), -0.35);   // never under the player's feet (the ground clamp keeps it above terrain)
+      // Global maplist Camera_MinAngle is -70 deg on 263 rows: the camera may swing low and look UP at the sky (that is how the
+      // sky.txt sun / lens flare comes into view). The ground clamp in update() keeps the eye above terrain. Was -0.35 (-20 deg).
+      this.minPitch = Math.max(deg(lo), -1.25);
       this.maxPitch = Math.min(deg(hi), 1.45);
+    }
+    // 2026-10-29 [gfx2-env map-fov] the third-person projection uses the map row's FOV column (share/maplist.csv FOV = 0.65 on
+    // every row, radians -> 37.24 deg vertical; the front-end stage already uses it, ui/frontend/stage.js rowFovDeg). Was the
+    // ENGINE-CHOSEN 50 deg from game.js. Recording check (global-gfx-session2.mkv t=185..201 s, Ardeca fountain 303,85): Global
+    // frames the fountain basin across ~the whole width with no roofs above it; at 50 deg ours shows roofs and sky, at 37.24 it is
+    // much closer (gfx-compare/fov-fountain.jpg). First-person keeps its own option FOV.
+    // OFF SWITCH: globalThis.__dkGfxParity = { mapFov: false }  or  localStorage 'dk.gfx.mapFov' = '0'.
+    const fovRad = num('FOV', null);
+    let fovOn = true;
+    try { fovOn = globalThis.__dkGfxParity?.mapFov ?? (globalThis.localStorage?.getItem?.('dk.gfx.mapFov') !== '0'); } catch { /* keep on */ }
+    if (fovOn !== false && fovRad > 0.2 && fovRad < 2.5) {
+      const deg = (fovRad * 180) / Math.PI;
+      if (this.mode === 'first-person' && this._projection) this._projection.fov = deg;
+      else if (this.mode !== 'first-person') { this.camera.fov = deg; this.camera.updateProjectionMatrix(); }
     }
     const v = num('Default_V_Angle', null);
     if (v != null) this.pitch = THREE.MathUtils.clamp(deg(v), this.minPitch, this.maxPitch);
@@ -92,6 +177,7 @@ export class FollowCamera {
   }
 
   update(dt) {
+    this._mapEventStep(dt);
     const inp = this.input;
     if (inp.held.right || inp.held.middle) {
       this.yaw -= inp.mouse.dx * 0.006;
@@ -130,7 +216,10 @@ export class FollowCamera {
       return;
     }
 
-    const look = (this._look ||= new THREE.Vector3()).copy(this.target); look.y += this.height;   // lane-core: reused scratch (was a clone per frame)
+    const look = (this._look ||= new THREE.Vector3());
+    // Lane 64: while a map-event SetCamera override is on, the camera looks at the Reference target instead of the player.
+    if (this._mapEvent?.override && this._mapEvent.target) look.copy(this._mapEvent.target);
+    else { look.copy(this.target); look.y += this.height; }   // lane-core: reused scratch (was a clone per frame)
     if (this._first) { this._smoothed.copy(look); this._first = false; }
     // follow tightly in XZ, but softly in height, so small ground-height steps (tile seams, walkable-object surfaces)
     // never bob the whole view

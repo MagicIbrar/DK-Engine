@@ -29,6 +29,7 @@ export async function stageHost(source, state) {
   await unlinked(engine);
   const folders=new Set(['src','server','site','tools','vendor','node_modules','client-assets','deploy']);
   const topFiles=new Set(['package.json','package-lock.json','index.html','join.html','launch.html','server.mjs','THIRD_PARTY_NOTICES.md']);
+  // dekaron-online-logo-v1.png is allowed here but not present in this build (no copy exists in 4.2.0 or 4.1.x); the entry is inert.
   const assets=new Set(['dekaron-online-logo-v1.png','dekaron-online-emblem-v1.png','launcher-background-v1.png','dekaron-online.ico','server-logo-v1.png']);
   const allowed=(relative,directory)=>{
     const parts=relative.split(path.sep),top=parts[0],name=parts.at(-1);

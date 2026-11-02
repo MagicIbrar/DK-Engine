@@ -1,6 +1,7 @@
 import {AuthoredEffectsData, refinementEffect, upgradeEffectMode} from './authored-effects-data.js';
 import {MeshStatusUnit} from '../skills/fx-units.js';
 import {evalKeys} from '../skills/effects.js';
+import {gfxB} from '../../config/gfx-b-switches.js'; // gfx-B2 round 3
 
 /** Colour of a refinement family = the colour of its tier texture (eff_upgrade_13 silver, 46 blue, 79 gold, 1114 red, 15 purple). */
 const FAMILY_HUE = {1: [0.82, 0.88, 1.0], 2: [0.45, 0.65, 1.0], 3: [1.0, 0.62, 0.18], 4: [1.0, 0.22, 0.15], 5: [0.85, 0.15, 1.0]};
@@ -11,6 +12,7 @@ export const TIER_AURA = Object.freeze({TINT: 0.06, HALOS: Object.freeze([[3, 0.
 
 /** Composite the tier aura into every frame of an icon sheet. alphaAt(phase) = authored alpha of the refinement scene. */
 export function compositeTierAura(base, hue, alphaAt, {W, H, cols, rows, frames, S}) {
+  if (gfxB('previewTierAuraOff')) return base;   // gfx-B2 round 3: engine-chosen tint/halos off (Global data authors none)
   const make = () => { const c = document.createElement('canvas'); c.width = W; c.height = H; return c; };
   const output = document.createElement('canvas'); output.width = base.width; output.height = base.height;
   const out = output.getContext('2d'), frame = make(), tint = make(), f = frame.getContext('2d'), t = tint.getContext('2d');
@@ -51,7 +53,7 @@ export async function preparePreviewRefinement(game, root, spec, data = new Auth
       const unit = data.unit(scene.res[control.unit]);
       if (control.active === false || unit?.type !== 'meshstatus') continue;
       // UI scenes supply their own color, alpha and tiny shell; worn shine is a separate effect.
-      const overlay = new MeshStatusUnit({game}, unit, {instance: {meshes}});
+      const overlay = new MeshStatusUnit({game, control: {def: control}}, unit, {instance: {meshes}});
       units.push({overlay, control});
       await overlay.readyTask;
       if (!overlay.ready) throw new Error('Original refinement texture is unavailable');

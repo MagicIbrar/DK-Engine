@@ -1,9 +1,10 @@
+import {refineLoopMs} from '../../config/glow-time-scale.js';
 import {fetchText,fetchBuffer} from '../../engine/assets.js';
-import {REFINEMENT_LOOP_MS,SOCKET_ORB_LOOP_MS} from '../../config/engine-chosen-refinement-rate.js';
 import {parseCSV} from '../../formats/binreader.js';
 import {parseTpack,textureCandidates} from '../../formats/tpack.js';
 import {parseDDS,decodeToRGBA} from '../../formats/dds.js';
 import {parseEffectScenes,parseEffectData,describeControl,describeUnit,gamePathToData} from './native-effect-parser.js';
+import {gfxB} from '../../config/gfx-b-switches.js'; // gfx-B
 
 /** Effect tpacks the effect data names under a path where the client does not ship them. Each entry verified against the
  * Global pack index (audit/global-ref/index.tsv): source key absent, target key present. Only verified entries, no pattern rule. */
@@ -29,11 +30,16 @@ export function equipmentEffectRows(text){
   rows.set(Number(row[2]),{effect:ref(4),combat:ref(9)});
  }return rows;
 }
-// Native generic resources cover +1..3, +4..6, +7..9, +11..14 and +15.
-// +10 has no generic family; its item_shape scene supplies any authored glow.
+// Native generic MeshStatus modes: +1..3, +4..6, +7..9, +11..14, +15 live in effectscene 7:10.
+// +10 is absent from 7:10; native picks scene 7:11 ("1111") MeshStatus units ms_upgrade_1012 (mode 104, armor,
+// eff_upgrade_79.dds) / ms_upgrade_W_1012 (mode 114, weapon, eff_upgrade_13.dds). Armor control in 7:11 is authored
+// inactive; equipment +10 forces it active when selected. No cate-8 UI twin for +10 (ms_upgrade_U_1012 is orphaned).
+export function upgradeFamily(tier){
+ const n=Number(tier);return n>=1&&n<=3?1:n>=4&&n<=6?2:n>=7&&n<=9?3:n>=11&&n<=14?4:n===15?5:0;
+}
 export function upgradeEffectMode(tier,weapon=false){
- const n=Number(tier);const family=n>=1&&n<=3?1:n>=4&&n<=6?2:n>=7&&n<=9?3:n>=11&&n<=14?4:n===15?5:0;
- return family?family+(weapon?10:0):0;
+ const n=Number(tier);if(n===10)return weapon?114:104;
+ const family=upgradeFamily(n);return family?family+(weapon?10:0):0;
 }
 export function refinementEffect(def,slot=def?.slot){
  const weapon=slot==='weapon'||slot==='left';
@@ -50,13 +56,13 @@ export function socketStoneAttribute(stone){
  const elements=[...new Set([...(stone?.options||[]),...(stone?.exOptions||[])].filter(([code,value])=>Number(code)>=56&&Number(code)<=60&&Number(value)>0).map(([code])=>Number(code)-55))];
  return elements.length===1?elements[0]:0;
 }
-/** Equipped socket glow of a weapon: its socket count (the tooltip's "used / total") and, per stone type, how many gems of that
- * type sit in it. ENGINE-CHOSEN invocation: play each distinct attribute's native scene once, including partial/stat sockets.
- * Native mixed-type invocation and count-dependent intensity are not supplied. Counts never alter authored alpha/scale.
- * Nothing is returned for an empty weapon.
+/** Equipped socket glow of a weapon or offhand/shield: socket count and, per stone attribute, how many gems of that type
+ * sit in it. Invocation: one authored scene per filled gem (count intensity) at that gem's native blade bone (SWD_W0x /
+ * _L from the weapon skel / item_upgrade_10* attach points); see AuthoredEquipmentEffects.prepare. Authored alpha/scale
+ * keys are never multiplied by gem count. Nothing is returned for an empty item.
  * @returns {{capacity:number,filled:number,glows:{attribute:number,stones:number}[]}|null} */
 export function socketEffect(def,sockets,db){
- if(def?.slot!=='weapon'||!Array.isArray(sockets))return null;
+ if(!['weapon','offhand'].includes(def?.slot)||!Array.isArray(sockets))return null;
  const capacity=sockets.length;if(!capacity||capacity>4)return null;
  const counts=new Map();let filled=0;
  for(const {attribute} of socketGems(sockets,db)){counts.set(attribute,(counts.get(attribute)||0)+1);filled++;}
@@ -100,24 +106,41 @@ export class AuthoredEffectsData{
   return ['cate','id','scene','timeMs','loop'].every(key=>a[key]===b[key]);
  }
  async reference(id,combat=false){if(!this.rows){const pending=this.file('script/effect/modeleffect.csv').then(equipmentEffectRows).catch(error=>{if(this.rows===pending)this.rows=null;throw error;});this.rows=pending;}const rows=await this.rows;this.referenceRows=rows;const row=rows.get(Number(id));const ref=(combat&&row?.combat)||row?.effect;if(!ref)return null;await this.load(ref);return this.scene(`${ref.cate}:${ref.id}`)?ref:null;}
+ /** Ensure 7:11's inactive armor unit (ms_upgrade_1012) is resident — _load skips active:false controls. */
+ async ensureUpgrade1012Units(scene){
+  const needed={1:'ms_upgrade_1012',2:'ms_upgrade_W_1012'};
+  for(const [id,name] of Object.entries(needed)){
+   if(scene.res[id]&&this.unit(scene.res[id]))continue;
+   const resolved=await this.resolveUnit(name,'02');if(!resolved.unit)continue;
+   if(!this.unitTypes.has(resolved.unit.unittype))continue;
+   const resolver={path:gamePathToData,texture:p=>gamePathToData('texture',p),sound:p=>gamePathToData('sound',p),tpack:()=>null};
+   const nameKey=`item:${resolved.unit.file}:${name.toLowerCase()}`;
+   this.units.set(nameKey,describeUnit(resolved.unit,resolver));scene.res[id]=nameKey;
+  }
+ }
  async upgradeReference(tier,weapon=false){
   const mode=upgradeEffectMode(tier,weapon);if(!mode)return null;
-  await this.load({cate:7,id:10});const scene=this.scene('7:10');if(!scene)return null;
+  const plus10=mode===114||mode===104;const cateId=plus10?11:10;
+  await this.load({cate:7,id:cateId});const scene=this.scene(`7:${cateId}`);if(!scene)return null;
+  if(plus10)await this.ensureUpgrade1012Units(scene);
   const sceneId=100+mode;
   if(!scene.scenes[sceneId]){
-   const controls=(scene.scenes[1]?.controls||[]).filter(c=>this.unit(scene.res[c.unit])?.meshStatus?.mode===mode);
+   const controls=(scene.scenes[1]?.controls||[])
+    .filter(c=>this.unit(scene.res[c.unit])?.meshStatus?.mode===mode)
+    .map(c=>({...c,active:true})); // 7:11 authors armor control inactive
    if(controls.length!==1)throw Error('Original upgrade effect selector is ambiguous');
    scene.scenes[sceneId]={name:`selected native mesh_status ${mode}`,controls};
   }
-  // Selected subscenes reuse the original control and unit without altering scene 1. The scene is authored as `lifetime 0 1000`;
-  // its play length is REFINEMENT_LOOP_MS (see src/config/engine-chosen-refinement-rate.js).
-  return {cate:7,id:10,scene:sceneId,timeMs:REFINEMENT_LOOP_MS,loop:0};
+  // Selected subscenes reuse the original control and unit without altering scene 1. The scene is authored as `lifetime 0 1000`
+  // (keys 0..999), and that authored length is the play length, as every modeleffect.csv row does. LANE-63: the engine-chosen
+  // 3500 ms loop (engine-chosen-refinement-rate.js) is removed.
+  // glowrate2: the 0..1000 keys are normalized (FUN_011b46e0); the play length is the caller's, see src/config/glow-time-scale.js.
+  return {cate:7,id:cateId,scene:sceneId,timeMs:refineLoopMs(),loop:0};
  }
  refinement(tier,weapon=false){return this.upgradeReference(tier,weapon);}
  async inventoryUpgradeReference(tier){
-  // Global effectscene.com.txt has separate UI (cate 8) upgrade scenes 21..25.
-  // Keep the existing +10 family decision; do not substitute the worn cate 7 overlay.
-  const family=upgradeEffectMode(tier);if(!family)return null;
+  // Global effectscene.com.txt has separate UI (cate 8) upgrade scenes 21..25. No cate-8 twin for +10.
+  const family=upgradeFamily(tier);if(!family)return null;
   const ref={cate:8,id:20+family,scene:1,timeMs:1000,loop:0};
   await this.load(ref);return this.scene(`${ref.cate}:${ref.id}`)?ref:null;
  }
@@ -139,8 +162,9 @@ export class AuthoredEffectsData{
    const source=this.scene(`${base.cate}:${base.id}`),colour=[[0,gain,gain,gain],[999,gain,gain,gain]];
    this.scenes.set(key,{...source,scenes:Object.fromEntries(Object.entries(source.scenes).map(([sceneId,scene])=>[sceneId,{...scene,controls:scene.controls.map(c=>({...c,color:colour}))}]))});
   }
-  // The mist (the orbs along the blade) repeats every SOCKET_ORB_LOOP_MS; the authored keys are unchanged, only stretched over it.
-  return {...base,id,timeMs:SOCKET_ORB_LOOP_MS};
+  // The mist repeats at the socket row's own modeleffect.csv group 24 eff_time (1000 ms). LANE-63: the engine-chosen 4000 ms
+  // stretch (SOCKET_ORB_LOOP_MS) is removed.
+  return {...base,id};
  }
  /** Inventory (UI cate8) twin of the socket scene: effectscene.com cate 8 ids 1..6 repeat cate 7's sprites with the larger UI
   * scale keys (1.5,1,1.5)(1.8,2,1.8)(1.5,1,1.5) and the same 1000 ms alpha keys; attribute 0/6 -> id 6 as in group24. */
@@ -205,7 +229,7 @@ export class AuthoredEffectsData{
     const resolved=await this.resolveUnit(name,file),unit=resolved.unit;
     if(!unit){selected.unresolved.push({res:Number(id),name,reason:resolved.reason||'unit',...(resolved.files?{files:resolved.files}:{})});continue;}
     if(!this.unitTypes.has(unit.unittype))throw Error(`Unsupported original equipment effect unit ${name}`);
-    const packs=new Map();if(unit.fields.texturepack){const key=gamePathToData('texturepack',unit.fields.texturepack);let bytes;try{bytes=await this.buffer(key);}catch(error){if(error?.missing!==true&&error?.code!=='ENOENT')throw error;const alt=TPACK_RELOCATED[key];if(alt){try{bytes=await this.buffer(alt);}catch(e2){if(e2?.missing!==true&&e2?.code!=='ENOENT')throw e2;}}if(!bytes){selected.unresolved.push({res:Number(id),name,reason:'tpack',key});continue;}}const tp=parseTpack(bytes);const resolve=texture=>textureCandidates(tp.texpath,texture)[0]||null;packs.set(key,{key,frames:tp.slots.map(slot=>resolve(tp.diffuse[slot])),textures:tp.slots.map(slot=>({material:slot,diffuse:resolve(tp.diffuse[slot])}))});}
+    const packs=new Map();if(unit.fields.texturepack){const key=gamePathToData('texturepack',unit.fields.texturepack);let bytes;try{bytes=await this.buffer(key);}catch(error){if(error?.missing!==true&&error?.code!=='ENOENT')throw error;const alt=gfxB('wingTpackNoRelocate')?null:TPACK_RELOCATED[key]; /* gfx-B: Global names Effect\\Wing\\SUM_EQU_WIN02 (absent with its mesh/anim/skel); no relocation unless switched off */if(alt){try{bytes=await this.buffer(alt);}catch(e2){if(e2?.missing!==true&&e2?.code!=='ENOENT')throw e2;}}if(!bytes){selected.unresolved.push({res:Number(id),name,reason:'tpack',key});continue;}}const tp=parseTpack(bytes);const resolve=texture=>textureCandidates(tp.texpath,texture)[0]||null;packs.set(key,{key,frames:tp.slots.map(slot=>resolve(tp.diffuse[slot])),textures:tp.slots.map(slot=>({material:slot,diffuse:resolve(tp.diffuse[slot])}))});}
     const resolver={path:gamePathToData,texture:p=>gamePathToData('texture',p),sound:p=>gamePathToData('sound',p),tpack:p=>packs.get(gamePathToData('texturepack',p))};
     const nameKey=`item:${unit.file}:${name.toLowerCase()}`;this.units.set(nameKey,describeUnit(unit,resolver));selected.res[id]=nameKey;
    }

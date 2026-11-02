@@ -1404,5 +1404,462 @@ export const GLOBAL_WINDOWS = Object.freeze([
 "btn_leftArrow",
 "btn_rightArrow"
 ]
+},
+// Scan fix A (2026-10-29): docs/UI-COVERAGE-GAPS.md Global window scripts not yet registered; window name and
+// button ids read verbatim from Global data/script/ui (registered only: nothing opens them, no layout changed).
+{
+"key": "game2:changecharname:ui_caution",
+"script": "game2/changecharname/ui_caution.txt",
+"window": "changecharname_caution",
+"kind": "panel",
+"buttons": [
+"btn_caution_exit",
+"btn_caution_yes",
+"btn_caution_cancle"
+]
+},
+{
+"key": "game2:charwindow:ui_skillwnd",
+"script": "game2/charwindow/ui_skillwnd.txt",
+"window": "skill",
+"kind": "panel",
+"buttons": [
+"btn_exit",
+"btn_skill_tab_1",
+"btn_skill_tab_2",
+"btn_skill_tab_3",
+"btn_skill_tab_4",
+"btn_skill_tab_5"
+]
+},
+{
+"key": "game2:connectreward:ui_connectrewardwnd",
+"script": "game2/connectreward/ui_connectrewardwnd.txt",
+"window": "qnotice_info",
+"kind": "panel",
+"buttons": [
+"btn_close",
+"btn_complete"
+]
+},
+{
+"key": "game2:costumeupgrade:ui_costumeswingwnd",
+"script": "game2/costumeupgrade/ui_costumeswingwnd.txt",
+"window": "costumesewing",
+"kind": "panel",
+"buttons": [
+"btn_exit",
+"btn_foundation",
+"btn_sewing",
+"btn_option",
+"btn_shape",
+"btn_exchange",
+"btn_prev",
+"btn_next",
+"btn_min",
+"btn_plus",
+"btn_max",
+"btn_ok",
+"btn_stop",
+"btn_rot_left",
+"btn_rot_right",
+"btn_zoom_out",
+"btn_zoom_in"
+]
+},
+{
+"key": "game2:creditwnd:ui_creditwnd",
+"script": "game2/creditwnd/ui_creditwnd.txt",
+"window": "credit",
+"kind": "panel",
+"buttons": []
+},
+{
+"key": "game2:creditwnd:ui_creditwnd2",
+"script": "game2/creditwnd/ui_creditwnd2.txt",
+"window": "credit",
+"kind": "panel",
+"buttons": []
+},
+{
+"key": "game2:creditwnd:ui_creditwnd3",
+"script": "game2/creditwnd/ui_creditwnd3.txt",
+"window": "credit",
+"kind": "panel",
+"buttons": []
+},
+{
+"key": "game2:creditwnd:ui_creditwnd4",
+"script": "game2/creditwnd/ui_creditwnd4.txt",
+"window": "credit",
+"kind": "panel",
+"buttons": []
+},
+{
+"key": "game2:guild:ui_createmarkwnd",
+"script": "game2/guild/ui_createmarkwnd.txt",
+"window": "noticewnd",
+"kind": "panel",
+"buttons": []
+},
+{
+"key": "game2:guild:ui_selectmarkwnd",
+"script": "game2/guild/ui_selectmarkwnd.txt",
+"window": "guildMarkwnd",
+"kind": "panel",
+"buttons": [
+"btn_exit",
+"btn_iconLeft",
+"btn_iconRight",
+"btn_bgLeft",
+"btn_bgRight",
+"btn_regist"
+]
+},
+{
+"key": "game2:itemremovestone:ui_itemremovestone",
+"script": "game2/itemremovestone/ui_itemremovestone.txt",
+"window": "itemremovestonewnd",
+"kind": "panel",
+"buttons": [
+"btn_exit",
+"btn_strength",
+"btn_equip_item",
+"btn_reserve_item",
+"btn_cos_item",
+"btn_equip_unlock",
+"btn_equip_lock",
+"btn_link_suit",
+"btn_weapontab_0",
+"btn_weapontab_1",
+"btn_shieldtab_0",
+"btn_shieldtab_1",
+"btn_changebag_0",
+"btn_changebag_1",
+"btn_changebag_2",
+"btn_changebag_3",
+"btn_changebag_4"
+]
+},
+{
+"key": "game2:itemshop:ui_itemshopwnd",
+"script": "game2/itemshop/ui_itemshopwnd.txt",
+"window": "itemShopWnd",
+"kind": "panel",
+"buttons": [
+"btn_tab_0",
+"btn_tab_1",
+"btn_tab_2",
+"btn_tab_3",
+"btn_leftArrow",
+"btn_rightArrow",
+"btn_exit",
+"btn_buy",
+"btn_giftItem"
+]
+},
+{
+"key": "game2:itemupgrade:ui_itemaddsocketwnd",
+"script": "game2/itemupgrade/ui_itemaddsocketwnd.txt",
+"window": "itemaddsocketwnd",
+"kind": "panel",
+"buttons": [
+"btn_exit",
+"btn_strength",
+"btn_equip_item",
+"btn_reserve_item",
+"btn_cos_item",
+"btn_equip_unlock",
+"btn_equip_lock",
+"btn_link_suit",
+"btn_weapontab_0",
+"btn_weapontab_1",
+"btn_shieldtab_0",
+"btn_shieldtab_1",
+"btn_changebag_0",
+"btn_changebag_1",
+"btn_changebag_2",
+"btn_changebag_3",
+"btn_changebag_4"
+]
+},
+{
+"key": "game2:itemupgrade:ui_itemincusewnd_new",
+"script": "game2/itemupgrade/ui_itemincusewnd_new.txt",
+"window": "itemincusewnd",
+"kind": "panel",
+"buttons": [
+"btn_exit",
+"btn_tab_0",
+"btn_tab_1",
+"btn_tab_2",
+"btn_request"
+]
+},
+{
+"key": "game2:itemupgrade:ui_itemremovestone",
+"script": "game2/itemupgrade/ui_itemremovestone.txt",
+"window": "itemremovestonewnd",
+"kind": "panel",
+"buttons": [
+"btn_exit",
+"btn_strength",
+"btn_equip_item",
+"btn_reserve_item",
+"btn_cos_item",
+"btn_equip_unlock",
+"btn_equip_lock",
+"btn_link_suit",
+"btn_weapontab_0",
+"btn_weapontab_1",
+"btn_shieldtab_0",
+"btn_shieldtab_1",
+"btn_changebag_0",
+"btn_changebag_1",
+"btn_changebag_2",
+"btn_changebag_3",
+"btn_changebag_4"
+]
+},
+{
+"key": "game2:login:ui_matrixwnd",
+"script": "game2/login/ui_matrixwnd.txt",
+"window": "matrix",
+"kind": "panel",
+"buttons": [
+"btn_ok",
+"btn_erase"
+]
+},
+{
+"key": "game2:messagebox:ui_messagebox",
+"script": "game2/messagebox/ui_messagebox.txt",
+"window": "messagebox",
+"kind": "msgbox",
+"buttons": [
+"btn_yes",
+"btn_confirm",
+"btn_no",
+"btn_cancel"
+]
+},
+{
+"key": "game2:msgbox:ui_gameover",
+"script": "game2/msgbox/ui_gameover.txt",
+"window": "gameover_win",
+"kind": "msgbox",
+"buttons": [
+"btn_yes"
+]
+},
+{
+"key": "game2:msgbox:ui_guildlevelup",
+"script": "game2/msgbox/ui_guildlevelup.txt",
+"window": "guildlevelup_msgbox",
+"kind": "msgbox",
+"buttons": [
+"btn_yes",
+"btn_no"
+]
+},
+{
+"key": "game2:msgbox:ui_kickguild",
+"script": "game2/msgbox/ui_kickguild.txt",
+"window": "kickguild",
+"kind": "msgbox",
+"buttons": [
+"btn_exit",
+"btn_yes",
+"btn_no"
+]
+},
+{
+"key": "game2:msgbox:ui_login_id_error",
+"script": "game2/msgbox/ui_login_id_error.txt",
+"window": "loginerror_msgbox",
+"kind": "msgbox",
+"buttons": [
+"btn_yes"
+]
+},
+{
+"key": "game2:msgbox:ui_login_passwd_error",
+"script": "game2/msgbox/ui_login_passwd_error.txt",
+"window": "loginerror_msgbox",
+"kind": "msgbox",
+"buttons": [
+"btn_yes"
+]
+},
+{
+"key": "game2:msgbox:ui_tradeask",
+"script": "game2/msgbox/ui_tradeask.txt",
+"window": "tradeask_msgbox",
+"kind": "msgbox",
+"buttons": [
+"btn_exit",
+"btn_no"
+]
+},
+{
+"key": "game2:msgbox:ui_upgradeitem",
+"script": "game2/msgbox/ui_upgradeitem.txt",
+"window": "upgradeitem_msgbox",
+"kind": "msgbox",
+"buttons": [
+"btn_yes",
+"btn_no"
+]
+},
+{
+"key": "game2:newcashshop:ui_newcashshopwnd",
+"script": "game2/newcashshop/ui_newcashshopwnd.txt",
+"window": "newcashshopWnd",
+"kind": "panel",
+"buttons": [
+"btn_exit",
+"btn_tab_0",
+"btn_tab_1",
+"btn_tab_2",
+"btn_tab_3",
+"btn_tab_4",
+"btn_tab_5",
+"btn_tab_6",
+"btn_tab_7",
+"btn_tab_8",
+"btn_tab_9",
+"btn_itemlist",
+"btn_buyInfo"
+]
+},
+{
+"key": "game2:notice:ui_contentsnoticewnd",
+"script": "game2/notice/ui_contentsnoticewnd.txt",
+"window": "contentsnotice",
+"kind": "panel",
+"buttons": [
+"btn_exit"
+]
+},
+{
+"key": "game2:ui_channelselectwnd",
+"script": "game2/ui_channelselectwnd.txt",
+"window": "channel_select_win",
+"kind": "panel",
+"buttons": []
+},
+{
+"key": "game2:ui_charcloningwnd",
+"script": "game2/ui_charcloningwnd.txt",
+"window": "char_cloning_win",
+"kind": "panel",
+"buttons": [
+"btn_advice",
+"btn_msg",
+"btn_page_1",
+"btn_page_2",
+"btn_characterlist_0",
+"btn_characterlist_1",
+"btn_characterlist_2",
+"btn_characterlist_3",
+"btn_characterlist_4",
+"btn_characterlist_5",
+"btn_characterlist_6",
+"btn_characterlist_7",
+"btn_characterlist_8",
+"btn_ok",
+"btn_back"
+]
+},
+{
+"key": "game2:ui_creditwnd",
+"script": "game2/ui_creditwnd.txt",
+"window": "credit",
+"kind": "panel",
+"buttons": []
+},
+{
+"key": "game2:ui_itemaddsocketwnd",
+"script": "game2/ui_itemaddsocketwnd.txt",
+"window": "itemaddsocketwnd",
+"kind": "panel",
+"buttons": [
+"btn_exit",
+"btn_strength",
+"btn_equip_item",
+"btn_reserve_item",
+"btn_cos_item",
+"btn_equip_unlock",
+"btn_equip_lock",
+"btn_link_suit",
+"btn_weapontab_0",
+"btn_weapontab_1",
+"btn_shieldtab_0",
+"btn_shieldtab_1",
+"btn_changebag_0",
+"btn_changebag_1",
+"btn_changebag_2",
+"btn_changebag_3",
+"btn_changebag_4"
+]
+},
+{
+"key": "game2:ui_loginmessage",
+"script": "game2/ui_loginmessage.txt",
+"window": "login",
+"kind": "panel",
+"buttons": []
+},
+{
+"key": "game2:ui_maintoolbar",
+"script": "game2/ui_maintoolbar.txt",
+"window": "maintoolbar",
+"kind": "panel",
+"buttons": [
+"btn_buyItem",
+"btn_slot_up",
+"btn_slot_down",
+"btn_messenger",
+"btn_fish",
+"btn_quest",
+"btn_char",
+"btn_inv",
+"btn_party",
+"btn_system",
+"btn_help",
+"btn_pcstore"
+]
+},
+{
+"key": "game2:ui_onceloadwnd",
+"script": "game2/ui_onceloadwnd.txt",
+"window": "onceloadwnd",
+"kind": "panel",
+"buttons": []
+},
+{
+"key": "game2:ui_pplwnd",
+"script": "game2/ui_pplwnd.txt",
+"window": "pplwnd",
+"kind": "panel",
+"buttons": []
+},
+{
+"key": "game2:ui_repairwnd",
+"script": "game2/ui_repairwnd.txt",
+"window": "repair_win",
+"kind": "panel",
+"buttons": [
+"btn_Repair",
+"btn_RepairAll",
+"btn_exit",
+"btn_equip_unlock",
+"btn_equip_lock",
+"btn_changebag_0",
+"btn_changebag_1",
+"btn_changebag_2",
+"btn_changebag_3",
+"btn_changebag_4"
+]
 }
 ]);

@@ -291,7 +291,7 @@ async function start(world, m) {
   const staged = stageInstanceMembers(world, ps, clones);
   let instance;
   try {
-    const durationMs = (row.waitSec + m.settings.minutes * 60 + C.finishWaitSec + 120) * 1000;
+    const durationMs = (row.waitSec + m.settings.minutes * 60 + 120) * 1000;   /* +120 s instance housekeeping margin */
     instance = await createInstance(staged.world, { map: row.map, members: staged.candidates, kind: 'partyPvp', exit: m.exit, durationMs });
     instance.admitting = true;
     staged.candidates.forEach((q, i) => {
@@ -336,7 +336,7 @@ async function finish(world, m, reason) {
   }
   const summary = m.sides.map((s, i) => ({ name: s.name, points: teams[i].points, survived: teams[i].alive,
     members: s.players.map(q => ({ id: q.id, name: q.profile.name, classIndex: q.profile.classIndex, level: q.profile.level, score: m.score.get(q.id) || 0, down: m.down.has(q.id) })) }));
-  m.phase = 'over'; m.finishAt = now + C.finishWaitSec * 1000;
+  m.phase = 'over'; m.finishAt = now;   /* Lane 71: the 280:51 'Waiting to finish' duration is REMOVED (no source): the label shows, no timer */
   m.result = { winner, reason, teams: summary, at: now };
   for (const t of teams) for (const q of t.players) {
     const got = prize.get(q.id) || 0;
@@ -370,7 +370,7 @@ export async function tickPartyPvp(world) {
         else if (inside && (q.hp <= 0 || q.dead)) markDown(world, m, q);
         else if(inside&&m.mode===4&&m.down.has(q.id)){
           m.down.delete(q.id);
-          applyPartyPvpBuffs(world,q,world.data.partyPvp.buffs,m.buffs?.get(q.id),Math.max(1000,m.endsAt-now+C.finishWaitSec*1000));
+          applyPartyPvpBuffs(world,q,world.data.partyPvp.buffs,m.buffs?.get(q.id),Math.max(1000,m.endsAt-now));
         }
       }
       const alive = m.sides.map(s => s.players.filter(q => !m.down.has(q.id)).length);

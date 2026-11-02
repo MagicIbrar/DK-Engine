@@ -82,10 +82,16 @@ export function computeItemStats(sys) {
   };
   const flat = { str: 0, dex: 0, con: 0, spr: 0, defense: 0, hp: 0, mp: 0, hitRate: 0, dodge: 0, critical: 0 };
   let block = 0, pvpDmg = 0, pvpDef = 0;
+  // Cash item AddExpRate / AddDrop* (items.json addExp/addDrop/addDil as fractions: 0.2 = +20%).
+  // stringtable_cashitem: "[Veteran's Amulet] EXP +20%"; Reinforced "increases your EXP reward from hunting by 200%".
+  let cashAddExp = 0, cashAddDrop = 0, cashAddDil = 0;
   for (const { slot, inst } of worn) {
     if (inst.expiresAt && inst.expiresAt < now) continue;
     const def = db.def(inst.itemIndex);
     if (!def) continue;
+    cashAddExp += Number(def.addExp) || 0;
+    cashAddDrop += Number(def.addDrop) || 0;
+    cashAddDil += Number(def.addDil) || 0;
     if (slot === S.weapon) continue;   // weapon damage below
     if (def.def) flat.defense += Number(def.def[1] || def.def[0]) || 0;
     block += Number(def.block) || 0;
@@ -133,7 +139,7 @@ export function computeItemStats(sys) {
   weapon.rangeMax += (opts.get('RANGE_DAMAGE_MAXRANGECAL_ADD') || 0) + (opts.get('RANGE_DAMAGE_MINRANGECAL_ADD') || 0);
   const statuses = [{ source: 'items', options: [...opts].filter(([n]) => BUFFED.has(n)).map(([code, value]) => ({ code, value })) }];
   const dual = eq.dualStatus();
-  return { weapon, flat, block, pvpDmg, pvpDef, options: opts, statuses, sets, dual, titleAttack };
+  return { weapon, flat, block, pvpDmg, pvpDef, options: opts, statuses, sets, dual, titleAttack, cashAddExp, cashAddDrop, cashAddDil };
 }
 
 /** Fold the options deriveStats does not know into its result (called from the progression post hook). */
@@ -173,10 +179,11 @@ export function applyPost(stats, it) {
     poison: o('DAMAGEADD_POISON_ADD'), curse: o('DAMAGEADD_CURSE_ADD'), dark: o('DAMAGEADD_DARK_ADD'),
   };
   stats.pvpDamage = it.pvpDmg; stats.pvpDefense = it.pvpDef;
-  stats.expBonus = (stats.expBonus || 0) + (it.options.get('OPT_316') || 0) + o('RESULT_EXP_MUL');
+  // OPT_316 / RESULT_*_MUL are percent points; cash AddExpRate is a fraction (0.2 -> +20).
+  stats.expBonus = (stats.expBonus || 0) + (it.options.get('OPT_316') || 0) + o('RESULT_EXP_MUL') + Math.round((Number(it.cashAddExp) || 0) * 100);
   // the client data names these RESULT_DROP_MUL / RESULT_DIL_MUL (skills_status.json); OPT_317 / OPT_318 kept for unnamed option ids
-  stats.dropBonus = (stats.dropBonus || 0) + (it.options.get('OPT_318') || 0) + o('RESULT_DROP_MUL');
-  stats.dilBonus = (stats.dilBonus || 0) + (it.options.get('OPT_317') || 0) + o('RESULT_DIL_MUL');
+  stats.dropBonus = (stats.dropBonus || 0) + (it.options.get('OPT_318') || 0) + o('RESULT_DROP_MUL') + Math.round((Number(it.cashAddDrop) || 0) * 100);
+  stats.dilBonus = (stats.dilBonus || 0) + (it.options.get('OPT_317') || 0) + o('RESULT_DIL_MUL') + Math.round((Number(it.cashAddDil) || 0) * 100);
   stats.cooldownMul = 1 - o('SPEED_COOLTIME_MUL') / 100;
   stats.castMul = 1 - o('SPEED_CASTING_MUL') / 100;
   stats.mpCostMul = 1 - o('MP_DECREASE_SPENDRESOURCE') / 100;

@@ -6,7 +6,9 @@
 // Texts: stringtable_colosseum 360|*. Every value the data does not give is in src/config/engine-chosen-guild-tournament.js.
 // Player-vs-player hits run through the shared PvP pipeline (server/world/pvp.mjs, rules src/game/pvp-rules.js).
 import {GUILD_TOURNAMENT_ENGINE_CHOSEN as C} from '../../src/config/engine-chosen-guild-tournament.js';
-import {tournamentData,seedCount,buildBracket,playOrder,advance,walkover,roundOutcome,matchOutcome,scoreLabel,betPayout,betRatios} from '../../src/systems/events/guild-tournament-rules.js';
+const phaseTimersReady=()=>[C.readySec,C.countSec,C.roundSec,C.finishRoundSec,C.breakSec,C.finishMatchSec,C.registrationSec].every(v=>Number.isFinite(v)&&v>=0);
+const noPhaseSchedule=()=>{throw Object.assign(Error('Guild Tournament match-phase seconds are missing from src/config/engine-chosen-guild-tournament.js (ONLINE no=589 values).'),{status:503});};
+import {tournamentData,seedCount,buildBracket,playOrder,advance,walkover,roundOutcome,matchOutcome,matchPoints,scoreLabel,betPayout,betRatios} from '../../src/systems/events/guild-tournament-rules.js';
 import {registerPvpMode} from './pvp.mjs';
 import {registerObserverMode} from './observers.mjs';
 import {createInstance,exitInstance,requestInstanceClose} from './instances.mjs';
@@ -113,10 +115,10 @@ function startMatch(world,m){const d=dataOf(world),now=world.now();
 function finishMatch(world,run,winner,reason){
   const t=T(world),m=t.bracket.get(run.key),now=world.now(),wins=run.sides.map(s=>s.wins);
   const winId=winner==null?null:run.sides[winner].guildId;advance(t.bracket,m,winId);m.wins=wins;
-  const label=scoreLabel(wins),fought=reason==='decided';
+  const label=scoreLabel(wins),fought=reason==='decided',points=matchPoints(run.rounds.map(r=>r.winner));
   const ratios=betRatios([...(t.bets.get(run.key)||new Map()).values()]);
   for(const [ref,bet] of t.bets.get(run.key)||[]){const got=fought?betPayout(bet,label,ratios):bet.amount;if(got>0){const pool=t.pool.get(ref)||{P:0,B:0};pool[bet.coin]+=got;t.pool.set(ref,pool);}bet.settled=label;}
-  run.result={winner,reason,wins,label,names:run.sides.map(s=>s.name),rounds:run.rounds.map(r=>({...r})),firstKills:run.sides.map(s=>s.firstKills)};
+  run.result={winner,reason,wins,points,label,names:run.sides.map(s=>s.name),rounds:run.rounds.map(r=>({...r})),firstKills:run.sides.map(s=>s.firstKills)};
   t.results.push({key:run.key,match:run.match,order:run.order,...run.result});
   run.phase='matchEnd';run.phaseEnd=now+C.finishMatchSec*1000;
 }
@@ -146,8 +148,8 @@ export async function tickGuildTournament(world){
   if(run.phase==='entry'&&now>=run.phaseEnd){
     const counts=run.sides.map(s=>s.ids.size);
     if(counts.every(c=>c<C.minimumEntrants)){finishMatch(world,run,null,'disqualified');return;}
-    if(counts.some(c=>c<C.minimumEntrants)){const w=counts[0]>=C.minimumEntrants?0:1;run.sides[w].wins=C.roundsToWin;finishMatch(world,run,w,'forfeit');return;}
-    run.phase='ready';run.phaseEnd=now+C.readySec*1000;placeSide(world,run,0);placeSide(world,run,1);return;}
+    if(counts.some(c=>c<C.minimumEntrants)){const w=counts[0]>=C.minimumEntrants?0:1;run.sides[w].wins=C.roundsToWin;for(let i=0;i<C.roundsToWin;i++)run.rounds.push({winner:w,kills:[0,0],firstKill:null,reason:'forfeit'});finishMatch(world,run,w,'forfeit');return;}
+    if(!phaseTimersReady())noPhaseSchedule();run.phase='ready';run.phaseEnd=now+C.readySec*1000;placeSide(world,run,0);placeSide(world,run,1);return;}
   if(run.phase==='ready'&&now>=run.phaseEnd){run.phase='count';run.phaseEnd=now+C.countSec*1000;return;}
   if(run.phase==='count'&&now>=run.phaseEnd){run.phase='battle';run.phaseEnd=now+C.roundSec*1000;run.down=new Set();run.roundKills=[0,0];run.firstKill=null;return;}
   if(run.phase==='battle'){
@@ -155,8 +157,10 @@ export async function tickGuildTournament(world){
     const alive=run.sides.map(s=>[...s.ids].filter(id=>!run.down.has(id)).length);
     if(alive.some(a=>a===0))endRound(world,run,'annihilation');else if(now>=run.phaseEnd)endRound(world,run,'time');return;}
   if(run.phase==='roundEnd'&&now>=run.phaseEnd){
-    const w=matchOutcome({wins:run.sides.map(s=>s.wins),rounds:run.round,kills:run.sides.map(s=>s.kills),firstKills:run.sides.map(s=>s.firstKills)});
+    const w=matchOutcome({points:matchPoints(run.rounds.map(r=>r.winner))});
     if(w!=null){finishMatch(world,run,w,'decided');return;}
+    // ONLINE no=589 rule 16 (3:3 = rematch): a round past maxRounds keeps the arena open for one more break + round.
+    if(run.round>=C.maxRounds&&run.instance)run.instance.expiresAt=Math.max(run.instance.expiresAt||0,now+(C.breakSec+C.countSec+C.roundSec+C.finishRoundSec+C.finishMatchSec+300)*1000);
     run.phase='break';run.phaseEnd=now+C.breakSec*1000;placeSide(world,run,0);placeSide(world,run,1);return;}
   if(run.phase==='break'&&now>=run.phaseEnd){run.phase='count';run.phaseEnd=now+C.countSec*1000;return;}
   if(run.phase==='matchEnd'&&now>=run.phaseEnd)await closeRun(world,run);
@@ -176,7 +180,7 @@ async function enter(world,p,input,observer){
     run.sides[s].ids.add(p.id);
   }
   const exit={map:p.map,x:p.x,z:p.z};
-  if(!run.instance){run.instance=await createInstance(world,{map:d.arena.map,members:[p],kind:'guildTournament',exit,durationMs:(d.waitingSec+C.readySec+3*(C.countSec+C.roundSec+C.finishRoundSec+C.breakSec)+C.finishMatchSec+300)*1000});}
+  if(!run.instance){run.instance=await createInstance(world,{map:d.arena.map,members:[p],kind:'guildTournament',exit,durationMs:(d.waitingSec+C.readySec+C.maxRounds*(C.countSec+C.roundSec+C.finishRoundSec+C.breakSec)+C.finishMatchSec+300)*1000});}
   else{const instance=run.instance;world.emit(p.map,{type:'leave',actorId:p.id});p.instanceId=instance.id;p.map=instance.map;p.path=[];p.mount=null;p.pet=null;instance.admitted.add(p.characterId);instance.members.add(p.id);p.profile.instance={id:instance.id,kind:instance.kind,map:instance.map,exit:instance.exit};}
   const s=sideOf(run,p),[x,z]=observer?d.arena.observer:(s===0?d.arena.teamA:d.arena.teamB)[Math.max(0,run.sides[s].ids.size-1)%7];
   const at=run.instance.scene.nearest(Number(x)+.5,Number(z)+.5);if(at){p.x=at.x;p.z=at.z;}

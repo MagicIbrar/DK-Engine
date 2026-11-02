@@ -23,7 +23,6 @@ import {installSharedTrade} from './trade.js';
 import {installSharedMailGuild} from './mail-guild.js';
 import {installSharedConsignment} from './consignment.js';
 import {installSharedPvp} from './pvp.js';
-import {installSharedTrainingCamp} from './training-camp.js';
 import {installSharedDkSquare} from '../pvp/dksquare.js';
 import {installSharedRace} from './race.js';
 import {installSharedPersonalShop} from './pcshop.js';
@@ -153,7 +152,6 @@ export async function install(game) {
   installSharedMailGuild(game,network);
   installSharedConsignment(game,network);
   installSharedPvp(game,network);
-  installSharedTrainingCamp(game,network);
   try{installSharedDkSquare(game,network);}catch(error){console.warn('[network] DK Square unavailable',error);}
   installSharedRace(game,network);   // EVENT-MODES: Server Whole Competition windows + host-owned Mission titles
   installSharedPersonalShop(game,network);
@@ -178,5 +176,7 @@ export async function install(game) {
   if(network.disposed||game.network!==network)throw new Error('Network installation was cancelled. Retry loading.');
   network._installationComplete = true;
 }
-export function update(dt, game) { game.network?.update(dt);game.gameplayPreferences?.update();game.npcFriends?.update(); game.sharedEvents?.update(dt); game.sharedDungeons?.update(dt); game.sharedNavigation?.update(dt);game.observer?.update(dt); }
+// pcpop.syncButton: the target plate keeps btn_showpcpop in step with the selected player every frame (moved here
+// from the retired inspect system, lane 62).
+export function update(dt, game) { game.network?.update(dt);game.gameplayPreferences?.update();game.npcFriends?.update(); game.sharedEvents?.update(dt); game.sharedDungeons?.update(dt); game.sharedNavigation?.update(dt);game.observer?.update(dt); game.pcpop?.syncButton?.(); }
 export function dispose(game) { game.gameplayPreferences?.dispose(); game.observer?.dispose();game.sharedNavigation?.dispose();game.npcFriends?.dispose();game.originalMapEdits?.dispose();game.network?.dispose(); }

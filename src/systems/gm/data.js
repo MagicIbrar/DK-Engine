@@ -4,7 +4,7 @@
 //   { id, name, sub, search (lower-case haystack), raw (the record as an object), row (the source row) }
 // A list argument accepts an id or a name: find(listId, token) -> exact id, exact name, unique prefix, substring.
 import { fetchJSON } from '../../engine/assets.js';
-import { LEGACY_MAPS } from '../../world/legacy-maps.js';
+import { LEGACY_MAPS, allSynthesisedMaps } from '../../world/legacy-maps.js';
 import { landingOverride } from '../../world/map-landing.js';
 
 const REG = '/gamedata/gmcommands.json';
@@ -13,11 +13,12 @@ const FILE_URL = f => `/${String(f).replace(/^\/+/, '')}`;
 const num = v => { const x = Number(v); return Number.isFinite(x) ? x : 0; };
 const base = p => String(p || '').split('/').pop();
 
-/** The original 2005 fields (world/legacy-maps.js) are GM teleport destinations even though the shipped maplist dropped them. */
+/** Synthesised maps (world/legacy-maps.js LEGACY_MAPS + ABSENT_MAPLIST_MAPS) are GM teleport destinations even when maplist omitted them. */
 export function withLegacyMaps(rows) {
   if (!Array.isArray(rows) || !rows.length || Array.isArray(rows[0])) return rows;
-  const out = rows.map(r => LEGACY_MAPS[r.index] && !r.file ? { ...r, name: LEGACY_MAPS[r.index].Name, file: `map/${LEGACY_MAPS[r.index].file}.map`, serverOnly: undefined, legacy: true } : r);
-  for (const [k, L] of Object.entries(LEGACY_MAPS)) if (!out.some(r => r.index === Number(k))) out.push({ index: Number(k), name: L.Name, file: `map/${L.file}.map`, legacy: true });
+  const synth = allSynthesisedMaps();
+  const out = rows.map(r => synth[r.index] && !r.file ? { ...r, name: synth[r.index].Name, file: `map/${synth[r.index].file}.map`, serverOnly: undefined, legacy: true } : r);
+  for (const [k, L] of Object.entries(synth)) if (!out.some(r => r.index === Number(k))) out.push({ index: Number(k), name: L.Name, file: `map/${L.file}.map`, legacy: true });
   for (let i = 0; i < out.length; i++) { const o = landingOverride(out[i].index); if (o) out[i] = { ...out[i], landing: o.landing, landingFrom: o.landingFrom }; }
   return out.sort((a, b) => a.index - b.index);
 }

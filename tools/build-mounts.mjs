@@ -104,6 +104,8 @@ const small = it => {
 };
 
 // ------------------------------------------------------------------------------------------ vehicles
+// Scan fix A: vehicle.csv rows 1754771, 2310234-2310237, 2313520 are NOT built on purpose: in Global items those indices
+// are boxes (1754771/2310234/2313520, type 0) or wings (2310235-2310237, slot wing), not slot=vehicle items.
 const vehicleCsv = {};
 for (const r of csvObjects('share/vehicle/vehicle.csv', false)) {
   vehicleCsv[num(r.Index)] = {

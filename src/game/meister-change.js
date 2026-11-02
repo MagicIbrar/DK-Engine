@@ -1,9 +1,10 @@
 import { meisterRank, meisterRequirement } from '../systems/skills/rank.js';
+import { resolveAwakeningGrade } from '../systems/skills/trans-up-rules.js';
 
 // Global item type0/code63, item description623 and messagebox80:41:
 // switch the two class paths, refund normal skill points, retain Meister levels.
 // Return a plan so the caller can consume the owned item before publishing it.
-export function planMeisterChange(profile, classDef) {
+export function planMeisterChange(profile, classDef, gradesRows) {
   const from = profile?.meister?.path;
   if (!['A', 'B'].includes(from)) return { error: 'Choose a Meister path before using Meister Change.' };
   const to = from === 'A' ? 'B' : 'A', definitions = classDef?.skills;
@@ -36,7 +37,7 @@ export function planMeisterChange(profile, classDef) {
     const first = skill.levels?.[0];
     if (skill.hidden || skill.tree?.window !== 'meister' || skill.tree.path !== to || !skill.meister?.autoLearn || skills[skill.index] || !first) continue;
     if (meisterRank(profile) < meisterRequirement(skill) || Number(first.reqLevel) > Number(profile.level) ||
-      Number(first.grade || 0) > Number(profile.grade ?? profile.transGrade ?? 0) ||
+      Number(first.grade || 0) > resolveAwakeningGrade(profile, gradesRows) ||
       (first.prereqs || []).some(p => Number(skills[p.skill]?.level ?? skills[p.skill] ?? 0) < Number(p.level))) continue;
     skills[skill.index] = 1;
   }

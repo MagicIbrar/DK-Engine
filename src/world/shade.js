@@ -89,6 +89,63 @@ export function applyShadeTree(root) {
   });
 }
 
+// SMOOTH-CAM (2026-10-30): patch a lit world material in the draw that first uses it. three r170 calls material.onBeforeRender
+// (WebGLRenderer.renderObject) before renderBufferDirect picks the program, so the patched program is the FIRST one built: no
+// unpatched program linked and thrown away 0-0.5 s later (a second synchronous link in play), and no full walk of game.worldRoot
+// (tens of thousands of nodes with bones) to find new materials. Only objects under the registered root are patched, exactly the
+// set applyShadeTree(worldRoot) covered. Kill switch: globalThis.__dekaronNoShadeDrawHook = true before the world loads.
+let drawRoot = null, drawHooked = false;
+const notUnderRoot = new WeakMap();   // object -> the root it was found NOT to be under
+const isLit = m => !!(m && (m.isMeshLambertMaterial || m.isMeshPhongMaterial || m.isMeshStandardMaterial));
+export function shadeOnFirstDraw(root) {
+  drawRoot = root || null;
+  if (drawHooked || globalThis.__dekaronNoShadeDrawHook === true) return drawHooked;
+  drawHooked = true;
+  const prev = THREE.Material.prototype.onBeforeRender;
+  THREE.Material.prototype.onBeforeRender = function (r, sc, cam, geo, obj, grp) {
+    if (drawRoot && isLit(this) && !patched.has(this) && obj && notUnderRoot.get(obj) !== drawRoot) {
+      let p = obj; while (p && p !== drawRoot) p = p.parent;
+      if (p) applyShade(this); else notUnderRoot.set(obj, drawRoot);
+    }
+    return prev.call(this, r, sc, cam, geo, obj, grp);
+  };
+  return true;
+}
+
+/**
+ * PERF-SINGLEPASS (2026-10-30): three.js draws a transparent DoubleSide material in TWO passes (BackSide then FrontSide) and sets
+ * material.needsUpdate = true before each, so every such draw (Ardeca: grass, flags, fortress cut-outs, ~2,000 per second at
+ * 70 fps) bumps the material version and re-runs getParameters/getProgram (measured 10 % of the main thread in the camera sweep).
+ * Global (D3D9) draws these with CULL_NONE in ONE pass, so single pass is the original behaviour as well as the fast one.
+ * Kill switch: globalThis.__dekaronTwoPassTransparent = true before the world loads.
+ */
+let singlePassHooked = false;
+export function singlePassDoubleSided() {
+  if (singlePassHooked || globalThis.__dekaronTwoPassTransparent === true) return singlePassHooked;
+  singlePassHooked = true;
+  const prev = THREE.Material.prototype.onBeforeRender;
+  THREE.Material.prototype.onBeforeRender = function (r, sc, cam, geo, obj, grp) {
+    if (this.forceSinglePass === false && this.transparent === true && this.side === THREE.DoubleSide) this.forceSinglePass = true;
+    return prev.call(this, r, sc, cam, geo, obj, grp);
+  };
+  return true;
+}
+
+/** Time-sliced applyShadeTree: walks at most until budgetMs is spent, resuming next call. Returns true when a pass finished. */
+export function applyShadeTreeSliced(state, root, budgetMs = 0.25) {
+  const stack = state.stack || (state.stack = []);
+  if (!stack.length) { if (!root) return true; stack.push(root); }
+  const end = performance.now() + budgetMs;
+  let n = 0;
+  while (stack.length) {
+    const o = stack.pop();
+    if (o.material) { if (Array.isArray(o.material)) o.material.forEach(applyShade); else applyShade(o.material); }
+    const c = o.children; for (let i = c.length - 1; i >= 0; i--) stack.push(c[i]);
+    if ((++n & 127) === 0 && performance.now() > end) return false;
+  }
+  return true;
+}
+
 /** Set the shade centre (THREE space vector) and radius. */
 export function setShade(center, distance) {
   SHADE.value.set(center.x, center.y, center.z, Number.isFinite(distance) && distance > 0 ? distance : 1e9);

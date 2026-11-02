@@ -1,4 +1,4 @@
-// Shared-play channels (DK-CHANNELS / MULTI-CHANNEL).
+﻿// Shared-play channels (DK-CHANNELS / MULTI-CHANNEL).
 // Field channels = share/channellist.csv (group 15): every map runs one scene per Channel Index (scene.mjs sceneKey
 // map#channel), so players, monsters, drops, summons and events of one channel are invisible to another.
 // DK channels = share/dkmaplist.csv + NPC job 96 DK_CHANNEL_ENTER (jobIndex = DK map) / 97 DK_CHANNEL_LEAVE
@@ -6,7 +6,7 @@
 // models each DK server as its own scene key `dk<DK_Index>` (names 9000|DK_Index) on the same map geometry.
 // Readings: a reconnect never resumes a DK session (the client always logs
 // into its home server), so a saved dkReturn sends the player home on join; leaving the DK map by any field travel
-// leaves the DK channel. PvP on the PK channel / "PVP Channel" (DK 101) is not enabled: PvP damage is not derivable.
+// leaves the DK channel. DK "PVP Channel" (DK 101) shares the same host PvP pipeline (server/world/pvp.mjs + field-pk); scene isolation is via sceneKey map#dk101. Field IsPvP / peace-zone gates still apply per map row.
 import fs from 'node:fs';
 import path from 'node:path';
 import {nearbyNpc,offersOriginalJob} from './npc-services.mjs';

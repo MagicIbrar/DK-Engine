@@ -27,14 +27,20 @@
 // root-motion stride (anim root-motion end - start, the same value as share/movecache.csv) divided by the clip
 // length (action-table TimeLength) times the actor scale. While a walk/run loop plays, update() sets the clip's
 // playback rate to (the speed the actor is actually moving at) / (that ground speed), so the feet stay planted at
-// any speed (monster table speeds, speed buffs, map MoveSpeedFactor). The measured speed is the per-frame
-// displacement written by gameplay code (controller / AI) before update() runs, lightly smoothed.
+// any speed (player buffs, map MoveSpeedFactor). The measured speed is the per-frame
+// displacement written by gameplay code (controller) before update() runs, lightly smoothed.
+// GLOBAL REA (monsters): walk/run/stand play at the action-table TimeLength rate (speed 1 after loadClip
+// stretch) � Global does NOT retime monster clips to WalkSpeed/RunSpeed. Monster.kind skips this sync so
+// e.g. Crude Nightmare walk (stride ~0.6 / TL 1s vs WalkSpeed 1.3) stays Global-accurate instead of ~2x.
 import * as THREE from 'three';
 import { Animator } from '../engine/animator.js';
+import { crowdRegister, crowdTick } from '../engine/crowd-skinning.js';
 import { closeLoopSeam } from '../engine/loopseam.js';
 import { freezeMatrices } from '../engine/models.js';
 import { fileToThree } from '../engine/space.js';
 import { warmActorFade } from '../engine/shader-prewarm.js';
+import { spawnSlot } from '../engine/spawn-budget.js';
+const COMPILED_MODELS = new WeakSet();   // PERF-CROWD: compileAsync once per model (later bodies share its programs)
 import { sampleRootMotion } from '../formats/anim.js';
 import { TargetRing } from './targetring.js';
 import { TargetMarker } from './targetmarker.js';
@@ -83,6 +89,8 @@ const CULL_MARGIN = 4;          // units added to the bounding sphere (cast shad
 const MAX_CATCHUP = 5;          // s of skipped animation applied at most when an actor reappears
 export const LOD_NEAR = 16;     // animation LOD (see update): every frame within this camera distance,
 export const LOD_FAR = 32;      // every 2nd frame up to this one, every 3rd beyond
+export const SHADOW_CAST_DIST = 22; // FPS-10X: drop castShadow beyond this camera range (m)
+export const HEAVY_ACTOR_PRESSURE = 28; // FPS-10X: when this many bodies share the view, raise every-N sooner
 // HIGH-FRAME-RATE FLOOR of the animation LOD (opt-4, ENGINE-CHOSEN - no game file says how often a far body must be re-posed). The
 // frame-count LOD above keeps its 16 / 32 m bands and its 1 / 2 / 3 steps, so nothing changes at 60 fps. On top of it a LOOPING clip
 // of a body farther than LOD_RATE_NEAR from the camera is re-posed at least LOD_RATE_MID_HZ times a second (LOD_RATE_FAR_HZ beyond
@@ -95,6 +103,12 @@ export const LOD_RATE_NEAR = 6;         // m: closer than this the body is posed
 export const LOD_RATE_MID_HZ = 120;     // Hz floor for bodies LOD_RATE_NEAR .. LOD_RATE_FAR_AT away
 export const LOD_RATE_FAR_AT = 12;      // m
 export const LOD_RATE_FAR_HZ = 80;      // Hz floor beyond LOD_RATE_FAR_AT
+// SMOOTH-ANIM minimum pose rates of the distance bands (see _lodEvery); ENGINE-CHOSEN.
+export const LOD_POSE_MID_HZ = 60;      // LOD_NEAR .. LOD_FAR
+export const LOD_POSE_FAR_HZ = 45;      // beyond LOD_FAR
+export const LOD_POSE_CROWD_HZ = 40;    // 2x HEAVY_ACTOR_PRESSURE bodies in view
+export const LOD_POSE_CROWD_MIN_HZ = 30; // 3x HEAVY_ACTOR_PRESSURE
+export const LOD_POSE_ONESHOT_HZ = 60;  // one-shot clips (attack / hit / cast) of any body
 const _view = { t: -1, frame: -1, frustum: new THREE.Frustum(), m: new THREE.Matrix4(), cx: 0, cz: 0, dist: 75, ok: false, dtAvg: 0 };
 const _sphere = new THREE.Sphere();
 
@@ -116,6 +130,15 @@ function viewInfo(game) {
   _view.cx = cam.position.x; _view.cz = -cam.position.z;          // THREE -> FILE
   const d = Number(game.world?.cullDistance);
   _view.dist = d > 0 ? d : 75;
+  // Count each ready, visible shared monster once per view frame, rather than
+  // ignoring the network collection or counting pending/culled bodies.
+  const net=game.network;
+  if(net?.active){
+    let count=0;
+    for(const actor of net.monsters?.values?.() || [])
+      if(actor?.loaded&&!actor.disposed&&!actor.culled&&actor.group?.visible!==false)count++;
+    _view.monsterPressure=count;
+  }else _view.monsterPressure=game.monsters?.length || 0;
   _view.ok = true;
   return _view;
 }
@@ -166,12 +189,32 @@ export function clipEntry(models, model, key, duration) {
     e = { done: false, clip: null, promise: null };
     const entry = e;
     let p;
-    try { p = models && models.loadClip ? models.loadClip(key, model, { duration: dur }) : null; } catch { p = null; }
-    entry.promise = Promise.resolve(p).catch(() => null).then(c => { entry.clip = c || null; entry.done = true; return entry.clip; });
+    try {
+      const load = models?.loadClipWithStatus || models?.loadClip;
+      p = load ? load.call(models, key, model, { duration: dur }) : null;
+    } catch (error) { p = Promise.reject(error); }
+    entry.promise = Promise.resolve(p).catch(error => {
+      entry.error = error;
+      if (error?.transient && m.get(ck) === entry) m.delete(ck);
+      return null;
+    }).then(c => { entry.clip = c || null; entry.done = true; return entry.clip; });
     m.set(ck, e);
   }
   return e;
 }
+
+// SKILL-CLIP-COLD 2026-10-30: a resolved clip of the same anim at another length. The caller's timeLength restretches it
+// (_applyClip speed = clip.duration / timeLength), so a cast whose length changed (Acceleration / casting-speed options)
+// never waits on a reparse of an anim this body already holds.
+function readyClipOf(model, key) {
+  const m = clipCaches.get(model);
+  if (!m) return null;
+  const prefix = `${key}|`;
+  for (const [ck, e] of m) if (e.done && e.clip && ck.startsWith(prefix)) return e.clip;
+  return null;
+}
+const animNow = () => (globalThis.performance?.now?.() ?? Date.now());
+const LATE_CLIP_MIN = 0.02;   // s: a clip resolved later than this joins its timeline mid-way (_applyClip)
 
 /**
  * Clip spec for an action-set state (monsters.json / npcs.json actionSets): used by Monster and NPC.
@@ -315,13 +358,50 @@ export class Actor {
     if (!v.ok) return 1;
     const d = Math.hypot(this.x - v.cx, this.z - v.cz);
     const near = gfx.lodNear ?? LOD_NEAR, far = gfx.lodFar ?? LOD_FAR;
-    const every = d > far ? 3 : d > near ? 2 : 1;
+    // SMOOTH-ANIM (2026-10-30): the bands are minimum POSE RATES, not frame counts. "every 2nd / 3rd frame" (5th under crowd
+    // pressure) meant 12-30 Hz poses at 60 fps: mobs and NPCs visibly stepped through their walk cycles. A body is now
+    // re-posed at least LOD_POSE_*_HZ times a second whatever the frame rate (every frame at 60 fps), and only frame rates
+    // above that floor skip frames. ENGINE-CHOSEN rates; game.gfx.lodLegacy = true restores the frame-count bands (A/B).
+    const pressure = _view.monsterPressure + (this.game?.npcs?.length || 0) + (this.game?.network?.players?.size || 0);
+    let every = d > far ? 3 : d > near ? 2 : 1;
+    if (gfx.lodLegacy === true) {
+      if (pressure >= HEAVY_ACTOR_PRESSURE) {
+        if (d > near * 0.55) every = Math.max(every, 2);
+        if (d > far * 0.65) every = Math.max(every, 3);
+        if (pressure >= HEAVY_ACTOR_PRESSURE * 2 && d > near * 0.5) every = Math.max(every, 4);
+        if (pressure >= HEAVY_ACTOR_PRESSURE * 3 && d > near) every = Math.max(every, 5);
+      }
+    } else {
+      let hz = d > far ? LOD_POSE_FAR_HZ : d > near ? LOD_POSE_MID_HZ : Infinity;
+      if (pressure >= HEAVY_ACTOR_PRESSURE) {
+        if (d > near * 0.55) hz = Math.min(hz, LOD_POSE_MID_HZ);
+        if (d > far * 0.65) hz = Math.min(hz, LOD_POSE_FAR_HZ);
+        if (pressure >= HEAVY_ACTOR_PRESSURE * 2 && d > near * 0.5) hz = Math.min(hz, LOD_POSE_CROWD_HZ);
+        if (pressure >= HEAVY_ACTOR_PRESSURE * 3 && d > near) hz = Math.min(hz, LOD_POSE_CROWD_MIN_HZ);
+      }
+      if (!this._clipLoop) hz = Math.max(hz, LOD_POSE_ONESHOT_HZ);   // attacks, hits, casts: never below 60 Hz
+      every = hz === Infinity || !(v.dtAvg > 0) ? 1 : Math.max(1, Math.floor(1 / (v.dtAvg * hz) + 0.25));
+    }
     // high-frame-rate floor (see LOD_RATE_*): looping clips only, never while the frame rate is unknown or below ~120 fps
     if (d > LOD_RATE_NEAR && v.dtAvg > 0 && this._clipLoop && gfx.lodRate !== false) {
       const e = Math.floor(1 / (v.dtAvg * (d > LOD_RATE_FAR_AT ? LOD_RATE_FAR_HZ : LOD_RATE_MID_HZ)) + 0.25);
       if (e > every) return e;
     }
     return every;
+  }
+
+  
+  /** FPS: disable castShadow when far from camera (Global fog/draw unchanged). */
+  _updateShadowCast() {
+    if (!this.loaded || this.culled) return;
+    const v = viewInfo(this.game);
+    if (!v.ok) return;
+    const d = Math.hypot(this.x - v.cx, this.z - v.cz);
+    const on = d <= (this.game?.gfx?.shadowCastDist ?? SHADOW_CAST_DIST);
+    if (this._shadowCastOn === on) return;
+    this._shadowCastOn = on;
+    const apply = (root) => root?.traverse?.(o => { if (o.isMesh) o.castShadow = on; });
+    apply(this.instance?.root); apply(this.object);
   }
 
   /** Hide + freeze (or show + resume) the body. */
@@ -472,6 +552,7 @@ export class Actor {
     if (!this._loadPromise) {
       this._loadPromise = (async () => {
         try { await this._load(); } catch (err) { console.warn(`[actors] ${this.kind} ${this.name} failed to load`, err); }
+        if (this.kind === 'monster' && !this.disposed) { const s = spawnSlot(this.game); if (s) await s; }   // PERF-CROWD: spread spawns over frames
         this.loaded = true;
         if (!this.disposed) this._afterLoad();
       })();
@@ -512,6 +593,12 @@ export class Actor {
     await Promise.all(jobs);
   }
 
+  /** Start loading (never waits) a body clip at the length it will play: skills warm every phase clip at cast start (engine.js). */
+  warmClip(key, duration) {
+    if (!key || !this.model || !this.animator) return null;
+    return clipEntry(this.game?.models, this.model, normKey(key), Number(duration) > 0 ? Number(duration) : null).promise;
+  }
+
   _afterLoad() {
     this._snapY(true);
     this._syncGroup();
@@ -519,12 +606,15 @@ export class Actor {
     // that first draws it (a remote player / monster appearing mid-play linked its programs synchronously: in-frame stalls,
     // measured). The draw still links anything not ready, exactly as before.
     const g = this.game, r = g?.renderer;
-    if (typeof r?.compileAsync === 'function' && g.scene && g.camera) r.compileAsync(this.group, g.camera, g.scene).catch(() => {});
+    const firstOfModel = !this.model || globalThis.__dekaronNoCompileOnce || globalThis.__dkT_noCompileOnce || !COMPILED_MODELS.has(this.model);
+    if (this.model && this.kind === 'monster') COMPILED_MODELS.add(this.model);
+    if (firstOfModel && typeof r?.compileAsync === 'function' && g.scene && g.camera) r.compileAsync(this.group, g.camera, g.scene).catch(() => {});
     if (this.fadeOnDeath) warmActorFade(g, this);   // the corpse-fade variants of this body too (engine/shader-prewarm.js; kill switch globalThis.__dekaronNoPrewarm)
     const p = this._pendingPlay;
     this._pendingPlay = null;
     if (p) this.play(p[0], p[1]);
     else if (!this.clip) this.play(this.dead ? 'die' : 'idle', { startAt: Math.random() * 3 }); // desynchronised idles
+    if (this.kind === 'monster') crowdRegister(this);   // overnight 43.19 phase 3: GPU crowd skinning (engine/crowd-skinning.js)
   }
 
   // ---------------------------------------------------------------------------------------- animation
@@ -572,6 +662,7 @@ export class Actor {
     this._restT = 0;
     this._fakeEnd = null;
     const seq = ++this._playSeq;
+    this._playAt = animNow();
     if (!this.animator) {
       if (!this.loaded) this._pendingPlay = [state, opts];
       else if (typeof opts.onEnd === 'function' && opts.loop === false) this._fakeEnd = { t: Number(opts.timeLength) > 0 ? Number(opts.timeLength) : 0.3, cb: opts.onEnd };
@@ -583,15 +674,41 @@ export class Actor {
   }
 
   _tryCandidates(cands, i, opts, seq) {
+    if (typeof opts._skillPhaseCurrent === 'function' && !opts._skillPhaseCurrent()) {
+      if (seq === this._playSeq) this._clipPending = false;
+      return;
+    }
     if(i===0)this._clipRequested=cands.length>0;
     for (; i < cands.length; i++) {
       const spec = cands[i];
       const e = clipEntry(this.game?.models, this.model, spec.key, spec.duration);
       if (!e.done) {
+        // SKILL-CLIP-COLD: the same anim already resolved at another length plays now, restretched to this request
+        const ready = spec.explicit && Number(opts.timeLength) > 0 ? readyClipOf(this.model, spec.key) : null;
+        if (ready) { this._applyClip(ready, spec, opts); return; }
         const at = i;
+        const requestedModel = this.model;
+        // Body-owning clips (skill/cast/attack/hit/die), including looping cast/charge
+        // phases (engine.js _playClip(..., true)), must not leave prior locomotion at
+        // weight 1 while the authored clip cold-loads. Native TDoll CAnimationCmd
+        // (ClipCommands size 0x20 @ 0x1168690) takes ownership state 0x18 immediately;
+        // MoveAnimationCmd (size 0x21 @ 0x11682b0) alone clears it. Web async load has
+        // no native twin — freeze the current pose (same as die _noClip) until apply.
+        // Do NOT gate on opts.loop: cast/charge passes loop:true via playOnce spread.
+        // Evidence: CLIENT-OPEN-ISSUES; CAST-IDENTITY; decompile 32-bit ClipCommands RTTI.
+        if (!LOCOMOTION_STATES.has(this.state) && this.animator) {
+          try { this.animator.stop(); } catch { /* ignore */ }
+          this._locoGround = 0;
+        }
         this._clipFlight = e.promise;
         e.promise.then(() => {
-          if (seq === this._playSeq && !this.disposed) this._tryCandidates(cands, at, opts, seq);
+          if (seq !== this._playSeq || this.disposed) return;
+          if (typeof opts._skillPhaseCurrent === 'function' && this.model !== requestedModel) { this._clipPending = false; return; }
+          // SKILL-CLIP-COLD: a body clip that arrives late (cold load) joins its timeline where it would be by now, so it
+          // still ends with its skill phase / swing instead of starting late and being cut, or dropped, at the phase end
+          const late = (animNow() - (this._playAt || 0)) / 1000;
+          const next = late > LATE_CLIP_MIN && !LOOP_STATES.has(this.state) ? { ...opts, _lateBy: late } : opts;
+          this._tryCandidates(cands, e.error?.transient ? at + 1 : at, next, seq);
         });
         return;
       }
@@ -612,8 +729,10 @@ export class Actor {
     }
     const fade = primary && opts.fade != null ? Math.max(0, Number(opts.fade) || 0) : (spec.fade ?? DEFAULT_FADE);
     // locomotion sync: a walk/run loop plays at (ground speed) / (its root-motion speed) - see LOCOMOTION SYNC
+    // Monsters: Global REA keeps authored TimeLength rate (no WalkSpeed/RunSpeed retime).
     const sc = Number(this.scale) > 0 ? Number(this.scale) : 1;
-    this._locoGround = loop && LOCOMOTION_STATES.has(spec.state) ? clipGroundSpeed(clip) * sc : 0;
+    const locoOk = this.kind !== 'monster';
+    this._locoGround = loop && locoOk && LOCOMOTION_STATES.has(spec.state) ? clipGroundSpeed(clip) * sc : 0;
     if (this._locoGround > 0) {
       // (2u) no measured speed yet (first steps after spawn): start at the known stride speed (Player.groundSpeed)
       const nominal = Number(opts.moveSpeed) > 0 ? Number(opts.moveSpeed) : (Number(this._nominalSpeed?.(spec.state)) || 0);
@@ -629,9 +748,12 @@ export class Actor {
     if (loop && LOCOMOTION_STATES.has(spec.state)) clip = closeLoopSeam(clip);
     // startPhase (0..1 of the clip): the stance swap of a running body continues the stride instead of restarting it
     const startAt = Number(opts.startAt) > 0 ? Number(opts.startAt) : Number(opts.startPhase) > 0 ? Number(opts.startPhase) * clip.duration : 0;
+    // SKILL-CLIP-COLD: time already elapsed since the request (clip seconds); a one-shot stays short of its end so it still finishes (onEnd)
+    const lateAt = !(startAt > 0) && Number(opts._lateBy) > 0
+      ? (loop ? (opts._lateBy * speed) % Math.max(clip.duration, 1e-3) : Math.min(opts._lateBy * speed, clip.duration * 0.999)) : 0;
     this.animator.play(clip, {
       loop, fade, speed, clampWhenFinished: true, restart: !!opts.restart,
-      startAt: startAt > 0 ? (startAt % Math.max(clip.duration, 1e-3)) : 0,
+      startAt: startAt > 0 ? (startAt % Math.max(clip.duration, 1e-3)) : lateAt,
     });
     if (!loop) {
       const cb = primary && typeof opts.onEnd === 'function' ? opts.onEnd : null;
@@ -719,8 +841,10 @@ export class Actor {
     // ground (setPosition already snapped a moving actor; a standing one re-checks twice a second, e.g. for a
     // bridge / deck surface that finished loading under it)
     this._snapT = (this._snapT ?? 0) - dt;
+    const _dg = globalThis.__dkT_spDiag ? performance.now() : 0;   // PERF-CROWD diagnostics (DK_T=spDiag)
     if (!this._grounded || this._snapT <= 0) { this._snapT = 0.5; this._snapY(!this._grounded); }
     this._syncGroup();
+    const _dg1 = _dg ? performance.now() : 0;
 
     // view culling: hidden + frozen outside the draw distance / frustum (VIEW CULLING)
     let animDt = dt;
@@ -757,6 +881,7 @@ export class Actor {
       }
       this._lodYaw = this._yaw;
     } else if (this.instance?.frozen) this.instance.freeze(false);
+    if (!this.culled) this._updateShadowCast();
 
     // animation
     if (this.animator && animDt >= 0) {
@@ -768,7 +893,11 @@ export class Actor {
         const rate = Math.max(LOCO_RATE_MIN, Math.min(LOCO_RATE_MAX, v / this._locoGround));
         if (Math.abs(rate - this._locoRate) > 0.005) { this.animator.setSpeed(rate); this._locoRate = rate; }
       }
+      const _dg2 = _dg ? performance.now() : 0;
+      crowdTick(this);              // GPU crowd path on / off for this frame (before the mixer advances)
+      const _dg3 = _dg ? performance.now() : 0;
       this.animator.update(animDt);
+      if (_dg) { const D = (globalThis.__dkActDiag ||= {}), t = performance.now(), mx = (k, v) => { if (v > (D[k]?.[0] || 0)) D[k] = [+v.toFixed(2), this.name, this.clip?.name, animDt, this.culled]; }; mx('snap', _dg1 - _dg); mx('preAnim', _dg2 - _dg1); mx('crowdTick', _dg3 - _dg2); mx('mixer', t - _dg3); }
       if (!this._clipPending && this.clip && !this._clipLoop && this.animator.finished && this.state !== 'die' && !this.dead) {
         this._restT += animDt;     // animDt carries the frames the animation LOD skipped: REST_DELAY stays real time
         if (this._restT >= REST_DELAY) {

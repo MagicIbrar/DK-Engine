@@ -42,6 +42,25 @@ function hurtFraction(m) {
   return hp / max;
 }
 
+// perf3: three creates each skeleton's float bone texture lazily inside the first draw of the body (WebGLRenderer.setProgram),
+// so a crowd that becomes visible in one frame allocated and uploaded dozens of RGBA32F textures in that frame. Create them
+// here, exactly as three would (Skeleton.computeBoneTexture, same size and contents), and push them through the budgeted
+// upload queue before the monster is adopted. The first draw then finds boneTexture set and initialised: same pixels.
+async function prepareBoneTextures(g, m) {
+  const up = g?.textures?.uploads;
+  if (globalThis.__dekaronNoBonePrep === true) return;   // kill switch (A/B): three creates them in the first draw again
+  if (!up || typeof up.upload !== 'function') return;
+  const roots = [m?.group, m?.object].filter(Boolean), seen = new Set(), jobs = [];
+  for (const root of roots) root.traverse?.(o => {
+    const sk = o.isSkinnedMesh ? o.skeleton : null;
+    if (!sk || seen.has(sk)) return;
+    seen.add(sk);
+    if (sk.boneTexture === null && typeof sk.computeBoneTexture === 'function') sk.computeBoneTexture();
+    if (sk.boneTexture && !sk.boneTexture._dkUploaded) { sk.boneTexture._dkUploaded = true; jobs.push(up.upload(sk.boneTexture).catch(() => null)); }
+  });
+  if (jobs.length) await Promise.all(jobs);
+}
+
 export class Spawner {
   /** opts.MonsterClass / opts.BrainClass let tests (or other modes) inject their own classes. */
   constructor(game, opts = {}) {
@@ -95,7 +114,49 @@ export class Spawner {
     }
   }
 
+  /**
+   * (overnight 43.19, 2026-10-29) One hidden instance of every monster KIND of this map's MON rows that is not live yet, loaded under the
+   * loading screen and kept until the load's warm draws (game.js _warmUp: _drawFrame, warmWholeScene, a real render) have drawn it once,
+   * then released (releaseKindWarm). MEASURED (tools/_overnight-43.19/bench-mobs.mjs, RTX 3070 / ANGLE D3D11, Ardeca, 200 real monsters
+   * of the map's 15 kinds spawned at once): the first draw of each new kind stalled the GPU process (ANGLE draw variants, texture / buffer
+   * creation - see engine/warm-draw.js), main thread idle: 96-150 ms frames; with every kind already drawn once the same spawn peaked at
+   * 33 ms. Model cache, textures and shader programs (keepShaderPrograms) stay; only these instances are disposed.
+   * Works for the server-authority mode too (kinds come from world.spawns). Kill switch: globalThis.__dekaronNoKindWarm = true.
+   */
+  async prewarmKinds(spawns, maxMs = 4000) {
+    this.releaseKindWarm();
+    if (globalThis.__dekaronNoKindWarm === true) return 0;
+    const g = this.game, p = g?.player;
+    if (!p || typeof g?.data?.monster !== 'function') return 0;
+    const live = new Set(this._list.map(m => Number(m.spawnRecord?.spawn?.monsterIndex)));
+    const kinds = [...new Set((spawns || []).map(s => Number(s.monsterIndex)))].filter(k => Number.isFinite(k) && !live.has(k));
+    if (!kinds.length) return 0;
+    const gen = this._gen, t0 = performance.now(), warm = this._kindWarm = [];
+    const Cls = await this._monsterClass();
+    let next = 0;
+    const lane = async () => {
+      while (next < kinds.length && performance.now() - t0 < maxMs && gen === this._gen && this._kindWarm === warm) {
+        const k = kinds[next++], def = g.data.monster(k);
+        if (!def || def.role === 'invisible') continue;
+        let m = null;
+        try { m = new Cls(g, def, { monsterIndex: k, x: p.x, z: p.z, respawnSec: 0 }); warm.push(m); await m.load?.(); }
+        catch (err) { if (m) this._disposeMonster(m); }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.max(1, this.maxLoads) }, lane));
+    this.kindWarmStats = { kinds: kinds.length, loaded: warm.length, ms: Math.round(performance.now() - t0) };
+    return warm.length;
+  }
+
+  /** Dispose the hidden kind-warm instances (after the load's warm draws; at the latest on the first play-time update). */
+  releaseKindWarm() {
+    const warm = this._kindWarm;
+    this._kindWarm = null;
+    if (warm) for (const m of warm) this._disposeMonster(m);
+  }
+
   clear() {
+    this.releaseKindWarm();
     this._gen++;
     for (const m of this._list) this._disposeMonster(m);
     this._list = [];
@@ -106,13 +167,17 @@ export class Spawner {
 
   update(dt) {
     const g = this.game;
+    if (this._kindWarm && !g?._loadingMap) this.releaseKindWarm();   // safety: never let a kind-warm body reach a play frame
     const now = g?.time || 0;
     // 1) think + animate every live monster, collect faded corpses
     let removed = false;
     for (const m of this._list) {
+      const dg = globalThis.__dkT_spDiag ? performance.now() : 0;   // PERF-CROWD diagnostics (DK_T=spDiag)
       try {
         if (!m.dead && m.brain) m.brain.update(dt);
+        const dm = dg ? performance.now() : 0;
         m.update?.(dt);
+        if (dg) { const t = performance.now(), D = (globalThis.__dkSpDiag ||= { worstBrain: [0], worstUpdate: [0] }); if (dm - dg > D.worstBrain[0]) D.worstBrain = [+(dm - dg).toFixed(2), m.name, m.brain?.state, g?.time]; if (t - dm > D.worstUpdate[0]) D.worstUpdate = [+(t - dm).toFixed(2), m.name, m.clip?.name ?? m.state ?? null, g?.time]; }
       } catch (err) { console.warn('monster update failed', m?.name, err); }
       const rec = m.spawnRecord;
       if (m.dead) {
@@ -231,6 +296,8 @@ export class Spawner {
       if (gen !== this._gen) return;
       m = new Cls(g, def, rec.spawn);
       await m.load?.();
+      if (gen !== this._gen || !this.records.includes(rec)) { this._disposeMonster(m); m = null; return; }
+      await prepareBoneTextures(g, m);
       if (gen !== this._gen || !this.records.includes(rec)) { this._disposeMonster(m); m = null; return; }
       this._adopt(m, def, rec);
     } catch (err) {

@@ -76,11 +76,17 @@ export class SkillEffectResources {
       Promise.resolve().then(job.work).then(job.resolve,error=>{this._cancelOwner(job.owner,error);job.reject(error);}).finally(()=>{this.running--;this._drain();});
     }
   }
+  // A requested cast must not sit behind optional hotbar warmup work.
+  _prioritize(key){
+    const owner=this.plans.get(key)?.owner;if(!owner)return;
+    const first=[],rest=[];for(const job of this.queue)(job.owner===owner?first:rest).push(job);
+    this.queue=[...first,...rest];this._drain();
+  }
   prepare(plan){
     if(this.disposed)return Promise.reject(aborted());if(!plan)return Promise.resolve(null);
     const old=this.plans.get(plan.key);if(old){this.plans.delete(plan.key);this.plans.set(plan.key,old);return old.promise;}
     if([...this.plans.values()].filter(row=>!row.ready).length>=WORKERS)return Promise.reject(new Error('Skill preparation is busy. Retry the skill.'));
-    const record={ready:false,promise:null},owner={cancelled:false};this.plans.set(plan.key,record);
+    const owner={cancelled:false},record={ready:false,promise:null,owner};this.plans.set(plan.key,record);
     while(this.plans.size>MAX_PLANS){const entry=[...this.plans].find(([,value])=>value.ready);if(!entry)break;this.plans.delete(entry[0]);}
     const report={key:plan.key,scenes:plan.refs.size,units:plan.units.size,paths:plan.paths.size,unavailable:[...plan.missing]};
     const jobs=[...plan.units].map(([key,unit])=>this._run(()=>warmUnit(this.game,unit),owner).then(result=>{if(result.missing)report.unavailable.push({kind:'resource',key});}));
@@ -106,12 +112,18 @@ export class SkillEffectResources {
     if(opts.fromProc)return false;
     opts={...opts};
     const plan=skillResourcePlan(this.engine,id,opts);if(!plan||this.plans.get(plan.key)?.ready){this.cancel();return false;}
-    const g=this.game,p=g.player,ctl=g.controller,network=g.network,target=opts.target||p?.target||ctl?.target,point=opts.point?{...opts.point}:undefined;
+    const g=this.game,p=g.player,ctl=g.controller,network=g.network;
+    // Self-only skills do not depend on the selected monster. It may die or
+    // change while graphics load without invalidating a cast centered on us.
+    const mask=Number(this.engine.skillDef(id)?.targetMask)||0;
+    const selfOnly=(mask&16)!==0&&(mask&(2|4|8|32|64))===0;
+    const target=selfOnly?null:(opts.target||p?.target||ctl?.target),point=opts.point?{...opts.point}:undefined;
     if(this.pending?.key===plan.key&&this.pending.target===target&&JSON.stringify(this.pending.point)===JSON.stringify(point))return true;
     const snapshot={player:p,world:g.world,map:g._mapLoadGeneration,intent:ctl?._inputIntentRevision,controller:ctl,token:network?.token,lease:network?._leaseGeneration,effects:this.engine._effectGeneration,style:plan.style,level:plan.level,classIndex:g.classDef?.index};
     const request={key:plan.key,target,point,revision:++this.revision};this.pending=request;
-    const valid=()=>!this.disposed&&this.pending===request&&this.revision===request.revision&&g.player===snapshot.player&&!p?.dead&&!p?.disposed&&g.world===snapshot.world&&g._mapLoadGeneration===snapshot.map&&g.classDef?.index===snapshot.classIndex&&g.controller===snapshot.controller&&ctl?._inputIntentRevision===snapshot.intent&&g.network===network&&network?.token===snapshot.token&&network?._leaseGeneration===snapshot.lease&&this.engine._effectGeneration===snapshot.effects&&this.engine.equippedStyle()===snapshot.style&&(Number(opts.level)||this.engine.skillLevel(id))===snapshot.level&&(!target||!target.disposed&&!target.dead)&&(opts.target||(p?.target||ctl?.target)===target)&&(!network||network.ready);
-    void this.prepare(plan).then(()=>{if(!valid())return;this.pending=null;resume({...opts,...(target?{target}:{}),...(point?{point}:{})});}).catch(error=>{if(this.pending===request){this.pending=null;if(error.name!=='AbortError')this.engine._msg?.('Skill graphics are still loading. Please retry.');}if(error.name!=='AbortError')console.warn('[skills] resource preparation',error);});
+    const valid=()=>!this.disposed&&this.pending===request&&this.revision===request.revision&&g.player===snapshot.player&&!p?.dead&&!p?.disposed&&g.world===snapshot.world&&g._mapLoadGeneration===snapshot.map&&g.classDef?.index===snapshot.classIndex&&g.controller===snapshot.controller&&ctl?._inputIntentRevision===snapshot.intent&&g.network===network&&network?.token===snapshot.token&&network?._leaseGeneration===snapshot.lease&&this.engine._effectGeneration===snapshot.effects&&this.engine.equippedStyle()===snapshot.style&&(Number(opts.level)||this.engine.skillLevel(id))===snapshot.level&&(selfOnly||(!target||!target.disposed&&!target.dead)&&(opts.target||(p?.target||ctl?.target)===target))&&(!network||network.ready);
+    const preparing=this.prepare(plan);this._prioritize(plan.key);
+    void preparing.then(()=>{if(!valid())return;this.pending=null;resume({...opts,...(target?{target}:{}),...(point?{point}:{})});}).catch(error=>{if(this.pending===request){this.pending=null;if(error.name!=='AbortError')this.engine._msg?.('Skill graphics are still loading. Please retry.');}if(error.name!=='AbortError')console.warn('[skills] resource preparation',error);});
     return true;
   }
   dispose(){this.disposed=true;this.cancel();for(const job of this.queue.splice(0))job.reject(aborted());this.plans.clear();}

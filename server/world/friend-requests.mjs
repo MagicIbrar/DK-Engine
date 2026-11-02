@@ -10,9 +10,12 @@ import { gameplayPreferences } from '../../src/game/gameplay-preferences.js';
 
 export const FRIEND_REQUEST_SCHEMAS = { friendrequest: ['token', 'type', 'operation', 'targetName', 'id'] };
 export const REQUEST_TTL_MS = 60000;
-/** Global per-PC friend map Segment<30, Coupler<String<25>, IFriend*>> (global-re/SERVER-RE.md:143,148). No Global
- *  "friend list full" string exists (only 1006:56 for the blacklist), so the refusal uses code 'full'. */
-export const MAX_FRIENDS = 30;
+/** Friend list cap for E2E with client messenger (src/systems/life/friends.js lbl_count).
+ *  CLIENT: screenshot-sourced 0/200 (friends.js MAX_FRIENDS=200; ref cite TODO X9 / C28). Full-list strings exist:
+ *  stringtable_messenger 1006:26 / 1006:27 / 1006:32 ("Reached the max number of friend list.").
+ *  CONFLICT (older-server / SERVER-RE): Segment<30> cited in prior friend-requests comments (SERVER-RE.md not in tree this turn).
+ *  Per EVIDENCE-SOURCES + owner 2026-10-29: prefer client when older server conflicts. Blacklist stays 30 (1006:56). */
+export const MAX_FRIENDS = 200;
 const friendCount = q => (q?.profile?.npcFriends || []).length;
 const fail = (m, status = 400) => { throw Object.assign(Error(m), { status }); };
 const key = n => String(n || '').trim().toLowerCase();
@@ -49,8 +52,13 @@ export function friendRequestCommand(world, p, input) {
   if (input.operation === 'accept' || input.operation === 'decline') {
     const r = m.get(String(input.id || ''));
     if (!r || r.toId !== p.id) fail('That friend request is no longer available.', 404);
+    // Check caps before dropping the pending row so a full list does not consume the request.
+    if (input.operation === 'accept') {
+      if (friendCount(p) >= MAX_FRIENDS) fail('Your friend list is full.', 409);
+      const from = [...world.players.values()].find(q => q.id === r.fromId && !q.leaving);
+      if (from && friendCount(from) >= MAX_FRIENDS) fail(`${from.profile?.name || 'That player'}'s friend list is full.`, 409);
+    }
     m.delete(r.id);
-    if (input.operation === 'accept' && friendCount(p) >= MAX_FRIENDS) fail('Your friend list is full.', 409);
     world.emit(null, { type: 'friendrequest', reason: input.operation, id: r.id, name: r.toName, recipients: [r.fromId] });
     return { accepted: input.operation === 'accept', fromName: r.fromName };
   }

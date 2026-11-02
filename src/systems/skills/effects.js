@@ -16,6 +16,7 @@ import * as THREE from 'three';
 import {makeShearable, SHEAR_INDICES} from '../../engine/models.js';
 import { SpriteUnit, DecalUnit, MeshUnit, ParticleUnit, MeshStatusUnit, SoundUnit, QuakeUnit, cameraFrame } from './fx-units.js';
 import {MapSnowWeatherUnit} from './map-weather-unit.js';
+import { EffectLightUnit } from '../../world/global-effect-light.js';
 import { COLOR_OVERRANGE, BONE_ALIASES } from '../../config/engine-chosen-skill-fx.js';
 
 const MIRROR = new THREE.Matrix4().makeScale(1, 1, -1);
@@ -72,12 +73,15 @@ class BonePath {
     this.lifeSec = lifeSec;
     // Skeleton/clip requests are asynchronous; a missing path must not become
     // an unhandled rejection after the caller's playback recovery has returned.
-    this.readyTask = this._load().catch(() => { this.failed = true; });
+    // Transient transport must not mark the path permanently failed; a later play makes a new BonePath.
+    this.readyTask = this._load().catch(err => { if (!err?.transient) this.failed = true; });
   }
   async _load() {
     const models = this.game.models;
     if (!models?.skeleton) return;
-    const skel = await models.skeleton(this.spec.skel);
+    let skel;
+    try { skel = await models.skeleton(this.spec.skel); }
+    catch (err) { if (err?.transient) throw err; return; }
     if (!skel || this.disposed) return;
     const bones = skel.bones.map(b => {
       const S = b.scaleMatrix;
@@ -98,7 +102,9 @@ class BonePath {
     const ms = Number(this.spec.params?.[1]) || 0;
     const dur = ms > 0 ? ms / 1000 : this.lifeSec > 0 ? this.lifeSec : null;
     try {
-      const clip = await models.loadClip(this.spec.anim, facade, { duration: dur });
+      const clip = models.loadClipWithStatus
+        ? await models.loadClipWithStatus(this.spec.anim, facade, { duration: dur })
+        : await models.loadClip(this.spec.anim, facade, { duration: dur });
       if (clip && !this.disposed) {
         this.mixer = new THREE.AnimationMixer(this.root);
         const act = this.mixer.clipAction(clip);
@@ -106,7 +112,10 @@ class BonePath {
         act.play();
         this.len = clip.duration;
       }
-    } catch { /* keep the bind pose */ }
+    } catch (err) {
+      if (err?.transient) throw err; // keep bind pose for this instance; caller may retry a new BonePath
+      /* permanent clip failure: keep the bind pose */
+    }
   }
   /** Local transform of the path bone relative to the path root at time t (s) into out Matrix4, or false. */
   sample(t, out) {
@@ -247,6 +256,8 @@ class ControlPlay {
         case 'meshstatus': if (this.play.ownerIsActor) this.unit = new MeshStatusUnit(ctx, u, this.play.owner); break;
         case 'sound': this.unit = new SoundUnit(ctx, u, at); break;
         case 'quake': this.unit = new QuakeUnit(ctx, u, at); break;
+        // LANE-54: Global Unit::Light posts LightStart (duration end - start) / LightStop to the environment receiver
+        case 'light': this.unit = new EffectLightUnit(ctx, u, anchor, this.start, this.end, this._lightId ||= ctx.game.effectLights?.nextId?.()); break;
         default: break;
       }
     } catch (err) { console.warn('[effects] unit failed', u?.name, err); this.unit = null; }
@@ -455,10 +466,11 @@ export class ScenePlay {
     });
   }
 
-  /** A worn-equipment control that spans the whole loop keeps its unit across cycles (no despawn flicker). */
+  /** A looping control that spans the whole loop keeps its unit across cycles (no despawn flicker).
+   *  Covers worn attachment FX and world-space looping marks/portals (lane02 flash lead). */
   _continuous(c) {
     const T = this.timeMs / 1000;
-    return this.particleSpace === 'attachment' && c.state === 'live' && c.unit && c.start <= 1e-6 && c.end >= T - 1e-6
+    return this.loop && c.state === 'live' && c.unit && c.start <= 1e-6 && c.end >= T - 1e-6
       && !(c.unit instanceof SoundUnit) && !(c.unit instanceof QuakeUnit);
   }
 
@@ -466,11 +478,27 @@ export class ScenePlay {
     if (this.done) return;
     this.t += dt;
     if (this.ownerIsActor && (this.owner.disposed) && !this.stopping) this.stop(true);
-    if (this.particleSpace === 'attachment' && this.loop && !this.stopping && this.t >= this.timeMs / 1000) {
-      // Wrap before updating so a full-length worn unit is never ended at the loop boundary.
+    if (this.loop && !this.stopping && this.t >= this.timeMs / 1000) {
+      // Wrap before updating so a full-length unit is never ended at the loop boundary
+      // (attachment worn FX and world-space looping marks/portals/NPC overhead — lane02).
       const T = this.timeMs / 1000;
       this.t %= T;
-      for (const c of this.controls) if (c.state !== 'fading' && !this._continuous(c)) c.reset();
+      for (const c of this.controls) {
+        if (c.state === 'fading') continue;
+        if (!this._continuous(c)) c.reset();
+        // A retained full-length explode emitter keeps its living particles/tails
+        // across the cycle (no burst: Global emits only through FUN_011a65e0).
+        else if (c.unit instanceof ParticleUnit && (c.unit.em.state || 'explode').startsWith('explode')) {
+          // Expire only particles the imminent update would remove anyway, before
+          // filling this burst's pool. Retain every surviving particle and trail.
+          const parts = c.unit.parts;
+          if (Number.isFinite(dt) && dt >= 0) {
+            let kept = 0;
+            for (const particle of parts) if (!(particle.t + dt >= particle.life)) parts[kept++] = particle;
+            parts.length = kept;
+          }
+        }
+      }
     }
     let allDone = true;
     for (const c of this.controls) {

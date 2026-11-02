@@ -5,9 +5,11 @@
 //     Last Login, row popup Change ranks / Expel / Whisper / Current Location / See Info (ui_memberinfownd) / Appoint Guild
 //     (ui_delegatewnd, type 130:225 'I appoint')); btn_guildskill -> Guild Skills (ui_gskillwnd_renew, guildskill.csv);
 //     btn_warhistory -> War Status (ui_guildwarhistorywnd).
-//   guild war: player menu 240:13 Declare War (and /gwar Name) -> ui_declarationofwarwnd (135:3, 3/7/15/30 days, 135:25) ->
+//   guild war: player menu 240:13 Declare War -> ui_declarationofwarwnd (135:3, 3/7/15/30 days, 135:25) ->
 //     the target guild master answers in ui_acceptanceofwarwnd (135:21 / 135:26); Guild sign NPC (DECLARE_WAR) -> ui_guildwarboardwnd.
 import { randomUUID } from '../network/web-crypto.js';
+// LANE-61: Global grade boxes Enable Skill 0x100 / Declare War 0x200 / Accept War 0x400 (host extras.can); an older host sends only isMaster.
+const may = (ex, key) => !!(ex?.can ? ex.can[key] : ex?.isMaster);
 import { SCRIPTS, BOARD_WINDOW, SKILL_ICON, SKILL_GROUPS, WAR_DAYS, WAR_DAY_CODES, WAR_STATUS, MEMBER_ROWS, HISTORY_ROWS, BOARD_ROWS, MY_BOARD_ROWS,
   ROW_HEIGHT, BOARD_ROW_HEIGHT, STR, TEXT, plain, fill, delegatePhrase, skillGroup, skillById, skillDilCost, skillDilDiscount, durationText } from './guildextras-rules.js';
 import { GUILD_WAR_CHOSEN } from '../../config/engine-chosen-guild.js';
@@ -23,7 +25,7 @@ const NAMES = { member: 'guildmembers', memberInfo: 'guildmemberinfo', delegate:
 const TEXT_KEY = new Map(Object.entries(TEXT).map(([k, v]) => [v, k]));
 const TABS = ['btn_guild', 'btn_member', 'btn_guildskill', 'btn_alliance', 'btn_history', 'btn_warhistory'];
 const pad = n => String(n).padStart(2, '0');
-const dateText = ms => { if (!Number.isFinite(ms)) return '-'; const d = new Date(ms); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+const dateText = ms => { if (!Number.isFinite(ms)) return ''; const d = new Date(ms); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
 const cmp = (a, b) => (typeof a === 'string' || typeof b === 'string') ? String(a ?? '').localeCompare(String(b ?? '')) : (a ?? -Infinity) - (b ?? -Infinity);
 
 export class GuildExtras {
@@ -52,7 +54,7 @@ export class GuildExtras {
       ...this.skills.map(r => [130, r.desc]), [130, 160], [100, 53]].map(ref)); } catch { /* strings load lazily */ }
     const pop = g.pcpop || installPcPop(g);
     pop.add({ code: 13, visible: t => this._canDeclareOn(t), run: t => { void this.declare(t); } });
-    g.chat?.registerCommand?.(GUILD_WAR_CHOSEN.COMMAND, name => { void this.declareByName(name); return true; }, 'Declare guild war on a nearby character\'s guild: /gwar Name');
+    // /gwar chat command REMOVED (lane 51 g): not a Global route (no source); the player menu 240:13 is the declaration path.
     g.guildExtras = this;
   }
 
@@ -183,7 +185,7 @@ export class GuildExtras {
       w.control(`lbl_recClass_${i}`).setText(this.className(m.classIndex));
       w.control(`lbl_recGrade_${i}`).setText(m.grade || '');
       w.control(`lbl_recConRatio_${i}`).setText(numText(m.contribution || 0));
-      w.control(`lbl_recConn_${i}`).setText(m.online ? 'Online' : m.lastSeen ? dateText(m.lastSeen).slice(5, 10) : '-');
+      w.control(`lbl_recConn_${i}`).setText(m.online ? 'Online' : m.lastSeen ? dateText(m.lastSeen).slice(5, 10) : '');
       w.control(`lbl_recConn_${i}`).setColor?.(m.online ? '#64ff64' : '');
     });
     const s = this.gs, sel = M.list.find(m => m.ref === M.selected);
@@ -205,7 +207,7 @@ export class GuildExtras {
   _openInfo(w, m) {
     const cur = this.gs?.members?.find(x => x.ref === m?.ref) || m || {};
     w.control('lbl_memberName').setText(cur.name || ''); w.control('lbl_class').setText(this.className(cur.classIndex));
-    w.control('lbl_grade').setText(cur.grade || ''); w.control('lbl_level').setText(cur.level ? String(cur.level) : '-');
+    w.control('lbl_grade').setText(cur.grade || ''); w.control('lbl_level').setText(String(Number(cur.level) || 0));   // GLOBAL: MemberInfoWnd prints the member record's level number (decompile FUN_00ca9ac0 / FUN_00b56e80), no '-'
     w.control('lbl_Contribution').setText(numText(cur.contribution || 0));
   }
   _createDelegate(w) {
@@ -268,7 +270,7 @@ export class GuildExtras {
       c('lbl_time')?.setText?.(inUse ? `${plain(this.t(STR.time, 'Time'))}: ${Math.floor(left / 86400)}${words.day} ${pad(Math.floor(left % 86400 / 3600))}:${pad(Math.floor(left % 3600 / 60))}` : '');
       const en = (id, v) => { const x = c(id); if (x && x.enabled !== v) x.setEnabled?.(v); };
       en('btn_minus_level', sel.li > 0); en('btn_plus_level', sel.li < G.levels.length - 1); en('btn_minus_time', sel.ti > 0); en('btn_plus_time', sel.ti < times.length - 1);
-      en('btn_use', !!ex.isMaster && !this.busy && (s.level || 1) >= row.needLevel);
+      en('btn_use', may(ex, 'enableSkill') && !this.busy && (s.level || 1) >= row.needLevel);
     });
     w.control('lbl_gpoint_my').setText(numText(s.activityPoints || 0)); w.control('lbl_point_my').setText(numText(s.gpoint || 0)); w.control('lbl_dil_my').setText(numText(s.dil || 0));
   }
@@ -295,7 +297,11 @@ export class GuildExtras {
   }
   _openHistory(w) { this.history.top = 0; this._renderHistory(w); }
   _opponent(r) { const mine = this.gs?.id; return r.from === mine ? r.toName : r.fromName; }
+  // Combat foes (host extras.warFoes): map-gated; chained into game.isPvpHostile above.
   isWarFoe(a) { return !!a && a.kind === 'player' && a !== this.game.player && (this.ex?.warFoes || []).includes(a.networkId); }
+  // ONLINE (WAR_SOURCE_URL): rivals stay red-named even in excluded regions (host extras.warRivals, no map gate).
+  // Falls back to warFoes for an older host that only sends the combat list.
+  isWarRival(a) { return !!a && a.kind === 'player' && a !== this.game.player && (this.ex?.warRivals || this.ex?.warFoes || []).includes(a.networkId); }
   /** Status word plus the war's PvP kill score (own:opponent, or from:to on the public board). */
   warState(r, mine = this.gs?.id) {
     const k = r?.kills || {}, word = this.statusWord(r.status);
@@ -318,7 +324,7 @@ export class GuildExtras {
     });
   }
   async _historyRow(i) {
-    const r = this.history.list[this.history.top + i]; if (!r || !this.ex?.isMaster) return null;
+    const r = this.history.list[this.history.top + i]; if (!r || !may(this.ex, 'acceptWar')) return null;
     if (r.status === 'pending' && r.to === this.gs?.id) return this.game.uiwin.open(NAMES.accept, r);
     if (r.status === 'active') return this.surrender(r);
     return null;
@@ -327,18 +333,12 @@ export class GuildExtras {
 
   // ------------------------------------------------------------------ declaration / acceptance
   _canDeclareOn(t) {
-    return !!t && t.kind === 'player' && t !== this.game.player && !!this.game.network?.active && !!this.gs?.founded && !!this.ex?.isMaster
+    return !!t && t.kind === 'player' && t !== this.game.player && !!this.game.network?.active && !!this.gs?.founded && may(this.ex, 'declareWar')
       && !!t.nameplate?.guild?.name && t.nameplate.guild.id !== this.gs.id;
-  }
-  async declareByName(name) {
-    const key = String(name || '').trim().toLowerCase();
-    const t = key && [...(this.game.network?.players?.values?.() || [])].find(a => String(a?.name || a?.save?.name || a?.nameplate?.name || '').toLowerCase() === key);
-    if (!t) { this.note('Choose a character on your map: /gwar Name', 'err'); return null; }
-    return this.declare(t);
   }
   declare(t) {
     if (!this._need()) return false;
-    if (!this.ex?.isMaster) { this.note(this.say(STR.declarePermission) || TEXT.declarePermission, 'err'); return false; }
+    if (!may(this.ex, 'declareWar')) { this.note(this.say(STR.declarePermission) || TEXT.declarePermission, 'err'); return false; }
     if (!t?.nameplate?.guild?.name) { this.note(this.say(STR.noGuildPlayer) || TEXT.noGuildPlayer, 'err'); return false; }
     return this.game.uiwin.open(NAMES.declare, t);
   }
@@ -363,9 +363,11 @@ export class GuildExtras {
     this._paintDeclare(w);
   }
   _paintDeclare(w) {
-    const d = w.data.days, C = this.ex?.war?.costPerDay || GUILD_WAR_CHOSEN.COST_PER_DAY;
+    // ONLINE cost table by duration (GUILD_WAR_CHOSEN.COST_BY_DAYS, official JP notice); an old host's per-day cost still reads.
+    const d = w.data.days, war = this.ex?.war || {}, per = war.costPerDay;
+    const C = war.costByDays?.[d] || (per ? { dil: per.dil * d, guildPoints: per.guildPoints * d } : GUILD_WAR_CHOSEN.COST_BY_DAYS[d]) || { dil: 0, guildPoints: 0 };
     w.control('lbl_showlist').setText(String(d));
-    w.control('lbl_warning').setText(this.say(STR.declareInfo, d, numText(C.dil * d), C.guildPoints * d));
+    w.control('lbl_warning').setText(this.say(STR.declareInfo, d, numText(C.dil), C.guildPoints));
   }
   _createAccept(w) {
     const answer = async op => { const r = w.data?.war; w.close(); if (r) await this.send(op, { id: r.id }); };
@@ -427,7 +429,7 @@ export class GuildExtras {
     B.list = (this.ex?.mine || []).filter(r => ['pending', 'active'].includes(r.status)).slice(0, MY_BOARD_ROWS);
     B.mine.forEach((row, i) => {
       const r = B.list[i]; this._paintRow(row, r); if (!r) return;
-      const label = !this.ex?.isMaster ? null : r.status === 'pending' && r.to === this.gs?.id ? STR.warAccept : r.status === 'active' ? STR.surrender : null;
+      const label = !may(this.ex, 'acceptWar') ? null : r.status === 'pending' && r.to === this.gs?.id ? STR.warAccept : r.status === 'active' ? STR.surrender : null;
       row.lbl_war_state?.setVisible?.(!label);
       if (label) { row.btn_state_confirm?.setText?.(plain(this.t(label, ''))); row.btn_state_confirm?.setVisible?.(true); }
     });

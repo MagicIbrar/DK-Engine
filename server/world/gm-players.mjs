@@ -9,6 +9,7 @@ export async function playerGM(world,user,input,runGM){
  if(!target)error(404,'Select a currently connected character.');
  if(input.operation==='renamePlayer'){
    if(input.staffOverride!=null&&typeof input.staffOverride!=='boolean')error(400,'Invalid staff name override.');
+   if(input.staffOverride===true&&(target.gmAuthorized!==true||target.npcPlayer===true))error(403,'Staff labels require a currently authorized staff character.');
    if(!world.renameProfile)error(503,'Character rename storage is unavailable.');
    const result=await world.renameProfile(target.account,target.characterId,input.name,input.nameColor,undefined,{staffOverride:input.staffOverride===true});
    target.profile.name=result.name;target.profile.nameColor=result.nameColor||'white';world.changed(target);world.emit(target.map,{type:'rename',actorId:target.id,name:result.name,nameColor:target.profile.nameColor});

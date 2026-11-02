@@ -1,11 +1,21 @@
-// DKR-PVP: server-authoritative DK Rumble 3v3 PvP season (Colosseum pvp3v3). Original data: share/dkrpvpbattle/config.csv
-// (map 164, ObserverMaxCount, Wait_Time, Round_Time, Match_Create_Time, team start cells, ObserverSpeed) and matchtime.csv
-// (registration, league allocation, league groups A-H orders 1-6, tournament 16/8/4/3/2 calendar). NPC jobs: 148 register,
-// 149 game info, 160 enter player, 161 enter observer (Entry Guard 6180 on 719, 60006 on 714). Texts: stringtable_partywarui
-// 2011|*. Every value the data does not give is in src/config/engine-chosen-dkr-pvp.js. Player-vs-player hits run through
-// the shared PvP pipeline (server/world/pvp.mjs, rules src/game/pvp-rules.js); observers use server/world/observers.mjs.
-import {DKR_PVP_CHOSEN as C} from '../../src/config/engine-chosen-dkr-pvp.js';
-import {DKR_JOBS,DKR_TEAM_SIZE,DKR_NAME_MAX,dkrData,seasonPhase,allocateGroups,leagueMatches,standings,buildTournament,advanceTournament,roundOutcome,matchDecided,matchWinner,DKR_GROUPS} from '../../src/systems/events/dkr-pvp-rules.js';
+// DKR-PVP: DK Rumble 3v3 PvP (Colosseum pvp3v3), GM-run as in Global. Lane 47 (2026-10-29) replaced the invented automatic
+// season (calendar-driven allocation, league points, rank order, Round of 16 seeding, rounds-to-win, round / break / result
+// timers, observer point, revive rule) with the Global GM command flow (client GM help strings, decompile 64-bit-named
+// strings-xref.csv / 32-bit-main decompiled.c 269971-270054):
+//   dkrpvp_create [startTime] [endTi..] / dkrpvp_delete [code] / dkrpvp_setstatus [start|apply|league|tournament|end] [end time]
+//   dkrpvp_applystart [teamname] [teammark] [teammarkbg] / dkrpvp_applymember [membername] [membercharno] [memberuserno]
+//   [class] [grade] [world] [level] / dkrpvp_selectteam / dkrpvp_createleague / dkrpvp_open|finish [type] [group] [order]
+//   dkrpvp_createtournament [league group1] [league order1] [league team1] [league group2] [league order2] [league team2]
+//   [tournament group] [tournament order] [match time]
+// Server replies follow the Global strings "DKRPvPBattle CREATE %s %s", "DKRPvPBattle DELETE %s %s", "DKRPvPBattle SetState %s"
+// and "DKRPvPBattle SetState %s %u". Data used as written: share/dkrpvpbattle/config.csv (map, ObserverMaxCount, Wait_Time,
+// Round_Time, three start cells per team) and matchtime.csv (shown calendar). NPC jobs 148 register, 149 game info, 160 enter
+// player, 161 enter observer (Entry Guard 6180 on 719, 60006 on 714). Texts: stringtable_partywarui 2011|*.
+// REMOVED (lane 71: no Global value, no older-server reference data (its share/ has no dkrpvpbattle tables) and no credible online rule;
+// see LANE-47-REPORT.md / LANE-71-REPORT.md): createleague allocation, selectteam meaning,
+// how createtournament's [league team] picks a team, round count / round winner / match winner, observer entry point,
+// the time format of the GM time arguments.
+import {DKR_JOBS,DKR_TEAM_SIZE,DKR_NAME_MAX,dkrData} from '../../src/systems/events/dkr-pvp-rules.js';
 import {registerPvpMode} from './pvp.mjs';
 import {registerObserverMode} from './observers.mjs';
 import {createInstance,exitInstance,requestInstanceClose} from './instances.mjs';
@@ -28,8 +38,6 @@ export const DKR_TEXT={
   updateFailed:'Failed to update application information.',                            // 2011|534
   cancelled:'Application successfully canceled.',                                      // 2011|535
   cancelFailed:'Failed to cancel application.',                                        // 2011|536
-  allocated:'League allocation completed.',                                            // 2011|537
-  allocFailed:'League allocation failed.',                                             // 2011|538
   mounted:'Cannot enter while mounted.',                                               // 2011|545
   inParty:'Cannot enter while in a party.',                                            // 2011|546
   mismatch:'Party info does not match registered team info.\nTo update members, cancel and reapply.', // 2011|547
@@ -37,49 +45,48 @@ export const DKR_TEXT={
   already:'Application failed. One or more characters are already registered.',        // 2011|550
   nameTaken:'Team name already exists. Please choose a different name.',               // 2011|551
   noMatch:'No ongoing matches at this time.\nPlease check the match schedule.',         // 2011|554
-  far:'Walk near the Entry Guard first.',                                              // engine text
-  busy:'You cannot enter from here.',                                                  // engine text
-  full:'This match cannot take more observers.',                                       // engine text
-  fighter:'You cannot watch a match you are playing in.',                              // engine text
-  open:'Your DK Rumble match is open. Talk to the Entry Guard to enter.',              // engine text
 };
-export const DKR_REVIVE_TEXT='You cannot revive during a DK Rumble round.'; // engine text
+// Kept for the core.mjs import; the host no longer blocks revive (the Global revive rule is unknown), so it is never sent.
+export const DKR_REVIVE_TEXT=DKR_TEXT.noMatch;
+export const DKR_STATUS=Object.freeze(['start','apply','league','tournament','end']);
+export const DKR_REMOVED=Object.freeze({
+  createleague:'Removed (no source): dkrpvp_createleague league allocation is not in Global data.',
+  selectteam:'Removed (no source): dkrpvp_selectteam behaviour is not in Global data.',
+  tournamentTeam:'Removed (no source): dkrpvp_createtournament does not pick teams from [league team] (not in Global data).',
+  observerPoint:'Removed (no source): Global config.csv has no observer entry point, so observing is closed.',
+});
 const fail=(message,status=400)=>{throw Object.assign(new Error(message),{status});};
-const dataOf=world=>{const d=world.data?.dkrPvp||(world.data.dkrPvp=dkrData(world.data.eventData?.modes,world.data.dkrPvpCalendar||null));if(!d)fail('DK Rumble tables are unavailable on this host.',503);return d;};
+const DKR_MISSING=new WeakSet();
+const tablesOf=world=>{const data=world?.data;if(!data||typeof data!=='object')return null;if(data.dkrPvp)return data.dkrPvp;if(DKR_MISSING.has(data))return null;
+  let d=null;try{d=dkrData(data.eventData?.modes,data.dkrPvpCalendar||null)||null;}catch(error){console.warn('[dkr-pvp] tables unavailable:',error?.message||error);}
+  if(d)data.dkrPvp=d;else DKR_MISSING.add(data);return d;};
+const dataOf=world=>{const d=tablesOf(world);if(!d)fail('DK Rumble tables are unavailable on this host.',503);return d;};
 const live=(world,p)=>!!p&&world.players.get(p.account)===p&&!p.leaving;
 const byId=(world,id)=>{for(const q of world.players.values())if(q.id===id&&!q.leaving)return q;return null;};
-const byChar=(world,cid)=>{for(const q of world.players.values())if(q.characterId===cid&&!q.leaving)return q;return null;};
-const fresh=key=>({seasonKey:key,teams:new Map(),serial:0,allocated:false,groups:null,overflow:[],matches:new Map(),bracket:false,runs:new Map(),ended:false,champion:null});
-function S(world){const d=dataOf(world),key=d.calendar.registrationStart;if(!world.dkrPvp||world.dkrPvp.seasonKey!==key)world.dkrPvp=fresh(key);return world.dkrPvp;}
-const requireNpc=(world,p,job,input)=>{const npc=nearbyNpc(world,p,{jobType:job,radius:C.npcRadius,...(input?.npcIndex!=null&&Number.isInteger(Number(input.npcIndex))?{npcIndex:Number(input.npcIndex)}:{})});if(!npc)fail(DKR_TEXT.far,403);return npc;};
-const teamOf=(s,cid)=>{for(const t of s.teams.values())if(t.members.some(m=>m.characterId===cid))return t;return null;};
+const season=world=>world.dkrPvp||null;
+const requireNpc=(world,p,job,input,text)=>{const npc=nearbyNpc(world,p,{jobType:job,...(input?.npcIndex!=null&&Number.isInteger(Number(input.npcIndex))?{npcIndex:Number(input.npcIndex)}:{})});if(!npc)fail(text,403);return npc;};
+const teamOf=(s,cid)=>{if(!s)return null;for(const t of s.teams.values())if(t.members.some(m=>m.characterId===cid))return t;return null;};
 const runOf=(world,p)=>{if(!p?.instanceId)return null;for(const r of world.dkrPvp?.runs?.values()||[])if(r.instance?.id===p.instanceId)return r;return null;};
 const sideOf=(run,p)=>run?run.sides.findIndex(x=>x.ids.has(p.id)):-1;
-const tell=(world,ids,text)=>{for(const q of world.players.values())if(!q.leaving&&ids.includes(q.characterId))world.emit(q.map,{type:'event:message',text,recipients:[q.id]});};
 const memberIds=t=>t?t.members.map(m=>m.characterId):[];
-/** Observers of a DK Rumble match. */
 export function isDkrObserver(world,p){const run=runOf(world,p);return !!run&&run.observers.has(p.characterId);}
 export const DKR_OBSERVER_ACTIONS=new Set(['move','stop','chat','emote','dkr']);
 registerObserverMode({is:isDkrObserver,actions:DKR_OBSERVER_ACTIONS});
 export function dkrEnemy(world,p,q){
   const run=runOf(world,p);if(!run||run.phase!=='battle'||!q||runOf(world,q)!==run)return false;
-  const a=sideOf(run,p),b=sideOf(run,q);return a>=0&&b>=0&&a!==b&&!run.down.has(p.id)&&!run.down.has(q.id)&&sameScene(p,q);
+  const a=sideOf(run,p),b=sideOf(run,q);return a>=0&&b>=0&&a!==b&&sameScene(p,q);
 }
-function markDown(world,run,q,by){
-  if(run.down.has(q.id))return;run.down.add(q.id);q.hp=0;q.dead=true;q.path=[];world.changed(q);
-  const v=sideOf(run,q);if(v<0)return;run.sides[v].deaths++;run.roundDeaths[v]++;const st=run.stats.get(q.id);if(st)st.deaths++;
-  const s=by?sideOf(run,by):-1;if(s>=0&&s!==v){run.sides[s].kills++;run.roundKills[s]++;const k=run.stats.get(by.id);if(k)k.kills++;if(run.firstKill==null)run.firstKill=s;}
-}
+// ui_dashboard number_redkillcnt / number_bluekillcnt: kills and deaths are counted; nothing else is decided from them.
 registerPvpMode({enemy:dkrEnemy,opponents:(world,p)=>[...world.players.values()].filter(q=>dkrEnemy(world,p,q)&&!q.dead),
-  onDown:(world,attacker,target)=>{const run=runOf(world,target);if(run&&sideOf(run,target)>=0)markDown(world,run,target,attacker);}});
-/** Downed fighters stay down until the next round; the host revive is refused inside a match. */
-export function dkrBlocksRevive(world,p){const run=runOf(world,p);return !!run&&sideOf(run,p)>=0;}
-// --- registration (job 148)
+  onDown:(world,attacker,target)=>{const run=runOf(world,target);if(!run)return;const v=sideOf(run,target);if(v<0)return;
+    run.sides[v].deaths++;const st=run.stats.get(target.id);if(st)st.deaths++;
+    const s=attacker?sideOf(run,attacker):-1;if(s>=0&&s!==v){run.sides[s].kills++;const k=run.stats.get(attacker.id);if(k)k.kills++;}}});
+export function dkrBlocksRevive(){return false;}
+// --- registration (job 148), open while the GM status is "apply"
 function partyOf(world,p){const party=p.partyId?world.parties?.get(p.partyId):null;if(!party)fail(DKR_TEXT.noParty);if(party.leader!==p.id)fail(DKR_TEXT.leader,403);return party;}
-function periodCheck(world,{edit=false}={}){const d=dataOf(world),ph=seasonPhase(d.calendar,world.now());
-  if(ph==='before')fail(DKR_TEXT.notPeriod,409);if(ph!=='registration')fail(edit?DKR_TEXT.updateFailed:DKR_TEXT.periodEnded,409);}
+function periodCheck(world,text){const s=season(world);if(!s||s.status==='start')fail(DKR_TEXT.notPeriod,409);if(s.status!=='apply')fail(text||DKR_TEXT.periodEnded,409);return s;}
 const cleanName=v=>String(v??'').replace(/[\u0000-\u001f<>]/g,'').trim();
-const markOf=input=>guildMark({bg:Number(input.bg??1),icon:Number(input.icon??1)});
+const markOf=input=>guildMark({bg:Number(input.bg),icon:Number(input.icon)});
 function partyRows(world,party){
   if(party.members.length!==DKR_TEAM_SIZE)fail(DKR_TEXT.count);
   const rows=party.members.map(id=>{const q=byId(world,id);if(!q||!live(world,q))fail(DKR_TEXT.failed,409);return {characterId:q.characterId,name:q.profile.name,classIndex:Number(q.profile.classIndex)||0,level:Number(q.profile.level)||1};});
@@ -87,113 +94,94 @@ function partyRows(world,party){
 }
 function nameCheck(s,name,except){if(!name||name.length>DKR_NAME_MAX)fail(DKR_TEXT.failed);const low=name.toLowerCase();for(const t of s.teams.values())if(t.id!==except&&t.name.toLowerCase()===low)fail(DKR_TEXT.nameTaken,409);}
 function register(world,p,input){
-  requireNpc(world,p,DKR_JOBS.register,input);periodCheck(world);const s=S(world),party=partyOf(world,p),rows=partyRows(world,party);
+  requireNpc(world,p,DKR_JOBS.register,input,DKR_TEXT.failed);const s=periodCheck(world),party=partyOf(world,p),rows=partyRows(world,party);
   if(teamOf(s,p.characterId))fail(DKR_TEXT.already,409);if(rows.some(r=>teamOf(s,r.characterId)))fail(DKR_TEXT.otherTeam,409);
   const name=cleanName(input.name),mark=markOf(input);if(!mark)fail(DKR_TEXT.failed);nameCheck(s,name);
   const id=`t${++s.serial}`;s.teams.set(id,{id,name,mark,leader:p.characterId,members:rows,order:s.serial,registeredAt:world.now()});
   return {operation:'register',team:id,text:DKR_TEXT.applied};
 }
 function edit(world,p,input){
-  requireNpc(world,p,DKR_JOBS.register,input);periodCheck(world,{edit:true});const s=S(world),t=teamOf(s,p.characterId);if(!t)fail(DKR_TEXT.updateFailed,404);
+  requireNpc(world,p,DKR_JOBS.register,input,DKR_TEXT.updateFailed);const s=periodCheck(world,DKR_TEXT.updateFailed),t=teamOf(s,p.characterId);if(!t)fail(DKR_TEXT.updateFailed,404);
   if(t.leader!==p.characterId)fail(DKR_TEXT.leader,403);const party=partyOf(world,p);
   const now=party.members.map(id=>byId(world,id)?.characterId).filter(Boolean).sort().join(),was=memberIds(t).sort().join();if(now!==was)fail(DKR_TEXT.mismatch,409);
   const name=cleanName(input.name??t.name),mark=input.bg==null&&input.icon==null?t.mark:markOf(input);if(!mark)fail(DKR_TEXT.updateFailed);nameCheck(s,name,t.id);
   t.name=name;t.mark=mark;return {operation:'edit',team:t.id,text:DKR_TEXT.updated};
 }
 function cancel(world,p,input){
-  requireNpc(world,p,DKR_JOBS.register,input);const d=dataOf(world);if(seasonPhase(d.calendar,world.now())!=='registration')fail(DKR_TEXT.cancelFailed,409);
-  const s=S(world),t=teamOf(s,p.characterId);if(!t)fail(DKR_TEXT.cancelFailed,404);if(t.leader!==p.characterId)fail(DKR_TEXT.leader,403);
-  s.teams.delete(t.id);return {operation:'cancel',text:DKR_TEXT.cancelled};
+  requireNpc(world,p,DKR_JOBS.register,input,DKR_TEXT.cancelFailed);const s=periodCheck(world,DKR_TEXT.cancelFailed),t=teamOf(s,p.characterId);if(!t)fail(DKR_TEXT.cancelFailed,404);
+  if(t.leader!==p.characterId)fail(DKR_TEXT.leader,403);s.teams.delete(t.id);return {operation:'cancel',text:DKR_TEXT.cancelled};
 }
-// --- season flow
-function allocate(world,s){const d=dataOf(world),ids=[...s.teams.values()].sort((a,b)=>a.order-b.order).map(t=>t.id),{groups,overflow}=allocateGroups(ids);
-  s.groups=groups;s.overflow=overflow;s.allocated=true;for(const m of leagueMatches(d.calendar,groups))s.matches.set(m.key,{...m,status:'pending'});
-  for(const t of s.teams.values())tell(world,memberIds(t),overflow.includes(t.id)?DKR_TEXT.allocFailed:DKR_TEXT.allocated);}
-function results(s,kind,group){return [...s.matches.values()].filter(m=>m.kind===kind&&(!group||m.group===group)&&m.status==='done'&&m.result).map(m=>({left:m.left,right:m.right,...m.result}));}
-export function groupRanks(s){const order=new Map([...s.teams.values()].map(t=>[t.id,t.order]));return Object.fromEntries(DKR_GROUPS.map(g=>[g,standings(s.groups?.[g]||[],results(s,'league',g),order)]));}
-function seedTournament(world,s){const d=dataOf(world);for(const [k,m] of buildTournament(d.calendar,groupRanks(s)))s.matches.set(k,m);s.bracket=true;}
-function side(s,teamId){const t=s.teams.get(teamId);return {teamId,name:t?.name||'',mark:t?.mark||null,members:memberIds(t),ids:new Set(),wins:0,kills:0,deaths:0};}
-function openRun(world,s,m){const d=dataOf(world),now=world.now();
-  const run={key:m.key,kind:m.kind,group:m.group,match:m.match,order:m.order,at:m.at,phase:'entry',phaseEnd:Math.max(now,m.at-d.createSec*1000)+d.waitSec*1000,round:0,rounds:[],
-    sides:[side(s,m.left),side(s,m.right)],down:new Set(),roundKills:[0,0],roundDeaths:[0,0],firstKill:null,roundStart:0,stats:new Map(),instance:null,observers:new Set(),result:null};
-  s.runs.set(m.key,run);m.status='open';for(const x of run.sides)tell(world,x.members,DKR_TEXT.open);return run;}
-function settle(world,s,m,result){m.status='done';m.result=result;if(m.kind==='tournament'){m.winner=result.winner;advanceTournament(s.matches,m);if(m.match===2)s.champion=result.winner==null?null:(result.winner===0?m.left:m.right);}}
-function finishMatch(world,s,run,reason){
-  const m=s.matches.get(run.key),wins=run.sides.map(x=>x.wins),kills=run.sides.map(x=>x.kills),deaths=run.sides.map(x=>x.deaths);
-  const winner=reason==='forfeit'?run.forfeitWinner:reason==='noShow'?null:matchWinner({kind:run.kind,wins,kills,deaths});
-  run.result={winner,reason,wins,kills,deaths,noShow:reason==='noShow',rounds:run.rounds.map(r=>({...r})),names:run.sides.map(x=>x.name),
-    members:run.sides.map(x=>x.members.map(cid=>{const q=byChar(world,cid),st=q&&run.stats.get(q.id);return {characterId:cid,name:q?.profile?.name||s.teams.get(x.teamId)?.members.find(r=>r.characterId===cid)?.name||'',classIndex:Number(q?.profile?.classIndex)||0,level:Number(q?.profile?.level)||0,kills:st?.kills||0,deaths:st?.deaths||0,entered:!!st};}))};
-  settle(world,s,m,run.result);run.phase='matchEnd';run.phaseEnd=world.now()+C.finishMatchSec*1000;
-}
-function placeSide(world,run,i){const d=dataOf(world),starts=i===0?d.teamA:d.teamB,scene=run.instance.scene;let n=0;
-  for(const id of run.sides[i].ids){const q=byId(world,id);if(!q||runOf(world,q)!==run)continue;const [x,z]=starts[n++%starts.length];const at=scene.nearest(x+.5,z+.5);if(at){q.x=at.x;q.z=at.z;q.path=[];}
-    q.dead=false;q.hp=q.maxHp;q.mp=q.stats?.maxMp||0;q.shield=Number(q.stats?.maxShield)||0;delete q.pvpLastHit;world.changed(q);world.emit(q.map,{type:'revive',actorId:q.id,instanceId:q.instanceId});}}
-function endRound(world,run,reason){
-  const alive=run.sides.map(x=>[...x.ids].filter(id=>!run.down.has(id)).length),winner=roundOutcome({alive,kills:run.roundKills},reason);
-  if(winner>=0)run.sides[winner].wins++;
-  run.rounds.push({winner,kills:[...run.roundKills],deaths:[...run.roundDeaths],firstKill:run.firstKill,ms:world.now()-run.roundStart,reason});run.round++;
-  run.phase='roundEnd';run.phaseEnd=world.now()+C.finishRoundSec*1000;
-}
-async function closeRun(world,s,run){
-  if(run.instance){const members=[...world.players.values()].filter(q=>runOf(world,q)===run);for(const q of members)if(q.dead){q.dead=false;q.hp=q.maxHp;world.changed(q);}
-    if(members.length){void requestInstanceClose(world,run.instance)?.catch?.(()=>{});return false;}}
-  s.runs.delete(run.key);return true;}
-async function tickRun(world,s,run){const d=dataOf(world),now=world.now();
-  if(run.instance)for(const x of run.sides)for(const id of [...x.ids]){const q=byId(world,id);if((!q||!live(world,q)||runOf(world,q)!==run)&&run.phase==='battle')run.down.add(id);}
-  if(run.phase==='entry'&&now>=run.phaseEnd){
-    const counts=run.sides.map(x=>x.ids.size);
-    if(counts.every(c=>c<C.minimumEntrants)){finishMatch(world,s,run,'noShow');return;}
-    if(counts.some(c=>c<C.minimumEntrants)){run.forfeitWinner=counts[0]>=C.minimumEntrants?0:1;finishMatch(world,s,run,'forfeit');return;}
-    placeSide(world,run,0);placeSide(world,run,1);run.phase='count';run.phaseEnd=now+C.countSec*1000;return;}
-  if(run.phase==='count'&&now>=run.phaseEnd){run.phase='battle';run.phaseEnd=now+d.roundSec*1000;run.roundStart=now;run.down=new Set();run.roundKills=[0,0];run.roundDeaths=[0,0];run.firstKill=null;return;}
-  if(run.phase==='battle'){
-    for(const x of run.sides)for(const id of x.ids){const q=byId(world,id);if(q&&runOf(world,q)===run&&(q.dead||q.hp<=0))markDown(world,run,q,q.pvpLastHit?.by&&byId(world,q.pvpLastHit.by));}
-    const alive=run.sides.map(x=>[...x.ids].filter(id=>!run.down.has(id)).length);
-    if(alive.some(a=>a===0))endRound(world,run,'annihilation');else if(now>=run.phaseEnd)endRound(world,run,'time');return;}
-  if(run.phase==='roundEnd'&&now>=run.phaseEnd){
-    if(matchDecided(run.sides.map(x=>x.wins),run.round)){finishMatch(world,s,run,'decided');return;}
-    run.phase='break';run.phaseEnd=now+C.breakSec*1000;placeSide(world,run,0);placeSide(world,run,1);return;}
-  if(run.phase==='break'&&now>=run.phaseEnd){run.phase='count';run.phaseEnd=now+C.countSec*1000;return;}
-  if(run.phase==='matchEnd'&&now>=run.phaseEnd)await closeRun(world,s,run);
-}
-const feedsDone=(s,m)=>!m.feeds||m.feeds.every(k=>s.matches.get(k)?.status==='done');
-export async function tickDkrPvp(world){
-  let d;try{d=dataOf(world);}catch{return;}const s=S(world),now=world.now(),cal=d.calendar,ph=seasonPhase(cal,now);
-  if(s.ended)return;
-  if(!s.allocated&&(ph==='league'||ph==='tournament'))allocate(world,s);
-  if(!s.allocated)return;
-  const tOpen=cal.tournament.length?Math.min(...cal.tournament.map(t=>t.at))-d.createSec*1000:Infinity;
-  if(!s.bracket&&now>=tOpen&&[...s.matches.values()].every(m=>m.kind!=='league'||m.status==='done'))seedTournament(world,s);
-  for(const m of s.matches.values()){
-    if(m.status!=='pending'||m.at==null||now<m.at-d.createSec*1000||!feedsDone(s,m))continue;
-    if(!m.left&&!m.right){settle(world,s,m,{winner:null,reason:'empty',wins:[0,0],kills:[0,0],deaths:[0,0],noShow:true,bye:true});continue;}
-    if(!m.left||!m.right){if(m.kind==='league'){m.status='done';m.result=null;m.bye=true;continue;}settle(world,s,m,{winner:m.left?0:1,reason:'bye',wins:[0,0],kills:[0,0],deaths:[0,0],bye:true});continue;}
-    openRun(world,s,m);
+// --- GM commands (the Global names; parsed by server/world/gm-global-events.mjs)
+const matchKey=(type,group,order)=>`${String(type)}:${String(group)}:${String(order)}`;
+const needSeason=(world,code)=>{const s=season(world);if(!s)return fail(`DKRPvPBattle SetState ${code} BATTLE_NOT_EXIST`,404);return s;};
+export async function dkrGm(world,command,args){
+  dataOf(world);const a=args.map(v=>String(v));
+  switch(command){
+    case 'dkrpvp_create':{if(a.length<2)fail('dkrpvp_create [startTime] [endTime]');if(world.dkrPvp)return {message:`DKRPvPBattle CREATE ${world.dkrPvp.code} ALREADY_EXIST`};
+      const code=String((world.dkrPvpSerial=(world.dkrPvpSerial||0)+1));
+      world.dkrPvp={code,startTime:a[0],endTime:a[1],status:'start',statusEnd:null,teams:new Map(),serial:0,pending:null,matches:new Map(),runs:new Map()};
+      return {message:`DKRPvPBattle CREATE ${code}`};}
+    case 'dkrpvp_delete':{const s=season(world);if(!s||s.code!==a[0])return {message:`DKRPvPBattle DELETE ${a[0]??''} BATTLE_NOT_EXIST`};
+      for(const run of [...s.runs.values()])await closeRun(world,s,run,true);world.dkrPvp=null;return {message:`DKRPvPBattle DELETE ${a[0]}`};}
+    case 'dkrpvp_setstatus':{const s=needSeason(world,a[0]??'');if(!DKR_STATUS.includes(a[0]))fail('dkrpvp_setstatus [start|apply|league|tournament|end] [end time]');
+      s.status=a[0];s.statusEnd=a[1]??null;return {message:`DKRPvPBattle SetState ${a[0]}`};}
+    case 'dkrpvp_applystart':{const s=needSeason(world,'apply');if(a.length<3)fail('dkrpvp_applystart [teamname] [teammark] [teammarkbg]');
+      const name=cleanName(a[0]),mark=guildMark({icon:Number(a[1]),bg:Number(a[2])});if(!mark)fail(DKR_TEXT.failed);nameCheck(s,name);
+      const id=`t${++s.serial}`;s.teams.set(id,{id,name,mark,leader:null,members:[],order:s.serial,registeredAt:world.now(),gm:true});s.pending=id;return {message:`${DKR_TEXT.applied} ${name}`};}
+    case 'dkrpvp_applymember':{const s=needSeason(world,'apply'),t=s.pending&&s.teams.get(s.pending);if(!t)fail('dkrpvp_applystart [teamname] [teammark] [teammarkbg]');
+      if(a.length<7)fail('dkrpvp_applymember [membername] [membercharno] [memberuserno] [class] [grade] [world] [level]');
+      if(t.members.length>=DKR_TEAM_SIZE)fail(DKR_TEXT.count);if(teamOf(s,a[1]))fail(DKR_TEXT.already,409);
+      t.members.push({characterId:a[1],name:a[0],userNo:a[2],classIndex:Number(a[3])||0,grade:Number(a[4])||0,world:Number(a[5])||0,level:Number(a[6])||1});
+      if(!t.leader)t.leader=a[1];return {message:`${DKR_TEXT.applied} ${a[0]}`};}
+    case 'dkrpvp_selectteam':needSeason(world,'');return {message:DKR_REMOVED.selectteam,removed:true};
+    case 'dkrpvp_createleague':needSeason(world,'');return {message:DKR_REMOVED.createleague,removed:true};
+    case 'dkrpvp_createtournament':{const s=needSeason(world,'');if(a.length<9)fail('dkrpvp_createtournament [league group1] [league order1] [league team1] [league group2] [league order2] [league team2] [tournament group] [tournament order] [match time]');
+      const key=matchKey('tournament',a[6],a[7]);
+      s.matches.set(key,{key,kind:'tournament',match:Number(a[6]),order:Number(a[7]),time:a[8],from:[{group:a[0],order:a[1],team:a[2]},{group:a[3],order:a[4],team:a[5]}],left:null,right:null,status:'pending',result:null});
+      return {message:`DKRPvPBattle CREATE ${key}`,note:DKR_REMOVED.tournamentTeam,removed:true};}
+    case 'dkrpvp_open':{const s=needSeason(world,a.join(' '));const m=s.matches.get(matchKey(a[0],a[1],a[2]));
+      if(!m)return {message:`DKRPvPBattle SetState ${a.join(' ')} BATTLE_NOT_EXIST`};if(!m.left||!m.right)return {message:`DKRPvPBattle SetState ${m.key} BATTLE_NOT_EXIST`,note:DKR_REMOVED.tournamentTeam};
+      if(s.runs.has(m.key))return {message:`DKRPvPBattle SetState ${m.key} ALREADY_EXIST`};openRun(world,s,m);return {message:`DKRPvPBattle SetState ${m.key}`};}
+    case 'dkrpvp_finish':{const s=needSeason(world,a.join(' '));const key=matchKey(a[0],a[1],a[2]),run=s.runs.get(key);if(!run)return {message:`DKRPvPBattle SetState ${key} BATTLE_NOT_EXIST`};
+      finishRun(world,s,run);return {message:`DKRPvPBattle SetState ${key}`};}
+    default:return null;
   }
-  for(const run of [...s.runs.values()])await tickRun(world,s,run);
-  if(s.bracket&&!s.runs.size&&[...s.matches.values()].every(m=>m.status==='done'))s.ended=true;
+}
+// --- a GM-opened match: entry for config.csv Wait_Time, then the fight for Round_Time; dkrpvp_finish ends it.
+function openRun(world,s,m){const d=dataOf(world),now=world.now(),team=id=>s.teams.get(id);
+  const sides=[m.left,m.right].map(id=>{const t=team(id);return {teamId:id,name:t?.name||'',mark:t?.mark||null,members:memberIds(t),ids:new Set(),kills:0,deaths:0,wins:0};});
+  const run={key:m.key,kind:m.kind,group:m.group,match:m.match,order:m.order,at:now,phase:'entry',phaseEnd:now+d.waitSec*1000,round:1,rounds:[],sides,stats:new Map(),observers:new Set(),instance:null,result:null};
+  m.status='open';s.runs.set(m.key,run);return run;}
+function finishRun(world,s,run){const m=s.matches.get(run.key);if(run.phase==='battle'||run.phase==='entry')run.rounds.push({winner:null,kills:run.sides.map(x=>x.kills),deaths:run.sides.map(x=>x.deaths)});
+  run.phase='matchEnd';run.phaseEnd=null;
+  // Removed (no source, lane 71): no match winner rule is in Global data; only the counted kills / deaths are recorded.
+  run.result={winner:null,wins:[0,0],kills:run.sides.map(x=>x.kills),deaths:run.sides.map(x=>x.deaths),rounds:run.rounds};
+  if(m){m.status='done';m.result=run.result;}}
+async function closeRun(world,s,run,force=false){
+  const members=[...world.players.values()].filter(q=>runOf(world,q)===run);
+  if(members.length){if(!force)return false;for(const q of members)await exitInstance(world,q).catch(()=>{});}
+  if(run.instance)void requestInstanceClose(world,run.instance)?.catch?.(()=>{});s.runs.delete(run.key);return true;}
+export async function tickDkrPvp(world){const s=season(world);if(!s||!tablesOf(world))return;const d=dataOf(world),now=world.now();
+  for(const run of [...s.runs.values()]){
+    if(run.phase==='entry'&&now>=run.phaseEnd){run.phase='battle';run.phaseEnd=now+d.roundSec*1000;}
+    else if(run.phase==='battle'&&now>=run.phaseEnd){run.phase='roundEnd';run.phaseEnd=null;run.rounds.push({winner:null,kills:run.sides.map(x=>x.kills),deaths:run.sides.map(x=>x.deaths)});}
+    else if(run.phase==='matchEnd'&&run.instance){const inside=[...world.players.values()].some(q=>runOf(world,q)===run);if(!inside)await closeRun(world,s,run);}
+  }
 }
 // --- enter (job 160) / observe (job 161) / leave
-async function admit(world,run,p,observer){const d=dataOf(world),exit={map:p.map,x:p.x,z:p.z};
-  if(!run.instance)run.instance=await createInstance(world,{map:d.map,members:[p],kind:'dkrPvp',exit,durationMs:(d.waitSec+d.createSec+C.maxRounds*(C.countSec+d.roundSec+C.finishRoundSec+C.breakSec)+C.finishMatchSec+300)*1000});
+async function admit(world,run,p){const d=dataOf(world),exit={map:p.map,x:p.x,z:p.z};
+  if(!run.instance)run.instance=await createInstance(world,{map:d.map,members:[p],kind:'dkrPvp',exit});
   else{const instance=run.instance;world.emit(p.map,{type:'leave',actorId:p.id});p.instanceId=instance.id;p.map=instance.map;p.path=[];p.mount=null;p.pet=null;instance.admitted.add(p.characterId);instance.members.add(p.id);p.profile.instance={id:instance.id,kind:instance.kind,map:instance.map,exit:instance.exit};}
-  const i=sideOf(run,p),[x,z]=observer?C.observerPoint:(i===0?d.teamA:d.teamB)[Math.max(0,run.sides[i].ids.size-1)%DKR_TEAM_SIZE];
+  const i=sideOf(run,p),[x,z]=(i===0?d.teamA:d.teamB)[Math.max(0,run.sides[i].ids.size-1)%DKR_TEAM_SIZE];
   const at=run.instance.scene.nearest(Number(x)+.5,Number(z)+.5);if(at){p.x=at.x;p.z=at.z;}
-  if(observer)run.observers.add(p.characterId);world.changed(p);await world.persist(p);if(!observer)world.emit(p.map,{type:'join',actorId:p.id});
+  world.changed(p);await world.persist(p);world.emit(p.map,{type:'join',actorId:p.id});
 }
 async function enter(world,p,input){
-  requireNpc(world,p,DKR_JOBS.enter,input);const s=S(world),open=[...s.runs.values()].filter(r=>r.phase==='entry');if(!open.length)fail(DKR_TEXT.noMatch,409);
+  requireNpc(world,p,DKR_JOBS.enter,input,DKR_TEXT.noMatch);const s=season(world),open=[...(s?.runs.values()||[])].filter(r=>r.phase==='entry');if(!open.length)fail(DKR_TEXT.noMatch,409);
   const t=teamOf(s,p.characterId);if(!t)fail(DKR_TEXT.onlyRegistered,403);const run=open.find(r=>r.sides.some(x=>x.teamId===t.id));if(!run)fail(DKR_TEXT.noMatch,409);
-  if(p.mount?.phase==='on'||p.mount?.phase==='mounting')fail(DKR_TEXT.mounted,409);if(p.partyId)fail(DKR_TEXT.inParty,409);if(p.instanceId)fail(DKR_TEXT.busy,409);
+  if(p.mount?.phase==='on'||p.mount?.phase==='mounting')fail(DKR_TEXT.mounted,409);if(p.partyId)fail(DKR_TEXT.inParty,409);if(p.instanceId)fail(DKR_TEXT.noMatch,409);
   const i=run.sides.findIndex(x=>x.teamId===t.id);run.sides[i].ids.add(p.id);run.stats.set(p.id,{kills:0,deaths:0});
-  await admit(world,run,p,false);return {operation:'enter',key:run.key};
-}
-async function observe(world,p,input){
-  requireNpc(world,p,DKR_JOBS.observe,input);const s=S(world),d=dataOf(world),list=[...s.runs.values()].filter(r=>r.phase!=='matchEnd');if(!list.length)fail(DKR_TEXT.noMatch,409);
-  const run=list.find(r=>r.key===input.key)||(input.key==null?list[0]:null);if(!run)fail(DKR_TEXT.noMatch,409);
-  if(run.sides.some(x=>x.members.includes(p.characterId)))fail(DKR_TEXT.fighter,403);if(run.observers.size>=d.observerMax)fail(DKR_TEXT.full,409);
-  if(p.mount?.phase==='on'||p.mount?.phase==='mounting')fail(DKR_TEXT.mounted,409);if(p.instanceId)fail(DKR_TEXT.busy,409);
-  await admit(world,run,p,true);return {operation:'observe',key:run.key};
+  await admit(world,run,p);return {operation:'enter',key:run.key};
 }
 export async function dkrCommand(world,p,input){
   dataOf(world);
@@ -201,34 +189,33 @@ export async function dkrCommand(world,p,input){
     case 'register':return register(world,p,input);
     case 'edit':return edit(world,p,input);
     case 'cancel':return cancel(world,p,input);
-    case 'info':requireNpc(world,p,DKR_JOBS.info,input);return {operation:'info'};
+    case 'info':requireNpc(world,p,DKR_JOBS.info,input,DKR_TEXT.noMatch);return {operation:'info'};
     case 'enter':return enter(world,p,input);
-    case 'observe':return observe(world,p,input);
-    case 'leave':{const run=runOf(world,p);if(!run)fail('You are not in a DK Rumble match.');run.observers.delete(p.characterId);if(run.phase==='battle'&&sideOf(run,p)>=0)markDown(world,run,p,null);await exitInstance(world,p);return {operation:'leave'};}
-    default:fail('Choose a DK Rumble operation.');
+    case 'observe':requireNpc(world,p,DKR_JOBS.observe,input,DKR_TEXT.noMatch);fail(DKR_REMOVED.observerPoint,409);break;
+    case 'leave':{const run=runOf(world,p);if(!run)fail(DKR_TEXT.noMatch);run.observers.delete(p.characterId);await exitInstance(world,p);return {operation:'leave'};}
+    default:fail(DKR_TEXT.noMatch);
   }
 }
-// --- snapshot (sent near the Entry Guards, inside a match, and to registered players)
+// --- snapshot (near the Entry Guards, inside a match, and to registered players). phase: the GM status read for the windows.
+const PHASE={start:'before',apply:'registration',league:'league',tournament:'tournament',end:'ended'};
 const teamView=t=>t?{id:t.id,name:t.name,mark:t.mark,members:t.members.map(m=>({name:m.name,classIndex:m.classIndex,level:m.level}))}:null;
-const matchView=m=>({key:m.key,kind:m.kind,group:m.group,match:m.match,order:m.order,at:m.at,left:m.left,right:m.right,status:m.status,bye:!!m.bye,
-  result:m.result?{winner:m.result.winner,reason:m.result.reason,bye:!!m.result.bye,wins:m.result.wins,kills:m.result.kills,deaths:m.result.deaths,rounds:m.result.rounds,members:m.result.members}:null});
-const entrant=(world,run,id)=>{const q=byId(world,id),st=run.stats.get(id)||{kills:0,deaths:0};return q?{id,name:q.profile.name,classIndex:Number(q.profile.classIndex)||0,level:q.profile.level,down:run.down.has(id),hp:q.hp,maxHp:q.maxHp,shield:Number(q.shield)||0,maxShield:Number(q.stats?.maxShield)||0,...st}:{id,down:true,...st};};
-const runView=(world,run,p,d)=>({key:run.key,kind:run.kind,group:run.group,match:run.match,order:run.order,at:run.at,phase:run.phase,remainingMs:Math.max(0,run.phaseEnd-world.now()),round:run.round,rounds:run.rounds,
-  roundKills:run.roundKills,firstKill:run.firstKill,observers:run.observers.size,observerMax:d.observerMax,observerSpeed:d.observerSpeed,
+const matchView=m=>({key:m.key,kind:m.kind,group:m.group,match:m.match,order:m.order,at:m.at??null,time:m.time??null,left:m.left,right:m.right,status:m.status,bye:false,result:m.result});
+const entrant=(world,run,id)=>{const q=byId(world,id),st=run.stats.get(id)||{kills:0,deaths:0};return q?{id,name:q.profile.name,classIndex:Number(q.profile.classIndex)||0,level:q.profile.level,down:!!q.dead,hp:q.hp,maxHp:q.maxHp,shield:Number(q.shield)||0,maxShield:Number(q.stats?.maxShield)||0,...st}:{id,down:true,...st};};
+const runView=(world,run,p,d)=>({key:run.key,kind:run.kind,group:run.group,match:run.match,order:run.order,at:run.at,phase:run.phase,remainingMs:run.phaseEnd?Math.max(0,run.phaseEnd-world.now()):0,round:run.round,rounds:run.rounds,
+  roundKills:run.sides.map(x=>x.kills),firstKill:null,observers:run.observers.size,observerMax:d.observerMax,observerSpeed:d.observerSpeed,
   sides:run.sides.map(x=>({teamId:x.teamId,name:x.name,mark:x.mark,wins:x.wins,kills:x.kills,deaths:x.deaths,entrants:[...x.ids].map(id=>entrant(world,run,id))})),
-  mySide:sideOf(run,p),inside:runOf(world,p)===run,observer:run.observers.has(p.characterId)&&runOf(world,p)===run,down:run.down.has(p.id),result:run.result});
+  mySide:sideOf(run,p),inside:runOf(world,p)===run,observer:false,down:!!p.dead&&runOf(world,p)===run,result:run.result});
 const nearGuard=(world,p)=>{try{return npcPlacements(world,p.map).some(r=>r.jobs.some(([t])=>[DKR_JOBS.register,DKR_JOBS.enter,DKR_JOBS.observe].includes(Number(t))));}catch{return false;}};
 export function dkrSnapshot(world,p){
-  let d;try{d=dataOf(world);}catch{return null;}const s=world.dkrPvp;const mine=s&&teamOf(s,p.characterId),inside=runOf(world,p);
+  const d=tablesOf(world);if(!d)return null;const s=season(world),mine=teamOf(s,p.characterId),inside=runOf(world,p);
   if(!inside&&!mine&&!nearGuard(world,p))return null;
-  const now=world.now(),cal=d.calendar,party=p.partyId?world.parties?.get(p.partyId):null;
-  const out={phase:s?.ended?'ended':seasonPhase(cal,now),now,calendar:{registrationStart:cal.registrationStart,registrationEnd:cal.registrationEnd,leagueStart:cal.leagueStart},
+  const cal=d.calendar,party=p.partyId?world.parties?.get(p.partyId):null;
+  const out={phase:s?PHASE[s.status]:'before',status:s?.status||null,statusEnd:s?.statusEnd??null,code:s?.code??null,now:world.now(),
+    calendar:{registrationStart:cal.registrationStart,registrationEnd:cal.registrationEnd,leagueStart:cal.leagueStart},
     party:party?{leader:party.leader===p.id,members:party.members.map(id=>byId(world,id)).filter(Boolean).map(q=>({name:q.profile.name,classIndex:Number(q.profile.classIndex)||0,level:q.profile.level}))}:null,
-    my:mine?{...teamView(mine),leader:mine.leader===p.characterId,group:s.groups?Object.keys(s.groups).find(g=>s.groups[g].includes(mine.id))||null:null}:null,
-    teams:{},groups:null,matches:[],open:[],run:null,champion:s?.champion||null,teamCount:s?.teams.size||0};
+    my:mine?{...teamView(mine),leader:mine.leader===p.characterId,group:null}:null,teams:{},groups:null,matches:[],open:[],run:null,champion:null,teamCount:s?.teams.size||0};
   if(!s)return out;
   for(const t of s.teams.values())out.teams[t.id]=teamView(t);
-  if(s.groups)out.groups=Object.fromEntries(Object.entries(groupRanks(s)));
   out.matches=[...s.matches.values()].map(matchView);
   out.open=[...s.runs.values()].filter(r=>r.phase!=='matchEnd').map(r=>({key:r.key,kind:r.kind,group:r.group,match:r.match,order:r.order,at:r.at,phase:r.phase,left:r.sides[0].teamId,right:r.sides[1].teamId,observers:r.observers.size}));
   const run=inside||(mine&&[...s.runs.values()].find(r=>r.sides.some(x=>x.teamId===mine.id)));if(run)out.run=runView(world,run,p,d);

@@ -10,11 +10,20 @@ import { ARENA_CHOSEN as C } from '../../config/engine-chosen-arena.js';
 import { ARENA_JOBS, SUNSTONE_JOB, ARENA_SCRIPTS, ARENA_STRINGS, ARENA_TEXT, TEAM_NAME_CODES, TEAM_COLOURS, GRADE_NAME_CODES, fmtClock } from './arena-rules.js';
 import { classIconSprite } from '../../ui/atlas.js';
 import { teamStonesFor } from '../network/team-stones.js';
+import { presentGlobalMessage } from '../events/mode-ui-rules.js';
 
 const plain = s => String(s ?? '').replace(/<\/?center>/gi, '').replace(/<\/?color[^>]*>/gi, '').replace(/@<effectui>[^\s]*/g, '').replace(/\\n/g, '\n').trim();
 export function arenaString(game, cate, code, fallback = '') {
   const s = game?.uiwin?.strings?.get?.({ group: 'NORMAL', cate, code });
   return s == null ? fallback : plain(s);
+}
+/** The unstripped Global line (banner tokens and [tag] kept) for presentGlobalMessage. */
+export function arenaRaw(game, cate, code) {
+  return String(game?.uiwin?.strings?.get?.({ group: 'NORMAL', cate, code }) ?? '');
+}
+/** Global Chat::UIHandler order: @<effectui> banners and the [siege]/[message] window, then the chat line. */
+export function presentArenaLine(game, raw, text) {
+  try { presentGlobalMessage(game, raw, text); } catch { /* banners are optional */ }
 }
 const K = (game, key, fallback = key) => { const [c, n] = ARENA_STRINGS[key] || []; return c == null ? fallback : arenaString(game, c, n, fallback); };
 const fmt = (s, ...v) => { let i = 0; return String(s).replace(/%%/g, '%').replace(/%[sd]/g, () => String(v[i++] ?? '')); };
@@ -97,7 +106,7 @@ export function fillBoard(game, win, rows, selfId) {
 /** HUD lines (EventUI dungeonTimes): time left, Sunstone owner / keep countdown, personal points, revive countdown. */
 export function battleLines(game, battle, now) {
   if (!battle) return [];
-  const lines = [`<color=fdb602>${K(game, 'timeLeft', 'Time remaining')}:</color> ${fmtClock((battle.phase === 'over' ? battle.finishAt : battle.endsAt) - now)}`];
+  const lines = [`<color=fdb602>${K(game, 'timeLeft', 'Time remaining')}:</color> ${battle.phase === 'over' ? fmtClock(0) : fmtClock(battle.endsAt - now)}`];
   if (battle.sun) {
     lines.push(`<color=fdb602>Sunstone:</color> ${battle.sun.owner >= 0 ? teamLabel(game, battle.sun.owner) : K(game, 'neutral', 'Neutral State')}`);
     if (battle.sun.owner >= 0 && battle.sun.keepEndsAt) lines.push(`<color=fdb602>${K(game, 'untilWin', 'Until team\'s victory:')}</color> ${fmtClock(battle.sun.keepEndsAt - now)}`);
@@ -105,14 +114,13 @@ export function battleLines(game, battle, now) {
   }
   lines.push(`<color=fdb602>${teamLabel(game, battle.team)}:</color> ${battle.me.points}${battle.activeScore ? ` / ${battle.activeScore}` : ''}`);
   if (battle.me.down && battle.me.autoExitAt) lines.push(`${plain(ARENA_TEXT.revive).split('\n')[0]} ${fmtClock(battle.me.autoExitAt - now)}`);
-  if (battle.phase === 'over' && battle.finishAt) lines.push(fmt(arenaString(game, 160, 70, 'The battle has ended. You will be moved out of the lobby in %d second(s).'), Math.max(0, Math.ceil((battle.finishAt - now) / 1000))).replace(/\n/g, ' '));
   return lines;
 }
 
 export function installSharedArena(game, network) {
   const st = { state: null, wins: {}, tab: null, refresh: null, checked: false, shownResult: null, missionShown: null, ui: null, lines: [] };
   const report = e => { const m = plain(e?.message || String(e)); (game.chat?.system?.(m, 'err')) ?? game.hud?.log?.(m, 'err'); };
-  const say = m => { const s = plain(m); (game.chat?.system?.(s)) ?? game.hud?.log?.(s); };
+  const say = m => { const s = plain(m); presentArenaLine(game, m, s); (game.chat?.system?.(s)) ?? game.hud?.log?.(s); };
   const online = () => !!network?.active && game.save?.authority === 'server';
   const now = () => (typeof network?.serverNow === 'function' ? network.serverNow() : Date.now());
   const battle = () => st.state?.battle || null;
@@ -141,7 +149,7 @@ export function installSharedArena(game, network) {
     } else { const h = await create('horizon'); if (h) { fillHorizon(h, b); open(h); } }
     if (st.missionShown !== b.id) {
       st.missionShown = b.id;
-      for (const code of b.missions || []) say(arenaString(game, 160, code, ''));
+      for (const code of b.missions || []) say(arenaRaw(game, 160, code));
     }
     if (st.wins.info?.isOpen) fillBattleInfo(game, st.wins.info, { battle: b, result: st.state?.result?.battle === b.id ? st.state.result : null, selfId: network.self?.id ?? game.player?.id, tab: st.tab });
     st.lines = battleLines(game, b, now());

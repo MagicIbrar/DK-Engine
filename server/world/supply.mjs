@@ -7,9 +7,10 @@ import {socialState,socialTransaction} from './social-state.mjs';
 import {progressDekaPass} from './dekapass.mjs';
 import {assertNieteService,assertCombatService} from './niete-services.mjs';
 import {serverDayKey} from '../../src/game/server-time.js';
+import {ORBIS_PAY_ITEMS, ORBIS_DAILY, ORBIS_MIX_COST, ORBIS_MIN_LEVEL} from '../../src/systems/shops/supply-rules.js';
 
 export const SUPPLY_SCHEMAS={supply:['token','type','operation','kind','plateId','requestId']};
-const PAY=[1756038,1192509,1756037],DAILY=10,MIX_COST=500000;
+const PAY=ORBIS_PAY_ITEMS,DAILY=ORBIS_DAILY,MIX_COST=ORBIS_MIX_COST;
 const pick=(world,rows)=>{const total=rows.reduce((n,r)=>n+r.weight,0);if(!(total>0))deny('No original supply rewards remain.');let r=world.random()*total;for(const row of rows){r-=row.weight;if(r<0)return row;}return rows.at(-1);};
 function globalState(state,day){
  // ENGINE-CHOSEN: server_limit shares the native plate's midnight reset. The
@@ -42,7 +43,7 @@ export async function supplyCommand(world,p,input){
   const M=world.data.shopData?.shops?.supplyMachine;if(!M||!world.data.itemDB)deny('Original supply catalog is unavailable.');
   if(p.dead||p.leaving||p.sceneTransition||p.tradeId||p.charTradeId||p.pcShopOpen)deny('Supply is unavailable while dead, travelling or trading.');
   assertNieteService(world,p);assertCombatService(world,p);
-  if(kind==='orbis'&&(p.profile.level||1)<80)deny('Available for those above Level 80.');
+  if(kind==='orbis'&&(p.profile.level||1)<ORBIS_MIN_LEVEL)deny('Available for those above Level 80.');
   const day=serverDayKey(world.now()),current=socialState(world);
   if(operation==='state'&&kind==='fieldboss')return {kind,plate:fieldPlate(M)};
   if(operation==='state'&&p.profile.orbis?.day===day&&current.supply?.day===day&&p.profile.orbis?.id&&p.profile.orbis.slots?.length===10)return {kind,plate:plateView(p.profile.orbis,current.supply)};

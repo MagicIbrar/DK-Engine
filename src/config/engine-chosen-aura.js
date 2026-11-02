@@ -27,6 +27,17 @@ export const AURA = Object.freeze({
   /** strength of each kind of source (a weapon gem/refinement overlay = 1). ENGINE-CHOSEN. */
   WEAPON_GEM: 1.0,
   WEAPON_REFINE: 1.0,
+  /** JUDGMENT (LANE-70, 2026-10-29; no Global value exists, so 0.2 is kept only for the legacy path):
+   *  GLOBAL DATA: glow.fx / blurglow.fx author one glowColor {0.4, 0.4, 0.4, 1} for every glow source and no per-source or armor
+   *  strength; effectscene 7:10 (the refinement shell) authors texture x colour x alpha keys only, no glow key.
+   *  GLOBAL DECOMPILE (32-bit main): the only glow binding is the generic material slot glowTexture (FUN_00740220 / FUN_01576110
+   *  slot 0x1e, next to bumpTexture and modelViewProj); there is no glowColor, blurglow, refine or armor glow string or constant.
+   *  SERVER-REF (data only): only item / NPC names contain 'aura' or 'glow'; no render value.
+   *  ONLINE (elitepvpers Dekaron private-server threads 428792, 429919, 2466371; community, not official): the armor/weapon refine look
+   *  is the meshstatus ms_upgrade_U_* / ms_upgrade_W_* shell on Effect\Levelup\eff_upgrade_*.dds, and its strength is the effectscene /
+   *  mesh_status alpha keys. That matches the data above: there is no separate armor aura strength.
+   *  Not reached by default: gfx-B refineShellAuthored (fx-units.js glowRim = 0) adds no refinement shell to the glow buffer, and
+   *  gfx-B previewAuraAuthored (mounts/preview-aura.js) adds no preview armor aura. Used only when both are switched off. */
   ARMOR_REFINE: 0.2,
   /** authored alpha at which a refinement overlay counts as fully lit (the authored peak keys are 0.67 / 0.7 / 0.8). */
   REFINE_ALPHA_REF: 0.8,

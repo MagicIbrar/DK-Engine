@@ -11,6 +11,9 @@ import {documentedSocketLimit} from '../../src/systems/items/socket-capacity.js'
 import {SkillEngine} from '../../src/systems/skills/engine.js';
 import {SkillData} from '../../src/systems/skills/data.js';
 import {awardMeisterRank} from '../../src/systems/skills/rank.js';
+import {applyAdminCharacterBuilds,ADMIN_CLASS_ROLES,ADMIN_BUILD_POLICY,normalizeStaffShowcase,STAFF_STANCE_VERSION} from './owner-admin-builds.mjs';
+import {isStaffBracketAccount,normalizeStaffBracket,staffBracket} from './staff-brackets.mjs';
+import {normalizeStaffCharacterName} from '../../src/game/character-name.js';
 const CAPACITY=d=>(d.socketRates||[]).reduce((n,rate,i)=>Number(rate)>0?Math.min(4,i+1):n,0);
 export function supportedSocketCapacity(db,def){
  const native=CAPACITY(def),limit=documentedSocketLimit(db,def);if(limit===0)return 0;if(!socketable(def))return limit===null?native:Math.min(native,limit);if(limit===null)return native;
@@ -88,10 +91,14 @@ export function adminProfile(data,existing,ci,now=Date.now()){
  if(!gear.some(g=>g.slot===S.weapon))throw Error('No compatible original weapon for '+def.name);
  const skills=maximizeOwnerSkills(data,profile);
  const result=canonicalStats(data,profile),stats=result.stats;if(!Number.isFinite(stats.maxHp)||!Number.isFinite(stats.maxMp))throw Error('Invalid canonical derived stats');profile.equipment=result.view;profile.hp=stats.maxHp;profile.mp=stats.maxMp;
- profile.ownerProvision={...(profile.ownerProvision||{}),version:2,level:data.maxLevel,policy:OWNER_GEAR_POLICY};
  const changes={missingSlots:[],itemChanges:[],gemChanges:[],optionChanges:[]};
- for(const selected of gear){const old=previous?.items?.[previousPreset[selected.slot]],current=equipment.get(selected.slot);if(!old)changes.missingSlots.push(selected.slot);else{if(old.itemIndex!==selected.itemIndex)changes.itemChanges.push(selected.slot);if(JSON.stringify(old.sockets||[])!==JSON.stringify(current.sockets||[]))changes.gemChanges.push(selected.slot);if(JSON.stringify(old.rnd||[])!==JSON.stringify(current.rnd||[]))changes.optionChanges.push(selected.slot);}}
- return {profile,summary:{classIndex:ci,className:def.name,existing:!!existing,level:profile.level,baseStats:profile.stats,gear,unavailable,skills,changes,policy:OWNER_GEAR_POLICY}};
+ for(const selected of gear){const old=previous?.items?.[previousPreset[selected.slot]],current=equipment.get(selected.slot);if(!old)changes.missingSlots.push(selected.slot);else{if(old.itemIndex!==selected.itemIndex)changes.itemChanges.push(selected.slot);if(JSON.stringify(old.sockets||[])!==JSON.stringify(current.sockets||[]) )changes.gemChanges.push(selected.slot);if(JSON.stringify(old.rnd||[])!==JSON.stringify(current.rnd||[]))changes.optionChanges.push(selected.slot);}}
+ const builds=applyAdminCharacterBuilds(data,profile,{policy:OWNER_GEAR_POLICY});
+ // Dual loadouts may rewrite preset-0 weapons/tab-II; refresh derived view for the active preset.
+ const after=canonicalStats(data,profile);if(!Number.isFinite(after.stats.maxHp)||!Number.isFinite(after.stats.maxMp))throw Error('Invalid post-build derived stats');
+ profile.equipment=after.view;profile.hp=after.stats.maxHp;profile.mp=after.stats.maxMp;
+ profile.ownerProvision={...(profile.ownerProvision||{}),version:3,level:data.maxLevel,policy:OWNER_GEAR_POLICY,roles:builds.roles,buildPolicy:ADMIN_BUILD_POLICY};
+ return {profile,summary:{classIndex:ci,className:def.name,existing:!!existing,level:profile.level,baseStats:profile.stats,gear,unavailable,skills,changes,policy:OWNER_GEAR_POLICY,roles:builds.roles,builds}};
 }
 
 // Invoked only inside accounts.ownerLaunch's authenticated fresh-admin branch.
@@ -99,7 +106,7 @@ export function adminProfile(data,existing,ci,now=Date.now()){
 export function createFreshOwnerRoster({dataRoot,gamedataRoot,customItemsFile,loadData}={}) {
  let loading;
  return async owner => {
-  if(owner?.id!=='admin'||!Array.isArray(owner.characters)||owner.characters.length)throw Error('Initial roster requires a fresh installation-owner account.');
+  if(!isStaffBracketAccount(owner?.id)||!Array.isArray(owner.characters)||owner.characters.length)throw Error('Initial roster requires a fresh staff-bracket account.');
   if(!loading)loading=(async()=>{
    const data=loadData?await loadData():await loadWorldData({dataRoot,gamedataRoot,customItemsFile});
    const ownerGradeData=data.ownerGradeData||JSON.parse(await fs.readFile(path.join(gamedataRoot,'life.json'),'utf8')).grade;
@@ -107,7 +114,99 @@ export function createFreshOwnerRoster({dataRoot,gamedataRoot,customItemsFile,lo
    return {...data,ownerGradeData};
   })().catch(error=>{loading=null;throw error;});
   const data=await loading,now=Date.now(),characters=[];
-  for(let ci=0;ci<15;ci++)characters.push(adminProfile(data,null,ci,now).profile);
+  const bracket=staffBracket(owner.id);
+  for(let ci=0;ci<15;ci++){
+   const {profile}=adminProfile(data,null,ci,now);
+   profile.name=normalizeStaffCharacterName(profile.name,bracket.tag);
+   profile.staffPrivileges=true;
+   profile.ownerProvision={...(profile.ownerProvision||{}),staffRole:normalizeStaffBracket(owner.id),account:owner.id};
+   characters.push(profile);
+  }
   return characters;
  };
+}
+
+/**
+ * STAFF_CREATE_HOOK - character create with GM / DEV / ADMIN staff checkboxes.
+ * When `data` (world tables) is provided, applies full adminProfile loadouts in place:
+ * BiS armor/rings, dual-hand, tab swap, buff/attack/PvP bars (healers get real party-range
+ * buffs first). Without data, stamps pendingStaffLoadout for resolvePendingStaffLoadout.
+ */
+export function applyStaffCharacterCreate(profile, { account, classIndex, data, staffRole = null, now = Date.now() } = {}) {
+  if (!profile || typeof profile !== 'object') throw new Error('Staff create hook requires a character profile.');
+  const ci = Number.isInteger(classIndex) ? classIndex : Number(profile.classIndex);
+  if (!Number.isInteger(ci) || ci < 0 || ci > 14) throw new Error('Staff create hook requires classIndex 0..14.');
+  profile.staffPrivileges = true;
+  const keep = {
+    id: profile.id,
+    name: profile.name,
+    nameColor: profile.nameColor,
+    created: profile.created,
+    lastPlayed: profile.lastPlayed,
+    dil: profile.dil,
+  };
+  if (data) {
+    const { profile: built } = adminProfile(data, profile, ci, now);
+    for (const key of Object.keys(built)) profile[key] = built[key];
+    if (keep.id) profile.id = keep.id;
+    if (keep.name) profile.name = keep.name;
+    if (keep.nameColor != null) profile.nameColor = keep.nameColor;
+    if (keep.created) profile.created = keep.created;
+    if (keep.lastPlayed) profile.lastPlayed = keep.lastPlayed;
+    if (keep.dil != null) profile.dil = keep.dil;
+    profile.staffPrivileges = true;
+    profile.ownerProvision = {
+      ...(profile.ownerProvision || {}),
+      pendingStaffLoadout: false,
+      staffRole: (staffRole && (()=>{try{return normalizeStaffBracket(staffRole);}catch{return 'gm';}})()) || (account && isStaffBracketAccount(account) ? normalizeStaffBracket(account) : 'gm'),
+      classIndex: ci,
+      account: account || null,
+    };
+  } else {
+    profile.ownerProvision = {
+      ...(profile.ownerProvision || {}),
+      pendingStaffLoadout: true,
+      staffRole: (staffRole && (()=>{try{return normalizeStaffBracket(staffRole);}catch{return 'gm';}})()) || (account && isStaffBracketAccount(account) ? normalizeStaffBracket(account) : 'gm'),
+      classIndex: ci,
+      account: account || null,
+    };
+  }
+  return profile;
+}
+
+/** Consume pendingStaffLoadout with live world data (login / enter-world / GM provision). */
+export function resolvePendingStaffLoadout(data, profile, opts = {}) {
+  if (!profile?.ownerProvision?.pendingStaffLoadout) return profile;
+  return applyStaffCharacterCreate(profile, {
+    account: opts.account ?? profile.ownerProvision?.account,
+    classIndex: opts.classIndex ?? profile.classIndex,
+    data,
+    staffRole: opts.staffRole ?? profile.ownerProvision?.staffRole,
+    now: opts.now,
+  });
+}
+
+// STAFF-STANCE (2026-10-30): saved staff showcase characters made by older provisioning (e.g. a Great Axe with a shield, a
+// crossbow with arrows) are fixed when the account store loads. Works on a copy and only commits a fully successful result;
+// the change is persisted with the account's next normal save. Version-gated: runs once per character.
+export function normalizeStaffShowcaseProfile(data,profile){
+ const copy=structuredClone(profile),res=normalizeStaffShowcase(data,copy);
+ if(!res)return null;
+ const view=canonicalStats(data,copy);
+ if(Number.isFinite(view.stats.maxHp)&&Number.isFinite(view.stats.maxMp)){copy.equipment=view.view;copy.hp=Math.min(Number(copy.hp)||view.stats.maxHp,view.stats.maxHp);copy.mp=Math.min(Number(copy.mp)||view.stats.maxMp,view.stats.maxMp);}
+ for(const k of Object.keys(profile))if(!(k in copy))delete profile[k];
+ Object.assign(profile,copy);
+ return res;
+}
+export async function normalizeStaffShowcasesInStore(state,{gamedataRoot,loadData}={}){
+ const todo=[];
+ for(const u of Object.values(state?.users||{}))for(const c of u?.characters||[])if(c?.ownerProvision?.adminBuild&&c.equip?.presets&&(Number(c.ownerProvision.stanceVersion)||0)<STAFF_STANCE_VERSION)todo.push(c);
+ if(!todo.length)return {changed:0,checked:0};
+ let data;
+ try{data=loadData?await loadData():await loadWorldData({gamedataRoot});}catch(e){return {changed:0,checked:todo.length,error:String(e?.message||e)};}
+ if(!data?.itemDB)return {changed:0,checked:todo.length,error:'item catalog unavailable'};
+ data.itemDB.T??=data.itemUseData?.tables;
+ let changed=0;const errors=[];
+ for(const c of todo){try{if(normalizeStaffShowcaseProfile(data,c))changed++;}catch(e){errors.push(c.name+': '+(e?.message||e));}}
+ return {changed,checked:todo.length,errors};
 }

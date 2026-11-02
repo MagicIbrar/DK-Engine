@@ -1,4 +1,4 @@
-// Pets: the pet item equipped in slot 19 is summoned (casting bar, share/system_variable.csv 13/14: 3000 / 1000 ms) as a
+﻿// Pets: the pet item equipped in slot 19 is summoned (casting bar, share/system_variable.csv 13/14: 3000 / 1000 ms) as a
 // companion that follows the character, plays its own action table (share/action/action/pet/<item>.act.<shape>.dat:
 // STAND / MOVE index 0 walk, 1 run / SM_STAND / SM_MOVE under water), picks up drops for its master when the "Auto Item
 // Pickup" setting is on (the pet management window's filters: equipment by grade / accessories / enhancement items /
@@ -10,6 +10,7 @@ import { Actor, LOOP_STATES } from '../../actors/actor.js';
 import { ACT, EQUIP_SLOT } from './data.js';
 import { equippedItem } from './riding.js';
 import { nativeMountEffects, nativeVehicleEffect } from './native-effects.js';
+import {canDiscardDef} from '../items/flags.js';
 
 const FOLLOW_DIST = 1.8;          // units behind / beside the master
 const TELEPORT_DIST = 22;         // farther than this: the pet reappears next to the master
@@ -340,7 +341,7 @@ export class PetManager {
     const def = this.game.items?.def?.(idx) || null;
     const type = Number(def?.type ?? e.type ?? -1), code = Number(def?.code ?? e.code ?? -1);
     const cat = this.game.items?.category?.(idx) || def?.category || null;
-    if (cat === 'quest' || (type === 0 && code === 4)) return false;
+    if (cat === 'quest' || !canDiscardDef(def || { type, code })) return false;
     if (this.sys.data.ui?.petTables?.pickup?.length && this.sys.data.ui.petTables.pickup.some(r => r.item === idx)) return true;
     const grade = String(e.inst?.grade || e.grade || drop.grade || 'normal').toLowerCase();
     if (type === 2) return !!set.accessory;                                     // rings, necklaces, earrings
@@ -435,3 +436,4 @@ export class PetManager {
 }
 
 export const PET_INV_W = 10, PET_INV_H = 4;   // ui_petinfownd.txt slotbag 330 x 132 at 33 px cells
+

@@ -43,14 +43,43 @@ import { parseMol, molCategory } from '../formats/mol.js';
 import { loadObjectDB, resolveObjectAsync } from '../formats/assetresolve.js';
 import { fetchText, tryFetchBuffer } from '../engine/assets.js';
 import { applyShade, applyShadeTree } from './shade.js';
-import { freezeMatrices, materialFog } from '../engine/models.js';
+import { gfxB } from '../config/gfx-b-switches.js';   // LANE-54 pass 5 occlusionHideOff
+import { freezeMatrices, materialFog, scrollAlphaBlend } from '../engine/models.js'; // scrollAlphaBlend: gfx-B2 round 3 (fountain jets, sbs-9)
 import { patchObjectNormalBasis } from '../engine/object-normal.js';
+
+// 2026-10-29 [gfx2-env] off switches: globalThis.__dkGfxParity.<name> === false, or localStorage 'dk.gfx.<name>' === '0'.
+export function gfxSwitch(name) {
+  try {
+    const v = globalThis.__dkGfxParity?.[name];
+    if (v === false) return false;
+    if (v === true) return true;
+    return globalThis.localStorage?.getItem?.(`dk.gfx.${name}`) !== '0';
+  } catch { return true; }
+}
+/** script/object/field_extra.csv light-shaft rows (pt_light01, pt_light02, cs_light). */
+export const isLightShaftObject = (name) => /(^|[\\/])(pt_light0[12]|cs_light)$/i.test(String(name || ''));
+const _shaftMats = new WeakMap();
+/** Alpha-weighted additive (SrcAlpha, One), no alpha test, no depth write: see the [gfx2-env light-shafts] note in _loadGroup. */
+export function lightShaftMaterial(src) {
+  if (!src || Array.isArray(src)) return src;
+  let m = _shaftMats.get(src);
+  if (m) return m;
+  m = src.clone();
+  m.transparent = true;
+  m.blending = THREE.AdditiveBlending;
+  m.depthWrite = false;
+  m.alphaTest = 0;
+  m.userData = { ...src.userData, dkLightShaft: true };
+  _shaftMats.set(src, m);
+  return m;
+}
 
 const NEAR_RADIUS = 48;          // World.load waits for object names with a placement this close to the start
 const WORKERS = 6;               // parallel object-name loads
 // ENGINE-CHOSEN animated-object pose rate by distance (FILE units): every frame within `near`, every 2nd frame to `far`,
 // every 3rd beyond (the same thresholds idea as the actors' LOD). Console kill switch: globalThis.__dekaronNoAnimLod = true.
-const ANIM_OBJECT_LOD = Object.freeze({ near: 30, far: 60 });
+// SMOOTH-ANIM (2026-10-30): beyond near / far the floor is midHz / farHz poses a second (every frame at 60 fps).
+const ANIM_OBJECT_LOD = Object.freeze({ near: 30, far: 60, midHz: 90, farHz: 60 });
 const CULL_INTERVAL = 0.2;       // s between visibility rebuilds
 const PRIORITY_INTERVAL = 0.75;  // s between loading-queue re-sorts
 const PHASES = 4;                // (graphics) rigs per animated object name: placements spread over this many clip phases
@@ -70,7 +99,16 @@ export function objectDB() {
 }
 
 const flagOn = v => v === true || Number(v) > 0;
-export const objectFog = flags => [true, 1, '1'].includes(flags?.nofog) ? false : materialFog(flags?.fog);
+// [gfxA2 objectFogColumn] script/object/*.csv column 10 'fog' is a NO-fog flag, not "fog on": it is 0 on all but 12 of the
+// 7,439 rows of the 12 tables checked (Global 43.19) and 1 on etc\black, whose own descriptor object/static/etc/black.txt says "nofog 1".
+// The recording agrees: table props fade into the lavender fog (g066, 313:266: the windmill at 86 is fully fogged out).
+// So 0 (or blank) = fogged like terrain, 1 = no fog. 2 (wall\k_room_wall only) is not explained by the data: kept fogged.
+// Off: globalThis.__dkGfxParity.objectFogColumn = false or localStorage dk.gfx.objectFogColumn = '0' (old reading: 0 = no fog).
+export const objectFog = flags => {
+  if ([true, 1, '1'].includes(flags?.nofog)) return false;
+  if (gfxSwitch('objectFogColumn')) return !(flags?.fog === 1 || flags?.fog === '1' || flags?.fog === true);
+  return materialFog(flags?.fog);
+};
 
 /**
  * Performance: static instanced objects never move, so their matrices are computed once (and after every visibility
@@ -91,7 +129,8 @@ function freezeStatic(o) {
 async function firstExisting(keys) {
   for (const k of keys || []) {
     if (!k) continue;
-    const buf = await tryFetchBuffer(k).catch(() => null);
+    // tryFetchBuffer maps missing -> null and rethrows transient; do not swallow transport errors.
+    const buf = await tryFetchBuffer(k);
     if (buf) return k;
   }
   return null;
@@ -421,8 +460,8 @@ export class ObjectLayer {
     const near = this.groups.filter(g => g.minD2 <= r2);
     let done = 0;
     const total = near.length;
-    onProgress(0, `Objects 0/${total}`);
-    const nearDone = Promise.all(near.map(g => new Promise(res => { g._onDone = () => { done++; onProgress(done / Math.max(1, total), `Objects ${done}/${total}`); res(); }; })));
+    onProgress(0, '');
+    const nearDone = Promise.all(near.map(g => new Promise(res => { g._onDone = () => { done++; onProgress(done / Math.max(1, total), ''); res(); }; })));
     this._pump();
     let timer;
     try{await Promise.race([nearDone,new Promise(res=>{timer=setTimeout(res,timeoutMs);})]);}
@@ -489,6 +528,16 @@ export class ObjectLayer {
     const model = await this.models.loadStatic(meshKey, opts);
     if (this._disposed) return;
     if (!model || !model.parts?.length) { g.state = 'failed'; return; }
+    // 2026-10-29 [gfx2-env light-shafts] Global's placed light shafts (owner: "sun beams at specific spots"): script/object/field_extra.csv
+    // pt_light01 / pt_light02 / cs_light (mesh = a leaning fan of quads ~52 units tall, tpack slot 0 = pt_light_01#.dds / cs_light#.dds,
+    // RGB constant 255,255,121 with the streak pattern ONLY in alpha 0..17, uvspeed 0.03 along U). Placed by map/*.mol (Ardeca
+    // Halloween 14, ardeca_global_h 14, Dravis fields 8, castor 17, fantasy 27, ...). The engine drew them alpha-tested at 0.5, i.e.
+    // fully discarded (alpha <= 17/255): invisible. Global recording (global-gfx-session2.mkv t=124..156 s, Ardeca plaza near the
+    // pt_light02 placements 303,118 / 301,158) shows soft diagonal streaks that lift the sky from 142,192,253 to 202..221,246..255,255
+    // while blue stays saturated: an alpha-weighted ADDITIVE draw (SrcAlpha, One), no depth write (the blend itself is in the exe;
+    // the alpha-only texture + the measured pixels are the evidence).
+    // OFF SWITCH: globalThis.__dkGfxParity = { lightShafts: false }  or  localStorage 'dk.gfx.lightShafts' = '0'.
+    if (isLightShaftObject(g.name) && gfxSwitch('lightShafts')) for (const p of model.parts) p.material = lightShaftMaterial(p.material);
     g.model = model;
     g.meshKey = meshKey;
     g.opts = opts;
@@ -583,6 +632,7 @@ export class ObjectLayer {
         patchObjectNormalBasis(mat);
         maps.push(mat.normalMap);
       }
+      scrollAlphaBlend(mat); // gfx-B2 round 3: smooth-alpha scrolling water drawn blended (g195), switch scrollAlphaBlend
       applyShade(mat);
       this.game.hudOptions?.effects?.applyMaterial?.(mat);
       o.material = mat;
@@ -684,12 +734,19 @@ export class ObjectLayer {
       const model = await this.models.loadSkinned({ skelKey, parts: [{ meshKey: g.meshKey, ...g.opts }] });
       if (!model || model.missingSkeleton) { a.state = 'failed'; return; }
       const dur = Number(a.animTime) > 0 ? Number(a.animTime) : undefined;
-      const clip = await this.models.loadClip(animKey, model, { duration: dur });
+      let clip;
+      try { clip = await this.models.loadClipWithStatus(animKey, model, { duration: dur }); }
+      catch (err) {
+        // Transient: leave idle so a later ensure can retry (CLIP-LOADING-EVIDENCE outer caches).
+        if (err?.transient) { a.state = 'idle'; return; }
+        throw err;
+      }
       const Animator = await loadAnimator();
       if (!clip || !Animator || !clip.tracks.length) { a.state = 'failed'; return; }
       a.model = model; a.clip = clip; a.Animator = Animator;
       a.state = 'ready';
     } catch (err) {
+      if (err?.transient) { a.state = 'idle'; return; }
       console.warn('[world] animated object failed', g.name, err);
       a.state = 'failed';
     }
@@ -729,9 +786,15 @@ export class ObjectLayer {
         const key = k * 2 + (mirror ? 1 : 0), n = counts.get(key) || 0;
         if (!n) continue;
         const matrix = new THREE.InstancedBufferAttribute(new Float32Array(n * 16), 16).setUsage(THREE.DynamicDrawUsage);
-        const meshes = model.parts.map(part => {
+        const meshes = model.parts.map((part, pi) => {
           applyShade(part.material);       // the client's sun fall-off (shade.js), as on every other world material
-          const h = new InstancedSkinnedMesh(shareGeometry(part.geometry), part.material, matrix, inst.skeleton, sphere);
+          // 2026-10-29 [gfx2-env rig-uv] the animated draw used the raw part material, so the table's texture scroll (uvx/uvy/uvspeed,
+          // _setupUV clones on the static instanced meshes) and the light-shaft blend stopped as soon as the rig took over. Reuse the
+          // static part's (scrolled / blended) material - same mesh file, same part order.
+          // OFF SWITCH: globalThis.__dkGfxParity = { rigUvScroll: false }  or  localStorage 'dk.gfx.rigUvScroll' = '0'.
+          let rigMat = gfxSwitch('rigUvScroll') ? g.inst?.meshes?.[pi]?.material : null;
+          if (!rigMat || Array.isArray(rigMat)) rigMat = isLightShaftObject(g.name) && gfxSwitch('lightShafts') ? lightShaftMaterial(part.material) : part.material;
+          const h = new InstancedSkinnedMesh(shareGeometry(part.geometry), rigMat, matrix, inst.skeleton, sphere);
           h.name = `rig:${part.name}`;
           h.castShadow = !!g.flags.shadow; h.receiveShadow = true;
           if (mirror) h.scale.x = -1;
@@ -802,6 +865,11 @@ export class ObjectLayer {
     let drawn = 0;
     this._animFrame = (this._animFrame || 0) + 1;
     const lod = ANIM_OBJECT_LOD, lodOff = globalThis.__dekaronNoAnimLod === true;
+    // SMOOTH-ANIM: smoothed frame interval, so the bands below are pose RATES (every frame at 60 fps) instead of frame counts
+    const tNow = performance.now(), dMs = this._animAt ? tNow - this._animAt : 0; this._animAt = tNow;
+    if (dMs > 0 && dMs < 100) this._animMs = this._animMs ? this._animMs + (dMs - this._animMs) * 0.1 : dMs;
+    const fps = this._animMs > 0 ? 1000 / this._animMs : 60;
+    const midEvery = Math.max(1, Math.floor(fps / lod.midHz + 0.25)), farEvery = Math.max(1, Math.floor(fps / lod.farHz + 0.25));
     const cx = this._cam.x, cz = this._cam.z;
     const rigGroups = this._rigGroups;
     for (let n = 0; n < rigGroups.length; n++) {
@@ -813,7 +881,7 @@ export class ObjectLayer {
       if (!lodOff) {
         let best = Infinity;
         for (let i = 0; i < g.visCount; i++) { const id = g.visible[i], dx = g.xz[id * 2] - cx, dz = g.xz[id * 2 + 1] - cz, d = dx * dx + dz * dz; if (d < best) best = d; }
-        const every = best < lod.near * lod.near ? 1 : best < lod.far * lod.far ? 2 : 3;
+        const every = best < lod.near * lod.near ? 1 : best < lod.far * lod.far ? midEvery : farEvery;
         if (every > 1 && (this._animFrame + gi) % every !== 0) { drawn += g.visCount; continue; }
       }
       this._poseRigs(g, true);
@@ -833,13 +901,19 @@ export class ObjectLayer {
   _cullDraw(camera) {
     if (this._disposed) return;
     const game = this.game;
-    const cull = camera === game?.camera && globalThis.__dekaronNoRigCull !== true && !this._cullBroken;
+    // PERF-CAPTURECULL (2026-10-30): the water's reflection / refraction capture cameras (water.js, userData.dkCaptureCull) get the same
+    // frustum test as the game camera. Before, every distance-visible static group and every rig set was drawn into both captures
+    // whatever their frustums (Ardeca: ~7 ms GPU + ~8 ms CPU in every view with water). Nothing outside a frustum puts a pixel in its
+    // target, so the captures are unchanged. No depth pass runs inside a capture (water.js turns shadowMap.autoUpdate off): the
+    // shadow flags are left to the next game-camera render. Kill switch: globalThis.__dekaronNoCaptureCull = true.
+    const capture = camera !== game?.camera && camera?.userData?.dkCaptureCull === true && globalThis.__dekaronNoCaptureCull !== true;
+    const cull = (camera === game?.camera || capture) && globalThis.__dekaronNoRigCull !== true && !this._cullBroken;
     let fr = null, frS = null, shadowOn = false;
     if (cull) {
       this._pm.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
       fr = planesOf(this._frC.setFromProjectionMatrix(this._pm), this._pc);
       const env = this.environment || game?.world?.environment, sun = env?.sun;
-      shadowOn = !!(sun && sun.castShadow && game?.renderer?.shadowMap?.enabled);
+      shadowOn = !capture && !!(sun && sun.castShadow && game?.renderer?.shadowMap?.enabled);
       if (shadowOn) {
         // the depth pass's camera, rebuilt the way LightShadow.updateMatrices does (sun position, looking at its target, the shadow
         // camera's box) on a private camera: sun.shadow.matrix / camera are three.js' and ShadowTuner's and are not touched here
@@ -945,7 +1019,8 @@ export class ObjectLayer {
     this._updateAnimated(dt);
     for (const u of this._uvGroups) {
       const f = u.g.flags, t = this._time * f.uvSpeed * UV_RATE;
-      for (const map of u.maps) map.offset.set((t * f.uvU) % 1, (t * f.uvV) % 1);
+      const wrap1 = (v) => { const x = v % 1; return x < 0 ? x + 1 : x; };
+      for (const map of u.maps) map.offset.set(wrap1(t * f.uvU), wrap1(t * f.uvV));
     }
   }
 
@@ -956,6 +1031,10 @@ export class ObjectLayer {
    * (Dead Front forests, Ardeca trees). Checked every OCC_INTERVAL s against the visible instances plus the hidden ones.
    */
   _occlusion(dt) {
+    // LANE-54 pass 5 (gfx-B occlusionHideOff, default on): Global hides no field object for the camera (FieldImpl slot 3
+    // FUN_7ff671737340 -> FUN_7ff6717378a0: colour 0xFFFFFFFF, no camera test) and no constant for this assist exists, so it
+    // is removed; switch off to restore the ENGINE-CHOSEN assist for A/B.
+    if (gfxB('occlusionHideOff')) { if (this.groups?.some(g => g.occ?.size)) this._clearOcclusion(); return; }
     const game = this.game, p = game?.player, cam = game?.camera;
     // This assist only belongs to the orbit view. A short eye/head segment or a remote GM view must not erase
     // nearby scenery, and an old orbit exclusion must be restored before its timer can delay the next check.
@@ -987,6 +1066,8 @@ export class ObjectLayer {
       const t = ((v.x - ax) * dx + (v.y - ay) * dy + (v.z - az) * dz) / len2;
       if (t <= 0 || t >= 0.92) return false;
       const qx = ax + dx * t - v.x, qy = ay + dy * t - v.y, qz = az + dz * t - v.z;
+      // Lane02 2026-10-29: invented enter/exit occlusion hysteresis removed — no Global native constants in decompile
+      // (search: decompiled 32/64, functions.csv, REA-evidence; only window-minimize occluded string). UV wrap1 kept.
       return qx * qx + qy * qy + qz * qz < r * r;
     };
     for (const g of this.groups) {
@@ -1014,6 +1095,8 @@ export class ObjectLayer {
   /** Radius above which a placement is never hidden by _occlusion (buildings, walls, bridges). */
   _occLimit(g) {
     if (OCC_SOLID.has(g.cat)) return 0;             // buildings, houses, walls, bridges: the camera pulls in instead
+    // The native moving-zone rune is a ground effect, not a prop blocking the player's sight.
+    if (g.cat === 'etc' && /(?:^|[\\/])eff_movezone_01(?:\.txt)?$/i.test(g.name)) return 0;
     // Native gates/entrances also occur under field_extra. Their open arch has a
     // loose sphere across the doorway; proximity must not erase the whole gate.
     if (g.cat === 'field_extra' && /(?:gate|entrance)(?!_lamp)/i.test(g.name)) return 0;

@@ -9,6 +9,8 @@ import {GLORY_STR,GLORY_TEXT} from '../extras/guild-glory-rules.js';
 import {repairGuildDonationClose} from '../extras/guild-ui-clone-repair.js';
 import {globalAsk} from '../../ui/uiwin/global-asks.js';
 import {globalConfirm} from '../../ui/uiwin/global-windows.js';
+import {checkNewGuildName} from '../extras/namechange-rules.js';
+import {guildNameFilter,guildNameWordText} from '../extras/namechange.js';
 
 // Selectable original guild mark cells (script/ui/com/imagetable.txt guild_bg_40a/b, guild_icon_40a..f);
 // server/world/guilds.mjs GUILD_MARK_RANGE validates the same bounds.
@@ -132,7 +134,12 @@ export function installSharedMailGuild(game,network){
       const w=await game.uiwin.create('game2/guild/ui_nameinputwnd.txt',{modal:true,name:'guildcreate'});
       w.control('lbl_msg').setText(`Found a guild for ${numText(Number(guild.cfg.MONEY)||0)} DIL at the guild service?`);
       w.control('btn_no').onClick(()=>w.close());
-      w.control('btn_yes').onClick(async()=>{if(await send('guild','create',{name:w.control('edit_text').getValue?.()||''})){w.close();msg(game,`[Guild] "${gs().name}" founded.`,'sys');}});w.open();
+      w.control('btn_yes').onClick(async()=>{
+        // GLOBAL Guild::UIHandler checks script/filter/namefilter.txt before sending the name (275:330; LANE-61)
+        const typed=w.control('edit_text').getValue?.()||'',checked=checkNewGuildName(typed,{words:await guildNameFilter()});
+        const str=pair=>game.uiwin?.strings?.get?.({group:'NORMAL',cate:pair[0],code:pair[1]});
+        if(checked.error==='guildNameWord'){report(guildNameWordText(str,checked.word));return;}
+        if(await send('guild','create',{name:typed})){w.close();msg(game,`[Guild] "${gs().name}" founded.`,'sys');}});w.open();
     };
     guild._editNotice=async()=>{
       if(noticeWin?.isOpen)return noticeWin;
@@ -160,7 +167,10 @@ export function installSharedMailGuild(game,network){
       const s=gs();if(!s.ranks?.length){report('Guild rank settings are unavailable.');return false;}
       const draft=structuredClone(s.ranks),editable=()=>gs().founded&&gs().id===s.id&&(gs().permissions?.setAuthorities??gs().master===gs().myRef);
       const w=await game.uiwin.create('game2/guild/ui_gradewnd.txt',{name:'sharedguildranks',modal:true,disposeOnClose:true});let selected=0;
-      const permissions=[[0,'invite'],[1,'notice'],[2,'kick'],[4,'changeRank'],[6,'setAuthorities'],[7,'staffChat']];
+      // LANE-61: every Global ui_gradewnd box with its GradeManageWnd bit: 0 Invite 0x1, 1 Announcement 0x20, 2 Expel 0x2, 3 Register/Mod 0x4,
+      // 4 Change Rank 0x8, 6 Set Authorities 0x10, 7 Staff Chat 0x80, 9 Declare War 0x200, 11 Accept War 0x400, 12 Enable Skill 0x100;
+      // 5 See Info, 8 Battle Condition and 10 View Position are always checked (read-only); 13 and 14 are unused.
+      const permissions=[[0,'invite'],[1,'notice'],[2,'kick'],[3,'mark'],[4,'changeRank'],[6,'setAuthorities'],[7,'staffChat'],[9,'declareWar'],[11,'acceptWar'],[12,'enableSkill']],alwaysChecked=[5,8,10];
       const refreshEditor=()=>{
         if(!w.isOpen)return;
         if(disposed||!gs().founded||gs().id!==s.id){w.close();return;}
@@ -170,13 +180,14 @@ export function installSharedMailGuild(game,network){
       };
       rankEditors.add(refreshEditor);w.once('close',()=>rankEditors.delete(refreshEditor));
       for(let i=0;i<draft.length;i++)for(const [,key]of permissions)draft[i].permissions[key]??=i===0;
-      w.control('lbl_msg').setText('Names: up to 8 characters. New members: rank 10.\nInvite, Announcement, Expel, Ranks, Authorities, Staff Chat. Apply to save.');
+      // lbl_msg keeps its scripted Global text 130:202.
       function store(){draft[selected].name=String(w.control('edit_gradeName').getValue()||'');}
       function show(){
         for(let i=0;i<10;i++){w.control(`btn_list_${i}`).setText(draft[i].name);w.control(`btn_list_${i}`).setChecked(i===selected);}
         w.control('edit_gradeName').setValue(draft[selected].name);enable(w.control('edit_gradeName'),editable()&&!busy);
         for(let i=0;i<15;i++){w.control(`btn_check_${i}`).setChecked(false);enable(w.control(`btn_check_${i}`),false);}
         for(const [i,key]of permissions){w.control(`btn_check_${i}`).setChecked(draft[selected].permissions[key]);enable(w.control(`btn_check_${i}`),editable()&&selected!==0&&!busy);}
+        for(const i of alwaysChecked)w.control(`btn_check_${i}`).setChecked(true);
       }
       for(let i=0;i<10;i++)w.control(`btn_list_${i}`).onClick(()=>{if(busy)return;store();selected=i;show();});
       for(const [i,key]of permissions)w.control(`btn_check_${i}`).onClick(()=>{if(!editable()||selected===0||busy)return;draft[selected].permissions[key]=!draft[selected].permissions[key];w.control(`btn_check_${i}`).setChecked(draft[selected].permissions[key]);});
@@ -217,10 +228,10 @@ export function installSharedMailGuild(game,network){
       w.control('btn_confirm').onClick(async()=>{const items=registered.filter(Boolean).map(({uid,count})=>({uid,count}));if(!items.length){report('Register an owned Frontier item.');return;}if(await send('guild','donateItems',{periodId:period.id,items}))w.close();});
       w.control('btn_cancel').onClick(()=>w.close());w.control('btn_exit').onClick(()=>w.close());preview();w.open();return w;
     };
-    // Guild Mark service (NPC job GUILDMARK): original mark select + confirm windows, Guild Master only.
+    // Guild Mark service (NPC job GUILDMARK): original mark select + confirm windows, grade permission Register/Mod (0x4).
     guild._markSelect=async()=>{
       const s=gs();if(!s.founded){report('You are not in a guild.');return false;}
-      if(s.master!==s.myRef){report('Only the Guild Master can register the guild mark.');return false;}
+      if(!(s.permissions?.mark??s.master===s.myRef)){report('You have no authority to change the guild emblem.');return false;}   // 130:121, grade box Register/Mod 0x4
       const w=await game.uiwin.create('game2/guild/ui_markselectwnd.txt',{name:'sharedguildmark',modal:true,escClose:true,remember:false,disposeOnClose:true});
       const pick={bg:s.mark?.bg||1,icon:s.mark?.icon||1},page={bg:Math.floor((pick.bg-1)/MARK_PAGE),icon:Math.floor((pick.icon-1)/MARK_PAGE)};
       const grids={bg:{panel:'pan_markbg',cursor:'pan_bgCursor',small:'guildbg_s',large:'guildbg'},icon:{panel:'pan_mark',cursor:'pan_iconCursor',small:'guildicon_s',large:'guildicon'}},cells={bg:[],icon:[]};
@@ -255,9 +266,9 @@ export function installSharedMailGuild(game,network){
         if(busy)return;const cost=gs().markCost;
         const c=await game.uiwin.create('game2/guild/ui_markconfirmwnd.txt',{name:'sharedguildmarkconfirm',modal:true,escClose:true,remember:false,disposeOnClose:true});
         c.control('pan_markBg').setImage('none','guildbg',pick.bg);c.control('pan_markIcon').setImage('none','guildicon',pick.icon);
-        c.control('lbl_msg').setText(`Register this guild mark${cost?` for ${numText(cost)} DIL`:''}?`);
+        // lbl_msg keeps its scripted Global text 130:230; the fee is reported after registration (130:83).
         c.control('btn_no').onClick(()=>c.close());c.control('btn_exit').onClick(()=>c.close());
-        c.control('btn_yes').onClick(async()=>{if(await send('guild','mark',{bg:pick.bg,icon:pick.icon})){c.close();w.close();msg(game,'[Guild] Guild mark registered.','sys');}});
+        c.control('btn_yes').onClick(async()=>{if(await send('guild','mark',{bg:pick.bg,icon:pick.icon})){c.close();w.close();if(cost)msg(game,`Mark change fee ${numText(cost)} DIL has been deducted.`,'sys');msg(game,'Guild emblem has changed.','sys');}});   // 130:83 / 130:15
         c.open();
       });
       paint();w.open();return w;
@@ -276,17 +287,14 @@ export function installSharedMailGuild(game,network){
       return true;
     };
     guild._markDelete=async()=>{
+      // GLOBAL (decompile FUN_013950e0): the DELETEGUILDMARK service deletes the glowing emblem EFFECT only (130:176 ask, 130:177 done,
+      // 130:175 none applied, 130:88 not authorized). Deleting the mark itself is REMOVED (LANE-61: no Global source).
       const s=gs();
-      if(s.founded&&s.glory){   // the NPC deletes the glowing emblem EFFECT first (130:176 / 130:177), the mark itself stays
-        if(s.master!==s.myRef){report('Only the Guild Master can delete the guild mark.');return false;}
-        // Global msgbox/ui_delguildmarkeffect (100:18 "Guild of Glory", lbl_text = the delete question)
-        if(!await globalConfirm(game,'game2:msgbox:ui_delguildmarkeffect',gstr(GLORY_STR.deleteAsk,GLORY_TEXT.deleteAsk),{body:'lbl_text'}))return false;
-        if(!await send('guild','deleteGlory'))return false;msg(game,`[Guild] ${gstr(GLORY_STR.deleted,GLORY_TEXT.deleted)}`,'sys');return true;
-      }
-      if(!s.founded||!s.mark){report('The guild has no registered mark.');return false;}
-      if(s.master!==s.myRef){report('Only the Guild Master can delete the guild mark.');return false;}
-      if(await game.uiwin.msgbox('Delete the registered guild mark?',{kind:'yesno'})!=='yes')return false;
-      if(!await send('guild','deleteMark'))return false;msg(game,'[Guild] Guild mark deleted.','sys');return true;
+      if(!s.founded||!s.glory){report(gstr(GLORY_STR.none,GLORY_TEXT.none));return false;}
+      if(s.master!==s.myRef){report(gstr([130,88],'You are not authorized.'));return false;}   // master only (see server deleteGlory)
+      // Global msgbox/ui_delguildmarkeffect (100:18 "Guild of Glory", lbl_text = the delete question)
+      if(!await globalConfirm(game,'game2:msgbox:ui_delguildmarkeffect',gstr(GLORY_STR.deleteAsk,GLORY_TEXT.deleteAsk),{body:'lbl_text'}))return false;
+      if(!await send('guild','deleteGlory'))return false;msg(game,`[Guild] ${gstr(GLORY_STR.deleted,GLORY_TEXT.deleted)}`,'sys');return true;
     };
     game.chat?.registerCommand?.('/grank',name=>{void guild._setRank(name);return true;},'Assign a guild member rank: /grank Name');
     game.chat?.registerCommand?.('/gfrontier',()=>{void guild._donateItems();return true;},'Open the original Frontier item donation window.');

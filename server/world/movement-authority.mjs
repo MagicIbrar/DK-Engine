@@ -10,6 +10,8 @@ export const MOVEMENT_REPORT_FIELDS=Object.freeze(['px','pz','mseq','prev','mt',
 const bad=text=>{throw Object.assign(new Error(text),{status:400});};
 const sceneKey=p=>`${p.map}:${p.instanceId||''}:${p.channel??0}`;
 const now=world=>typeof world.now==='function'?world.now():Date.now();
+/** Pose-only notify: never set durable dirty / revision (MOVE-NO-SQL / ping-flat while moving). Falls back to changed only on ancient stubs without poseChanged. */
+function notifyPose(world,p){ if(typeof world.poseChanged==='function') world.poseChanged(p); else world.changed?.(p); }
 
 export function hasMovementReport(input){return input&&['px','pz','mseq','prev','mt'].some(key=>input[key]!==undefined);}
 
@@ -50,7 +52,7 @@ export function noteSkillRootMotion(world,p,delta){
   const prevX=mv.repX,prevZ=mv.repZ,prevPt=mv.pt;
   mv.ackX=p.x;mv.ackZ=p.z;mv.repX=p.x;mv.repZ=p.z;mv.budgetAt=Math.max(mv.budgetAt,t);mv.rootMoving=true;
   if(mv.reporting){const pt=Math.max(t,Number.isFinite(prevPt)?prevPt:-Infinity);mv.via=Number.isFinite(prevPt)&&pt>prevPt?{t:prevPt,x:prevX,z:prevZ}:null;mv.pt=pt;}
-  world.changed?.(p);
+  notifyPose(world,p);
   return true;
 }
 
@@ -117,7 +119,9 @@ export function applyMovementReport(world,p,map,input,{blocked=false,destination
   let travel=0;
   if(d>1e-9){
     const graced=mv.blockedSince!=null&&t-mv.blockedSince<=C.BLOCK_GRACE_MS;
-    if(p.dead||(blocked&&!graced))return reject();
+    if(p.dead)return reject();
+    // RUBBERBAND-RELEASE: lock ends on the client up to one host tick before the host clears it; defer, never snap back.
+    if(blocked&&!graced)return d<=speed*(C.BLOCK_RELEASE_MS??300)/1000+C.SLACK_CELLS?'stale':reject();
     if(d>allowance||!walkableNear(map,px,pz))return reject();
     travel=travelDistance(map,origin,px,pz,allowance);
     if(!(travel<=allowance))return reject();
@@ -142,8 +146,17 @@ export function applyMovementReport(world,p,map,input,{blocked=false,destination
   mv.pt=pt;mv.lastMt=Number.isFinite(mt)?mt:null;mv.lastReportAt=t;mv.mseq=mseq;mv.accepted++;
   // Rounding slack is a bounded debt, not a fresh movement grant on every packet.
   // Clamping at zero lets many small reports repeatedly spend SLACK_CELLS without elapsed host time.
+  // MOVE-NO-RUBBERBAND: A/S or W/S zigzag spends 2x travel per turnaround; refund most of a true reverse so the burst bank is not drained into a posRev snap.
+  if(travel>1e-9){
+    const dx=px-origin.x,dz=pz-origin.z;
+    if(mv.lastDx!=null&&dx*mv.lastDx+dz*mv.lastDz<-1e-8){
+      const refund=travel*(Number(C.REVERSE_BUDGET_REFUND)||0);
+      if(refund>0)mv.budget+=refund;
+    }
+    mv.lastDx=dx;mv.lastDz=dz;
+  }else{mv.lastDx=mv.lastDz=0;}
   mv.budget-=travel;
-  const moved=Math.abs(p.x-px)>1e-9||Math.abs(p.z-pz)>1e-9;p.x=px;p.z=pz;if(moved)world.changed?.(p);
+  const moved=Math.abs(p.x-px)>1e-9||Math.abs(p.z-pz)>1e-9;p.x=px;p.z=pz;if(moved)notifyPose(world,p);
   mv.ackX=p.x;mv.ackZ=p.z;mv.repX=px;mv.repZ=pz;mv.scene=sceneKey(p);
   if(destination){p.walk=walk||null;p.path=blocked||p.dead?[]:[{x:destination.x,z:destination.z}];}
   // The reporter's own intent: still moving until its stop/arrival report (or idle), even when the host's path step
@@ -160,5 +173,5 @@ export function movementSelf(world,p){
 /** Field of every published row: pose time of a client-predicted mover (remote buffered interpolation). */
 export function movementPublic(p){
   if(!p.mv?.reporting||!Number.isFinite(p.mv.pt))return null;
-  const row={pt:p.mv.pt,x:p.mv.repX,z:p.mv.repZ,moving:!p.dead&&(p.path.length>0||!!p.mv.intentMoving||!!p.mv.rootMoving)};if(p.mv.via)row.via=[p.mv.via.t,p.mv.via.x,p.mv.via.z];return row;
+  const row={pt:p.mv.pt,x:p.mv.repX,z:p.mv.repZ,moving:!p.dead&&(p.path.length>0||!!p.mv.intentMoving||!!p.mv.rootMoving)};if(Number.isFinite(p.yaw))row.yaw=p.yaw;if(p.mv.via)row.via=[p.mv.via.t,p.mv.via.x,p.mv.via.z];return row;
 }

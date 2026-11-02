@@ -13,13 +13,15 @@ export function validateSocialState(state){
  * transact MUST atomically replace the same document containing users and social.
  * Never implement this hook using a second file or a sequence of profile writes.
  */
-export function createSocialAccountHooks({load,transact,saveNpcProfile}){
+export function createSocialAccountHooks({load,transact,transactProfiles=null,saveNpcProfile}){
   return {
     async getSocialState(){return structuredClone(validateSocialState((await load()).social||emptySocialState()));},
     async saveSocialTransaction({expectedRevision,state,updates=[]}){
       validateSocialState(state);
       if(state.revision!==expectedRevision+1||!Array.isArray(updates)||updates.length>1)socialError('Invalid social transaction.');
-      return transact(db=>{
+      // STABILITY-PING: copy only the accounts this transaction updates (db.social is replaced below), not the whole store.
+      const ids=updates.map(u=>u?.accountId).filter(id=>typeof id==='string');
+      return (transactProfiles?fn=>transactProfiles(ids,fn):transact)(db=>{
         const current=validateSocialState(db.social||emptySocialState());
         if(current.revision!==expectedRevision)socialError('Social state changed. Review the current state.',409);
         for(const {accountId,characterId,profile,expected,preserveLastPlayed=false}of updates){

@@ -118,11 +118,11 @@ Keep the whole Engine package together; copying Client.exe alone is not an updat
 '@
   [void][Windows.Forms.MessageBox]::Show($form,$help,'Setup help - New and existing users','OK','Information');return
  }
- [void][Windows.Forms.MessageBox]::Show($form,'Place the complete engine folder inside your updated Dekaron folder, beside data and bin. Then open engine\Client.exe. After installation, use DK Engine on your desktop or the root Client.exe.','DK Setup','OK','Information')
+ [void][Windows.Forms.MessageBox]::Show($form,'Place the complete engine folder inside your updated Dekaron folder, beside data and bin. Then open engine\Client.exe. After installation, use DK Engine on your desktop or DK-Engine-Client.exe in the game folder.','DK Setup','OK','Information')
 })
 $details=New-Object GalaxyTextBox
 $details.Multiline=$true;$details.ReadOnly=$true;$details.ScrollBars='Vertical';$details.BorderStyle='None';$details.BackColor=[Drawing.Color]::FromArgb(18,22,30);$details.ForeColor=$form.ForeColor;$details.Location=New-Object Drawing.Point(54,335);$details.Size=New-Object Drawing.Size(552,105);$details.Font=New-Object Drawing.Font('Consolas',9);$form.Controls.Add($details)
-$cleanupNotice=New-ClientLabel 'WARNING: replaces the Global client. Back up the full game folder first. Keeps only data, bin, engine and Client.exe.' 54 450 550 35 9; $cleanupNotice.ForeColor=[Drawing.Color]::FromArgb(235,145,133)
+$cleanupNotice=New-ClientLabel 'Existing Global files are kept. A separate DK Engine launcher will be created.' 54 450 550 35 9; $cleanupNotice.ForeColor=[Drawing.Color]::FromArgb(235,145,133)
 $phaseLabels=@();$phaseNames=$(if($script:dedicatedMode){@('Verify copy','Dependencies','Prepared data','Start world','Ready')}else{@('Verify folder','Dependencies','Import client','Clean files','Ready')})
 for($i=0;$i -lt 5;$i++){$label=New-ClientLabel $phaseNames[$i] (40+$i*119) 510 118 23 9;$label.ForeColor=$muted;$phaseLabels+=,$label}
 $progress=New-Object GalaxyProgress
@@ -405,13 +405,16 @@ function Update-ClientPlan([switch]$DeferReadiness) {
  try {
   $script:plan=Get-InstallPlan
   $script:planValid=$true
-  $script:needsInstall=-not (Test-Path -LiteralPath (Join-Path $clientEngine 'install-receipt.json') -PathType Leaf) -or -not (Test-Path -LiteralPath (Join-Path $script:plan.root 'Client.exe') -PathType Leaf)
+  $receiptPath=Join-Path $clientEngine 'install-receipt.json'
+  $launcherName='DK-Engine-Client.exe'
+  try {$receipt=Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json; if($receipt.launcher -in @('Client.exe','DK-Engine-Client.exe')){$launcherName=$receipt.launcher}} catch {}
+  $script:needsInstall=-not (Test-Path -LiteralPath $receiptPath -PathType Leaf) -or -not (Test-Path -LiteralPath (Join-Path $script:plan.root $launcherName) -PathType Leaf)
   if($script:dedicatedMode){$script:needsInstall=$false;$script:selectedGameRoot=$null}
   if($script:npcSandbox){$script:needsInstall=$false;$script:selectedGameRoot=$null}
   $extra=if($script:needsInstall -and $script:plan.remove.Count){$script:plan.remove -join ', '}else{'(none)'}
-  $details.Text=$(if($script:dedicatedMode){"Dedicated copy: $clientEngine`r`nClient: prepared Global data`r`nProgress: this copy's separate local or SQL world"}else{"$($script:plan.root)`r`nKEEP: data, bin, engine, Client.exe`r`nDELETE: $extra"})
+  $details.Text=$(if($script:dedicatedMode){"Dedicated copy: $clientEngine`r`nClient: prepared Global data`r`nProgress: this copy's separate local or SQL world"}else{"$($script:plan.root)`r`nKEEP: existing Global files`r`nDELETE: $extra"})
   $primary.Text=if($script:dashboard){'DX11 Client'}else{'Start'}
-  $cleanupNotice.Text=if($script:needsInstall){'WARNING: replaces the Global client. Back up this game folder first. Keeps only data, bin, engine and Client.exe.'}else{'Your client is installed. Start checks updated data before play.'}
+  $cleanupNotice.Text=if($script:needsInstall){'Existing Global files are kept. A separate DK Engine launcher will be created.'}else{'Your client is installed. Start checks updated data before play.'}
   if($script:dedicatedMode){$cleanupNotice.Text='Prepared dedicated client. Start opens this copy; its accounts and characters stay separate.'}
   if($script:npcSandbox){$cleanupNotice.Text='NPC / skill test copy. Separate accounts and server; game assets are read only.'}
   $primary.Enabled=$true
@@ -799,8 +802,8 @@ if($PreviewPath){
  $previewParent=[IO.Path]::GetDirectoryName($previewFile)
  $check=$previewParent
  while($check){$entry=Get-Item -LiteralPath $check -Force;if(($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw 'Preview output refuses linked directories.'};$check=[IO.Path]::GetDirectoryName($check)}
- $script:plan=[pscustomobject]@{root='C:\Games\Dekaron Global';remove=@('Dekaron.exe','Client.bat','launcher.exe','logs','update.ini');clientName='Client.exe'}
- $details.Text="C:\Games\Dekaron Global`r`nKEEP: data, bin, engine, Client.exe`r`nDELETE: Dekaron.exe, Client.bat, launcher.exe, logs, update.ini"
+ $script:plan=[pscustomobject]@{root='C:\Games\Dekaron Global';remove=@();clientName='Client.exe'}
+ $details.Text="C:\Games\Dekaron Global`r`nKEEP: existing Global files`r`nDELETE: (none)"
  if($PreviewMode -eq 'sql'){Show-DedicatedSqlPage}
  if($PreviewMode -eq 'signup'){Show-LauncherSignup $true;$accountId.Text='Your_account';$signupResult.Text='Your next adventure starts here.'}
  if($PreviewMode -eq 'loading'){$progress.Value=63;$progress.Running=$true;$statusLine.Text='Bringing your world to life...';$primary.Text='Preparing...';$primary.Enabled=$false}

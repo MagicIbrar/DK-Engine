@@ -9,7 +9,7 @@ import {DK_SQUARE_CHOSEN} from '../../src/config/engine-chosen-dk-square.js';
 // admission override, reward, auto-enrollment, or autonomous private instance.
 const cached=new WeakMap(),isNpc=p=>p?.npcPlayer===true||p?.profile?.npcPlayer===true;
 function rules(data){if(data.dkSquare)return data.dkSquare;if(!cached.has(data))cached.set(data,dkSquareDataFrom(data.eventData?.ev||{modes:data.eventData?.modes,maps:data.eventData?.maps}));return cached.get(data);}
-function available(world,p,rank){return p&&!p.leaving&&!p.dead&&!p.sceneTransition&&!p.instanceId&&!p.arenaId&&!p.arenaQueued&&!p.duelId&&!p.partyPvpId&&!p.trainingCampId&&!p.tradeId&&!fishingBusy(p)&&p.mount?.phase!=='on'&&(Number(p.profile.arena?.penaltyUntil)||0)<=world.now()&&Number(p.profile.dil||0)>=rank.enterCost;}
+function available(world,p,rank){return p&&!p.leaving&&!p.dead&&!p.sceneTransition&&!p.instanceId&&!p.arenaId&&!p.arenaQueued&&!p.duelId&&!p.partyPvpId&&!p.tradeId&&!fishingBusy(p)&&p.mount?.phase!=='on'&&(Number(p.profile.arena?.penaltyUntil)||0)<=world.now()&&Number(p.profile.dil||0)>=rank.enterCost;}
 /** Root supplies an actual willing human team member; an invented partyId is insufficient. */
 export function npcOrganizerPlan(world,p,{humanInitiator}={}){
  if(world.players.get(p?.account)!==p||!isNpc(p)||p.profile.authority!=='server'||p.gmAuthorized||p.capabilities?.includes('gm:commands')||p.dkSquareId)return null;

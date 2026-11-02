@@ -8,6 +8,8 @@
 //                                                               successful sets per kill (MaxItemSet; 0 -> 1)
 //   monster.drops.fixed    [[itemIndex, stack, countMin, countMax]]  always dropped
 //   monster.drops.fixedSets[[itemSetIndex, countMin, countMax, socket, ratio]]
+//   monster.drops.setsEx / fixedSetsEx / maxSetsEx   the ItemSetEx blocks (itemSetsEx[i].groups, see pickFromSetEx)
+//   monster.drops.cond / alt[]   CondName of the first drop row / the monster's further CondName rows (dropConditionMet)
 //   itemSets[i].items      [[itemIndex, weight, a, b, c]] — the item is chosen by weight. For consumable sets
 //                          (potions, argates: c == 0 and a <= b small) a..b is the stack size; for equipment
 //                          a/b/c are the Magic/Noble/DivineNoble ratios (per 100000) and set the item grade.
@@ -28,7 +30,7 @@ import { ITEM_GRADE_COLORS } from '../ui/item-colors.js';
 
 export const PICKUP_RADIUS = 3;
 const PICKUP_RETRY_MS = 5000;          // a refused drop is tried last for this long
-export const DROP_LIFETIME = 180;      // seconds a drop stays on the ground
+export const DROP_LIFETIME = 180;      // seconds a drop stays on the ground - ENGINE-CHOSEN: no Global data key or decompile constant (scan fix A, A6)
 export const MAX_INVENTORY = 48;       // entries — the inventory window shows an 8 x 6 grid
 const CONSUMABLE_KIND = { 1: 'hp', 2: 'mp', 50: 'hp%', 51: 'mp%', 52: 'hpmp%' };
 
@@ -76,6 +78,11 @@ export function pickFromSet(set, names = {}, rng = rand) {
     let r = rng() * sum;
     for (const x of items) { r -= Math.max(0, x[1] || 0); if (r < 0) { it = x; break; } }
   }
+  return itemEntry(it, names, rng);
+}
+
+/** One itemset entry [itemIndex, weight, a, b, c] -> drop entry (stack size or grade, see the header). */
+export function itemEntry(it, names = {}, rng = rand) {
   const itemIndex = it[0];
   const out = { kind: 'item', itemIndex, name: names[itemIndex] || `Item #${itemIndex}`, count: 1, stack: false, grade: 'normal' };
   if (isStackGroup(it)) {
@@ -91,19 +98,62 @@ export function pickFromSet(set, names = {}, rng = rand) {
 }
 
 /**
- * Roll everything a monster drops. def = monsters.json monster, db = monsters.json (itemSets, itemNames).
- * opts: { itemRate, moneyRate, rng }. Returns [{kind:'dil', amount} | {kind:'item', ...}].
+ * Drop-row condition (monsterdropitemtable.csv CondName). "Kill" / empty always applies. scan fix A (M2) JUDGMENT: the
+ * names PREMIUM_Y / PREMIUM_N are read as "the killer has / has no active premium service" (opts.premium); any other
+ * CondName (45_DropHellionStamp, Curse_BoxCurse_Gold/Dil, BoxCorridor_Gold/Dil, 701_MainBoss) has no Global or decompile
+ * trigger, so it is asked of opts.condition(name) and otherwise unknown (null): an unknown base row keeps rolling as before,
+ * an unknown alternate row does not roll.
+ */
+export function dropConditionMet(cond, opts = {}) {
+  const c = String(cond ?? '').trim();
+  if (!c || c === 'Kill') return true;
+  if (typeof opts.condition === 'function') { const v = opts.condition(c); if (typeof v === 'boolean') return v; }
+  if (c === 'PREMIUM_Y') return opts.premium === true;
+  if (c === 'PREMIUM_N') return opts.premium !== true;
+  return null;
+}
+
+/** Items of one ItemSetEx (monsters.json itemSetsEx[i] = {groups:[{g, ratio, groupRatio, e:[[item, a, b, c]]}]}).
+ *  scan fix A (A2) JUDGMENT: one group is chosen by its itemsetexgroup.csv DropRatio (per 100000, the rest = no group; a
+ *  set without group weights picks uniformly), the group then drops with its own itemsetex.csv DropRatio and gives every
+ *  entry of the row; a..b is the stack size for consumable entries and the Magic/Noble/DivineNoble ratios otherwise. */
+export function pickFromSetEx(set, names = {}, rng = rand, itemRate = 1) {
+  const groups = set?.groups || [];
+  if (!groups.length) return [];
+  let g = null;
+  if (groups.some(x => x.groupRatio != null)) {
+    let r = rng() * 100000;
+    for (const x of groups) { r -= Math.max(0, x.groupRatio || 0); if (r < 0) { g = x; break; } }
+  } else g = groups[Math.floor(rng() * groups.length)];
+  if (!g || rng() * 100000 >= (g.ratio || 0) * itemRate) return [];
+  const out = [];
+  for (const [itemIndex, a = 0, b = 0, c = 0] of g.e || []) { const it = itemEntry([itemIndex, 1, a, b, c], names, rng); if (it) out.push(it); }
+  return out;
+}
+
+/**
+ * Roll everything a monster drops. def = monsters.json monster, db = monsters.json (itemSets, itemSetsEx, itemNames).
+ * opts: { itemRate, moneyRate, rng, premium, condition }. Returns [{kind:'dil', amount} | {kind:'item', ...}].
+ * def.drops is the first drop-table row of the monster; def.drops.alt[] holds its further CondName rows (scan fix A, M2).
  */
 export function rollMonsterDrops(def, db, opts = {}) {
   const out = [];
   if (!def) return out;
+  const drops = def.drops || {};
+  const base = dropConditionMet(drops.cond, opts);
+  if (base !== false) rollDropRow(out, drops, def.money, db, opts);
+  for (const alt of drops.alt || []) if (dropConditionMet(alt.cond, opts) === true) rollDropRow(out, alt, null, db, opts);
+  return out;
+}
+
+function rollDropRow(out, drops, monsterMoney, db, opts) {
   const rng = opts.rng || rand;
   const itemRate = opts.itemRate ?? 1;
   const moneyRate = opts.moneyRate ?? 1;
   const ri = (a, b) => { a = Math.round(a); b = Math.round(b); if (b < a) [a, b] = [b, a]; return a + Math.floor(rng() * (b - a + 1)); };
   const sets = db?.itemSets || {};
+  const setsEx = db?.itemSetsEx || {};
   const names = db?.itemNames || {};
-  const drops = def.drops || {};
 
   // money
   if (Array.isArray(drops.money) && drops.money.length) {
@@ -112,9 +162,9 @@ export function rollMonsterDrops(def, db, opts = {}) {
       const n = Math.max(1, ri(cmin || 1, cmax || 1));
       for (let i = 0; i < n; i++) { const amount = ri(min, max); if (amount > 0) out.push({ kind: DIL_ITEM, amount }); }
     }
-  } else if (Array.isArray(def.money) && def.money[1] > 0 && def.money[2] > 0) {
-    if (rng() * 100000 < def.money[2] * moneyRate) {
-      const amount = ri(def.money[0], def.money[1]);
+  } else if (Array.isArray(monsterMoney) && monsterMoney[1] > 0 && monsterMoney[2] > 0) {
+    if (rng() * 100000 < monsterMoney[2] * moneyRate) {
+      const amount = ri(monsterMoney[0], monsterMoney[1]);
       if (amount > 0) out.push({ kind: DIL_ITEM, amount });
     }
   }
@@ -138,6 +188,21 @@ export function rollMonsterDrops(def, db, opts = {}) {
     if (ratio > 0 && rng() * 100000 >= ratio * itemRate) continue;
     const n = Math.max(1, ri(cmin || 1, cmax || cmin || 1));
     for (let i = 0; i < n; i++) { const it = pickFromSet(sets[setIndex], names, rng); if (it) out.push(it); }
+  }
+  // ItemSetEx (scan fix A, A2): drops.setsEx [[setExIndex, ratio, socket]] capped by maxSetsEx (0 -> 1), drops.fixedSetsEx
+  // [[setExIndex, countMin, countMax, socket, ratio]] - the same roll shape as sets / fixedSets above.
+  const capEx = drops.maxSetsEx > 0 ? drops.maxSetsEx : 1;
+  let gotEx = 0;
+  for (const [setIndex, ratio] of drops.setsEx || []) {
+    if (gotEx >= capEx) break;
+    if (rng() * 100000 >= ratio * itemRate) continue;
+    const items = pickFromSetEx(setsEx[setIndex], names, rng, 1);
+    if (items.length) { out.push(...items); gotEx++; }
+  }
+  for (const [setIndex, cmin, cmax, , ratio] of drops.fixedSetsEx || []) {
+    if (ratio > 0 && rng() * 100000 >= ratio * itemRate) continue;
+    const n = Math.max(1, ri(cmin || 1, cmax || cmin || 1));
+    for (let i = 0; i < n; i++) out.push(...pickFromSetEx(setsEx[setIndex], names, rng, 1));
   }
   return out;
 }

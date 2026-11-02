@@ -341,7 +341,7 @@ const out = { version: 1, generatedBy: 'tools/build-life.mjs', generatedAt: new 
   const titles = table('share/pc/title/title_base.csv').rows.map(typed);
   const chaotic = table('share/pc/chaotic.csv').rows.map((r) => ({ index: num(r.Index), start: num(r['ChaoticLevel Start']), end: num(r['ChaoticLevel End']), dropRate: num(r['Item Drop Rate']), respawn: num(r.wRespawnIndex) }));
   const pkRaw = csvRel('share/pc/pkcount.csv');
-  const pkcount = pkRaw.slice(1).filter((r) => r[0]).map((r) => ({ start: num(r[1]), end: num(r[2]), chaotic: num(r[3]), level: num(r[4]) }));
+  const pkcount = pkRaw.slice(1).filter((r) => r[0]).map((r) => ({ start: num(r[1]), end: num(r[2]), chaotic: num(r[3]), level: num(r[4]), decrease: num(r[4]) })); // col4 = Decrease.cpp death subtract (also kept as level for older readers)
   const pkLevelCap = table('share/pc/pklevelcap.csv').rows.map((r) => ({ start: num(r.LevelStart), end: num(r.LevelEnd), rate: num(r.ChaoticRate) }));
   const selfRevive = table('share/pc/selfrevive.csv').rows.map((r) => num(r.ItemIndex)); selfRevive.forEach(needItem);
   out.grade = { grades, options, week, caps, titles };
@@ -443,7 +443,7 @@ const out = { version: 1, generatedBy: 'tools/build-life.mjs', generatedAt: new 
         const nums = (s) => String(s || '').split(/\s+/).filter(Boolean).map(Number);
         const tex = (s) => s ? ('texture/' + s.replace(/\\/g, '/').toLowerCase()).replace(/\/+/g, '/') : '';
         Object.assign(o, { billboard: u.billboardtype, size: num(u.size, 1), texture: tex(u.texturefile), tpack: u.texturepack ? ('texturepack/' + u.texturepack.replace(/\\/g, '/').toLowerCase()) : '',
-          blend: u.blendtype, state: u.activestate, life: nums(u.lifetime), emit: num(u.emitrate), max: num(u.maxelementcount), rotate: num(u.addrotate), velocity: nums(u.velocity),
+          blend: u.blendtype, state: u.activestate, life: nums(u.lifetime), emit: num(u.emitrate), max: num(u.maxelementcount), rotate: num(u.addrotate), velocity: nums(u.velocity), psize: nums(u.particlesize),
           accel: num(u.acceleration), dir: nums(u.spawndirection), gravity: nums(u.gravity), range: nums(u.startrange), triangle: u.trianglerender === 'true',
           flat: u.flattexturefile ? { max: num(u.flatmaxelementcount), texture: tex(u.flattexturefile), scale: nums(u.flatscale), color: nums(u.flatcolor), rate: num(u.flatrenderrate, 1) } : null });
         if (o.texture && !existsRel(o.texture)) { const alt = o.texture.replace(/\.dds$/, '.tga'); if (existsRel(alt)) o.texture = alt; else warn.push(`weather texture ${o.texture} missing`); }

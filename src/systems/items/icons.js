@@ -12,7 +12,8 @@ import { readRenderTargetPixels } from '../../engine/pixel-pack-readback.js';
 // FILE frame under the mirror root, NoColorSpace textures, orthographic fit (64 units per inventory cell, invScale),
 // lit from the viewer. Items without an inventory model use noItem.
 import * as THREE from 'three';
-import { PreviewCache, previewReload } from '../../ui/preview-cache.js';
+import { PreviewCache, previewReload, borrowPreviewIcon } from '../../ui/preview-cache.js';
+import { readIcon, writeIcon, iconDiskEligible } from './icon-disk-cache.js';
 import { PreviewQueue, PreviewPreparation } from './preview-queue.js';
 import { WORLD_MIRROR } from '../../engine/space.js';
 import { inventoryMaterials, refinementTier, ICON_LIGHT } from './preview-materials.js';
@@ -26,6 +27,7 @@ import { prepareSocketGlow, compositeSocketGlow } from './preview-socket-glow.js
 /** Cache-key part of a socket glow variant ({key, gems}): icons of the same item with different stones are different bakes. */
 const glowKey = glow => (glow?.gems?.length ? `|glow:${glow.key}` : '');
 
+const DISK_MISS = Object.freeze({ diskMiss: true });
 export const SPIN_FRAMES = 32;        // 11.25 deg per frame, 16 fps at the 2 s loop
 const SHEET_MAX = 4096;               // max sheet width / height (px)
 
@@ -36,10 +38,25 @@ export class Icons {
     this.cache = new PreviewCache();   // key -> {url, spin?} | Promise; clear expires in-flight bakes
     this.queue = new PreviewQueue();
     this.preparation = new PreviewPreparation(4);
+    // ICON-PRELOAD (2026-10-30): bakes = GPU renders, diskHits = icons served from the persistent icon cache
+    // (icon-disk-cache.js), diskWrites = finished bakes persisted for the next session.
+    this.stats = { bakes: 0, diskHits: 0, diskWrites: 0 };
+    // Icons of items the player owns are never LRU-evicted (a reopened inventory/storage/equipment never shows
+    // evicted, empty slots); everything else keeps the bounded cache.
+    this.cache.keep = record => this._ownedKeep(record);
+  }
+  _ownedKeep(record) {
+    const now = performance.now();
+    if (!this._owned || now - this._ownedAt > 250) { this._owned = ownedItemIndices(this.sys); this._ownedAt = now; }
+    for (const i of record.items) if (this._owned.has(i)) return true;
+    return false;
   }
   _glowEnabled() { return (this.sys.game?.options?.get?.('bloom') ?? this.sys.game?.settings?.bloom ?? true) !== false; }
   /** Requests made synchronously inside fn are background prefetch: baked as usual, but queue.idle() does not wait for them. */
   background(fn) { this._background = (this._background || 0) + 1; try { return fn(); } finally { this._background--; } }
+  /** ICON-PRELOAD: requests made synchronously inside fn resolve from memory or the persistent icon cache only
+   *  (null on a miss, nothing is rendered or remembered as failed): loading-screen warms of whole catalogues. */
+  diskOnly(fn) { this._diskOnly = (this._diskOnly || 0) + 1; try { return fn(); } finally { this._diskOnly--; } }
   /** Inventory model descriptor of an item index: {mesh, tpack, textures, anim?, skel?, animTime, twoSide, scale}. */
   model(itemIndex) {
     const db = this.sys.db;
@@ -104,7 +121,7 @@ export class Icons {
     w = Math.round(w); h = Math.round(h); span = spanCells(span);
     if (!glow?.gems?.length) glow = null;
     const key = `${spin ? 's|' : ''}${itemIndex}|${w}x${h}${spanKey(span)}${glowKey(glow)}|g${this._glowEnabled() ? 1 : 0}`;
-    const generation = this.cache.generation, background = this._background > 0;
+    const generation = this.cache.generation, background = this._background > 0, diskOnly = this._diskOnly > 0;
     const warm=this._readyAlias(itemIndex,w,h,spin,span,glow);
     if(warm)return Promise.resolve(warm);
     const hit = this.cache.get(key);
@@ -121,19 +138,34 @@ export class Icons {
     let shared = this.cache.get(mk);
     if (shared?.nativeRefinementRetryAt && performance.now() >= shared.nativeRefinementRetryAt) { this.cache.delete(mk); shared = null; }
     if (shared && !shared.then && !shared.url && performance.now() >= (shared.retryAt || 0)) { this.cache.delete(mk); shared = null; }
-    const ready = shared?.then ? shared : shared ? Promise.resolve(shared.url ? shared : null) : this.preparation.add(async () => {
+    const persist = iconDiskEligible(itemIndex);
+    if (diskOnly && !shared && !persist) return Promise.resolve(null);
+    const bake = () => diskOnly ? Promise.resolve(DISK_MISS) : this.preparation.add(async () => {
       if (generation !== this.cache.generation) return null;
       const data = m.nativeRefinement || glow ? (this.sys.authoredEffects?.data || (this._effectData ||= new AuthoredEffectsData())) : null;
       const prepared = await prepareDraw(g, m, data, glow);
       if (!prepared) return null;
       try {
         if (generation !== this.cache.generation) return null;
+        this.stats.bakes++;
         const result = await this.queue.add(checkpoint => generation === this.cache.generation ? draw(g, m, w, h, cells, spin ? SPIN_FRAMES : 1, prepared, checkpoint, glow) : null, spin ? 1 : 0, background);
         if (result && (prepared.refinementMissing || prepared.socketGlowMissing)) result.nativeRefinementRetryAt = performance.now() + 1000;
         return result;
       } finally { prepared.refinement?.dispose(); prepared.o.dispose(); }
     }, spin ? 1 : 0);
+    // A persisted bake of this exact model key (same content version) is read from disk instead of re-rendered.
+    const fromDisk = () => readIcon(mk, spin).then(hit => {
+      if (!hit) return bake();
+      if (generation !== this.cache.generation) { URL.revokeObjectURL(hit.url); if (hit.spin?.url) URL.revokeObjectURL(hit.spin.url); return null; }
+      this.stats.diskHits++; Object.defineProperty(hit, '_fromDisk', { value: true }); return hit;
+    }, () => bake());
+    const ready = shared?.then ? shared : shared ? Promise.resolve(shared.url ? shared : null) : persist ? fromDisk() : bake();
     const p = ready.then(v => {
+      if (v === DISK_MISS) {
+        if (this.cache.get(key) === p) this.cache.delete(key);
+        if (this.cache.get(mk) === p) this.cache.delete(mk);
+        return null;
+      }
       if (generation !== this.cache.generation) {
         if (v?.url?.startsWith('blob:')) URL.revokeObjectURL(v.url);
         if (v?.spin?.url?.startsWith('blob:')) URL.revokeObjectURL(v.spin.url);
@@ -141,6 +173,12 @@ export class Icons {
       }
       const bytes = Math.max(8, w * 2) * Math.max(8, h * 2) * 4 * (spin ? SPIN_FRAMES + 1 : 1);
       const out = v?.url ? this.cache.remember(v, bytes, previewReload(this, itemIndex, w, h, spin, generation, span, glow)) : { url: null, retryAt: performance.now() + 1000 };
+      if (out.url) this.cache.tag(out, itemIndex);
+      if (out.url && persist && !shared && !v._fromDisk && !out.nativeRefinementRetryAt) {
+        // The borrow keeps the blob URLs alive until CacheStorage has its copy.
+        const release = borrowPreviewIcon(out);
+        void writeIcon(mk, out).then(ok => { if (ok) this.stats.diskWrites++; }).finally(release);
+      }
       this.cache.set(key, out);
       if (!out.url && (!shared || this.cache.get(mk) === shared)) this.cache.set(mk, out);
       if (out.url) {
@@ -161,6 +199,17 @@ export class Icons {
     if (!shared) this.cache.set(mk, p);
     return this.queue.track(p, background);
   }
+}
+
+/** Item indices the player owns right now: bag, storage, shared storage, costume wardrobe, cash inventory, all 5
+ * equipment presets and the potion belt (ICON-PRELOAD: their icons are exempt from the icon LRU). */
+export function ownedItemIndices(sys) {
+  const out = new Set(), save = sys?.game?.save || {};
+  const add = list => { if (Array.isArray(list)) for (const inst of list) if (inst?.itemIndex != null) out.add(Number(inst.itemIndex)); };
+  for (const c of [sys?.bag, sys?.stash, sys?.shared, sys?.costumeBag]) { try { add(c?.list); } catch { /* optional container */ } }
+  add(save.cashInv); add(save.potionBelt);
+  try { for (const inst of Object.values(sys?.equip?.data?.items || save.equip?.items || {})) if (inst?.itemIndex != null) out.add(Number(inst.itemIndex)); } catch { /* no equipment yet */ }
+  return out;
 }
 
 /** A cell span override [w, h] (> 0, fractional allowed), rounded so equal spans share cache entries; else null. */
@@ -251,13 +300,11 @@ async function draw(g, m, w, h, cells = [1, 1], frames = 1, prepared, checkpoint
   holder.scale.setScalar(m.scale || 1);   // invScale
   holder.add(o.obj);
   root.add(holder);
-  // itemmesh.fx lighting in three's x PI units (ICON_LIGHT, clamped materials). The engine-designed wings (wing-models.js,
-  // not original assets, their own unclamped materials) keep the light they were tuned under.
-  const designed = !!o.obj.userData?.model?.flags?.authoredWing;
-  scene.add(new THREE.AmbientLight(0xffffff, designed ? 0.75 : ICON_LIGHT.ambient));
+  // itemmesh.fx lighting in three's x PI units (ICON_LIGHT, clamped materials).
+  scene.add(new THREE.AmbientLight(0xffffff, ICON_LIGHT.ambient));
   const cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.01, 1000);
   // the key light is fixed to the viewer (as before), so a turning model is lit like the original
-  const sun = new THREE.DirectionalLight(0xffffff, designed ? 1.15 : ICON_LIGHT.key);
+  const sun = new THREE.DirectionalLight(0xffffff, ICON_LIGHT.key);
   sun.position.set(-0.4, 0.8, 1);
   cam.add(sun); cam.add(sun.target);
   scene.add(cam);
@@ -346,13 +393,17 @@ async function draw(g, m, w, h, cells = [1, 1], frames = 1, prepared, checkpoint
   }
   let cv = document.createElement('canvas');
   cv.width = RW; cv.height = RH;
-  const ctx = cv.getContext('2d');
+  // perf3: the sheet is only written with putImageData and then read back (preview-export getImageData -> PNG worker). A
+  // GPU-backed canvas made that read a GPU sync (20-30 ms stalls while the world renders); a CPU-backed one reads from memory.
+  // Kill switch (A/B): globalThis.__dekaronGpuIconCanvas = true restores the GPU-backed canvases.
+  const cpuCanvas = globalThis.__dekaronGpuIconCanvas === true ? undefined : { willReadFrequently: true };
+  const ctx = cv.getContext('2d', cpuCanvas);
   const img = ctx.createImageData(RW, RH);
   for (let y = 0; y < RH; y++) img.data.set(pixels.subarray((RH - 1 - y) * RW * 4, (RH - y) * RW * 4), y * RW * 4);
   ctx.putImageData(img, 0, 0);
   if (glowPixels) {
     const halo = document.createElement('canvas'); halo.width = RW; halo.height = RH;
-    const context = halo.getContext('2d'), image = context.createImageData(RW, RH);
+    const context = halo.getContext('2d', cpuCanvas), image = context.createImageData(RW, RH);
     const rgba = previewGlowRGBA(glowPixels);
     for (let y = 0; y < RH; y++) image.data.set(rgba.subarray((RH - 1 - y) * RW * 4, (RH - y) * RW * 4), y * RW * 4);
     context.putImageData(image, 0, 0);
@@ -365,7 +416,7 @@ async function draw(g, m, w, h, cells = [1, 1], frames = 1, prepared, checkpoint
   if (frames <= 1) return { url: await blobUrl(cv) };
   const still = document.createElement('canvas');
   still.width = W; still.height = H;
-  still.getContext('2d').drawImage(cv, 0, 0, W, H, 0, 0, W, H);
+  still.getContext('2d', cpuCanvas).drawImage(cv, 0, 0, W, H, 0, 0, W, H);
   const [sheetUrl, stillUrl] = await Promise.all([blobUrl(cv), blobUrl(still)]);
   return { url: stillUrl, spin: { url: sheetUrl, cols, rows, n: frames, period: T } };
 }

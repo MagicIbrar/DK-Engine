@@ -15,10 +15,13 @@ import { WaterLayer } from './water.js';
 import { Environment } from './environment.js';
 import { ObjectLayer } from './objects.js';
 import { PortalEffects } from './portal-effects.js';
+import { landingOverride } from './map-landing.js';
 import { Collision } from './collision.js';
 import { PathFinder } from './pathfind.js';
 import { GroundSurfaces } from './groundsurf.js';
-import { applyShadeTree, setShade, resetShade } from './shade.js';
+import { applyShadeTree, applyShadeTreeSliced, shadeOnFirstDraw, singlePassDoubleSided, setShade, resetShade } from './shade.js';
+import { MapEffectLights } from './global-effect-light.js';
+import { resolveMelLocalLights } from './mel-local-lights.js';
 export { applyShade, applyShadeTree, SHADE } from './shade.js';
 
 const STEP_HEIGHT = 1.2;   // how far above the current Y a ground helper may be and still be stepped onto
@@ -30,8 +33,18 @@ export { LEGACY_MAPS, legacyMapRow };
 // ------------------------------------------------------------------------------------------ shared tables
 const tableCache = new Map();
 function cachedTable(key, parse) {
-  if (!tableCache.has(key)) tableCache.set(key, fetchText(key).then(parse).catch(() => null));
-  return tableCache.get(key);
+  let p = tableCache.get(key);
+  if (!p) {
+    p = fetchText(key).then(parse).catch(err => {
+      if (err?.transient) {
+        if (tableCache.get(key) === p) tableCache.delete(key);
+        throw err;
+      }
+      return null;
+    });
+    tableCache.set(key, p);
+  }
+  return p;
 }
 const placementTables = () => Promise.all([
   cachedTable('share/arrange/location.csv', parseLocationCSV),
@@ -45,7 +58,8 @@ let minimapTable = null;
 /** imagetable group 'minimap' -> Map(index -> texture data key). */
 function minimapKeys() {
   if (!minimapTable) {
-    minimapTable = tryFetchBuffer('script/ui/com/imagetable.txt').then(buf => {
+    let p;
+    p = tryFetchBuffer('script/ui/com/imagetable.txt').then(buf => {
       const out = new Map();
       if (!buf) return out;
       const text = decodeText(new Uint8Array(buf), true);
@@ -56,7 +70,11 @@ function minimapKeys() {
         if (Number.isFinite(idx) && c[2].trim()) out.set(idx, normPath(`texture/${c[2].trim()}`)); // last line wins
       }
       return out;
-    }).catch(() => new Map());
+    }).catch(err => {
+      if (err?.transient) { minimapTable = null; throw err; }
+      return new Map();
+    });
+    minimapTable = p;
   }
   return minimapTable;
 }
@@ -76,6 +94,7 @@ export class World {
     this.water = null;
     this.objects = null;
     this.portalEffects = null;
+    this.mapLights = null;        // LANE-54: .mel cate-9 light placements -> environment.effectLights
     this.environment = null;
     this.collision = null;
     this.pathfinder = null;
@@ -112,14 +131,26 @@ export class World {
     (game.worldRoot || game.scene).add(this.root);
     const prog = (a, b) => (f, label) => onProgress(a + (b - a) * Math.max(0, Math.min(1, f)), label);
 
-    onProgress(0, 'Reading the map');
+    onProgress(0, '');
     // custom maps (src/systems/mapbuilder): a row with source() supplies its original-format files in memory:
     // { map, mol, mac: ArrayBuffer, spawns?, npcPlacements?, start?, lightText?, minimap? }
     const src = typeof row.source === 'function' ? await row.source() : null;
     this.source = src;
-    const [mapBuf, macBuf, molBuf, tables, mm] = await Promise.all(src ? [src.map, src.mac || null, src.mol || null, placementTables(), new Map()] : [
+    const loadMacBuffer = async () => {
+      if (src) return src.mac || null;
+      if (!paths.mac) return null;
+      try { return await fetchRequiredMapBuffer(paths.mac); }
+      catch (err) {
+        // Fail closed below instead of throwing: enterMap already disposed the previous world.
+        // Full throw+lifecycle/lease retry is blocked by hazards in client420-corpus/EVIDENCE.md.
+        console.warn('[world] required .mac fetch failed; fail-closed collision', paths.mac, err?.message || err);
+        return null;
+      }
+    };
+    // Authored MapAttribute uses required fetch+retry; blank/"<< Empty >>" and custom maps without mac stay optional.
+    const [mapBuf, macBuf, molBuf, tables, mm] = await Promise.all(src ? [src.map, loadMacBuffer(), src.mol || null, placementTables(), new Map()] : [
       fetchRequiredMapBuffer(paths.map || envInfo.files.map),
-      tryFetchBuffer(paths.mac).catch(() => null),
+      loadMacBuffer(),
       paths.mol ? tryFetchBuffer(paths.mol).catch(() => null) : null,
       placementTables(),
       minimapKeys(),
@@ -137,7 +168,9 @@ export class World {
     this.minimap = mmKey ? { key: mmKey, transposed: true } : null;
 
     // collision + paths
-    this.collision = Collision.fromBuffer(originalEdit?.mac||macBuf, map.width, map.height);
+    const macRequired = !src && !!paths.mac && !originalEdit?.mac;
+    this.collision = Collision.fromBuffer(originalEdit?.mac || macBuf, map.width, map.height, { required: macRequired });
+    if (this.collision.loadFailed) console.warn('[world] collision fail-closed', { map: index, mac: paths.mac, reason: this.collision.loadFailed });
     if(originalEdit)for(let i=0;i<map.holes.length;i++)if(map.holes[i]&&!this.collision.cells[i]){this.collision.cells[i]=1;this.collision.walkableCount--;}
     this.pathfinder = new PathFinder(this.collision);
     this.ground = new GroundSurfaces(map.width, map.height);
@@ -160,16 +193,16 @@ export class World {
       .catch(error => ({ requested: 0, failures: [String(error?.message || error)] }));
 
     // terrain + environment + water
-    this.terrain = new Terrain({ map, game, root: this.root });
+    this.terrain = new Terrain({ map, game, root: this.root, mapRow: this.info?.row || null });
     this.environment = new Environment(game, { envInfo, row, lightText: src?.lightText });
-    this.water = new WaterLayer({ map, game, root: this.root, envMapKey: envInfo.environmentMap });
+    this.water = new WaterLayer({ map, game, root: this.root, envMapKey: envInfo.environmentMap, reflectHeight: envInfo.reflectHeight });   // maplist Reflect_Height = Global planar water plane (LANE-66 rev c)
     await Promise.all([
       this.terrain.build(prog(0.02, 0.35)),
       this.environment.load(),
       this.water.build(),
     ]);
     if (this._disposed) return;
-    onProgress(0.4, 'Placing objects');
+    onProgress(0.4, '');
 
     // objects: nearest-first around where the player will appear (opts.focus; else the saved position when the
     // save is on this map - game.js "continue" - else the map's start point)
@@ -183,15 +216,32 @@ export class World {
     if (!src || this.npcPlacements.length) {
       this.portalEffects = new PortalEffects(game, this);
       await this.portalEffects.load(src ? null : paths.mel || envInfo.files.mel);
+      await this._loadMapLights(src ? null : paths.mel || envInfo.files.mel, map);
     }
     // first culling pass around the focus
     const cam = { x: focus.x, z: focus.z };
     this._cull(0, cam.x, cam.z);
-    onProgress(.99,'Preparing nearby effects');
+    onProgress(.99, '');
     await this.portalEffects?.preloadAt(cam.x,cam.z);
     if(this._disposed)return;
-    onProgress(1, 'World ready');
+    onProgress(1, '');
     return {loaded:true,world:this,mapIndex:index};
+  }
+
+  /** LANE-54 pass 4: resolve the map's .mel cate-9 light placements (effectscene.map / effectdata.map lt_ units) and drive
+   *  them through the Global effect-light receiver. Non-fatal: a missing table leaves the map without effect lights. */
+  async _loadMapLights(melKey, map) {
+    this.mapLights = null;
+    if (!melKey) return;
+    try {
+      const [mel, scenesText, unitsText] = await Promise.all([tryFetchBuffer(melKey),
+        fetchText('property/effect/effectscene.map.txt'), fetchText('property/effect/effectdata.map.txt')]);
+      if (!mel || this._disposed) return;
+      const { placements } = resolveMelLocalLights(mel, { scenesText, unitsText });
+      // mel.js: THREE position = (x, terrain height + y, -z)
+      for (const p of placements) p.pos = [p.x, sampleHeight(map, p.x, p.z) + p.y, -p.z];
+      this.mapLights = placements.length ? new MapEffectLights(placements) : null;
+    } catch (err) { console.warn('[world] map effect lights unavailable', err?.message || err); this.mapLights = null; }
   }
 
   // ---------------------------------------------------------------------------------------- tables
@@ -241,6 +291,15 @@ export class World {
         if (num(r.Index) === idx && num(r.RespawnMap_00) === idx) add(num(r.RespawnPosX_00), num(r.RespawnPosX_00_2));
       }
     }
+    // Global travel arrival correction (map-landing.js): when registry/default landing
+    // sits on a blocked .mac cell, prefer the authored walkable teleport/warp/portal target (exact cell).
+    if (!respawn) {
+      const lo = landingOverride(idx);
+      if (lo?.landing) {
+        const [lx, ly, ld] = lo.landing;
+        cands.push({ x: Number(lx) + 0.5, z: Number(ly) + 0.5, dirDeg: Number(ld) || 0, fromLandingOverride: true });
+      }
+    }
     for (const sp of t.startpoints || []) { const l = loc(sp.locationIndex); if (l && l.mapIndex === idx && !l.placeholder) add(l.x, l.y, l.directionDeg); }
     for (const p of t.portals || []) if (p.mapIndex === idx) add(p.x, p.y, p.directionDeg || 0);
     for (const r of t.dkmaplist || []) if (num(r.Index) === idx) add(num(r.LocatePosX), num(r.LocatePosY));
@@ -258,6 +317,8 @@ export class World {
     for (const c of cands) {
       if (!col) { pick = c; break; }
       if (col.isWalkable(c.x, c.z)) { pick = c; break; }
+      // landingOverride points are exact Global arrivals: never snap them onto a neighbor
+      if (c.fromLandingOverride) continue;
       const s = col.nearestWalkable(c.x, c.z, 8);
       if (s) { pick = { x: s.x, z: s.z, dirDeg: c.dirDeg }; break; }
     }
@@ -298,6 +359,9 @@ export class World {
 
   /** Water surface level at a FILE point (or null). */
   waterLevelAt(x, z) { return this.water ? this.water.levelAt(x, z) : null; }
+
+  /** Water definition type at a FILE cell (4 = FloorReflect: Global skips camera-underwater fog there), or null. */
+  waterTypeAt(x, z) { return this.water && this.water.typeAt ? this.water.typeAt(x, z) : null; }
 
   /** .mac cell attribute info (share/arrange/cell.csv row: safety zone, fishing, ...). */
   cellInfo(x, z) { return this.collision ? this.collision.info(x, z) : null; }
@@ -340,15 +404,15 @@ export class World {
   }
 
   // ---------------------------------------------------------------------------------------- frame
-  _cull(dt, camX, camZ) {
+  _cull(dt, camX, camZ, pad = 0) {
     const env = this.environment;
     const view = env ? env.viewDistance : 75;
     const fogEnd = env ? env.fogEnd : view;
     const cull = Math.min(view, fogEnd + 5);
-    this.cullDistance = cull;          // actors use it too (actor.js view culling)
-    this.terrain?.update(camX, camZ, Math.min(view, fogEnd + 12) + 8);
-    this.water?.update(dt, camX, camZ, cull + 8);
-    this.objects?.update(dt, camX, camZ, cull, view);
+    this.cullDistance = cull;          // actors use it too (actor.js view culling) - camera-relative, unpadded
+    this.terrain?.update(camX, camZ, Math.min(view, fogEnd + 12) + 8 + pad);
+    this.water?.update(dt, camX, camZ, cull + 8 + pad);
+    this.objects?.update(dt, camX, camZ, cull + pad, view + pad);
     this.portalEffects?.update(dt, camX, camZ);
   }
 
@@ -360,17 +424,46 @@ export class World {
     if (!this.map || this._disposed) return;
     const cp = cameraThreePos || this.game.camera?.position || this._tmpV.set(this.info.width / 2, 0, -this.info.height / 2);
     const focus = this.game.cam?.target || null;
+    // LANE-54: map lights post LightStart / LightStop to the environment's Global effect-light receiver before it applies
+    this.mapLights?.update(dt * 1000, this.environment?.effectLights, focus || cp);
     this.environment?.update(dt, focus, cp);
     // the client's sun fall-off around the player (shade.js): centre = the camera target (the player), radius =
-    // the light file's lightdistance
-    setShade(focus || cp, this.environment?.current?.lightDistance);
-    this._shadeTimer = (this._shadeTimer || 0) - dt;
-    if (this._shadeTimer <= 0) {
-      // actors, drops and effects live under the same root: give their lit materials the same rule
-      this._shadeTimer = 0.5;
-      if (this.game.worldRoot) applyShadeTree(this.game.worldRoot);
+    // the light file's lightdistance; an active Global effect light moves the centre to the light (env+0x58) and lerps
+    // the radius toward its `light` t2 (env+0x64)
+    const sp = this.environment?.current?.shadePos;
+    setShade(sp ? (this._shadeV || (this._shadeV = new THREE.Vector3())).set(sp[0], sp[1], sp[2]) : focus || cp, this.environment?.current?.lightDistance);
+    // actors, drops and effects live under the same root: give their lit materials the same rule.
+    // SMOOTH-CAM (2026-10-30): was a full applyShadeTree(worldRoot) every 0.5 s (a multi-ms walk of every node, bones included =
+    // a dropped frame twice a second at 239 Hz). Now: patched in the draw that first uses the material (shade.js shadeOnFirstDraw)
+    // plus the same walk spread over frames (<= 0.25 ms each) so compileAsync pre-builds still see patched materials.
+    const wr = this.game.worldRoot;
+    singlePassDoubleSided();
+    if (wr) {
+      if (globalThis.__dekaronNoShadeDrawHook === true) {
+        this._shadeTimer = (this._shadeTimer || 0) - dt;
+        if (this._shadeTimer <= 0) { this._shadeTimer = 0.5; applyShadeTree(wr); }
+      } else {
+        shadeOnFirstDraw(wr);
+        const st = this._shadeSweep || (this._shadeSweep = { stack: [], wait: 0 });
+        if (st.stack.length) applyShadeTreeSliced(st, wr);
+        else if ((st.wait -= dt) <= 0) { st.wait = 0.5; applyShadeTreeSliced(st, wr); }
+      }
     }
-    this._cull(dt, cp.x, -cp.z);
+    // SMOOTH-CAM (2026-10-30): distance culling (objects / terrain chunks / water) is centred on the player the orbit camera looks
+    // at, with the radius grown by the orbit's horizontal reach. Turning the camera swings its position ~distance units around
+    // the player; centred on the camera that moved the cull circle >1.5 units on every turn and rebuilt instance buffers / rigs
+    // every 0.2 s while turning. The player-centred circle (radius + reach) contains the old camera-centred one at every angle, so
+    // nothing that was drawn before is dropped; it only changes when the player walks or the zoom crosses a 2-unit step.
+    // First person / GM free camera / no player: the camera position as before. Kill switch: globalThis.__dekaronCameraCull = true.
+    const cam = this.game.cam;
+    let cx = cp.x, cz = cp.z, pad = 0;
+    if (globalThis.__dekaronCameraCull !== true && focus && Number.isFinite(focus.x) && Number.isFinite(focus.z) && cam?.mode !== 'first-person' && !this.game.gm?.freecam?.on) {
+      const reach = Math.hypot(cp.x - focus.x, cp.z - focus.z);
+      const want = Math.max(Number(cam?.distance) || 0, reach);
+      pad = Math.ceil((want + 0.5) / 2) * 2;
+      if (reach <= pad) { cx = focus.x; cz = focus.z; } else pad = 0;
+    }
+    this._cull(dt, cx, -cz, pad);
   }
 
   dispose() {
@@ -383,6 +476,7 @@ export class World {
     this.environment?.dispose();
     this.ground?.clear();
     this.root.removeFromParent();
+    this.mapLights = null;
     this.objects = this.portalEffects = this.water = this.terrain = this.environment = null;
     this.map = null;
   }

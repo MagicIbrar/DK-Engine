@@ -4,7 +4,7 @@
 // the client tables share/vehicle, share/creature/pet, script/ridingheightcorrection, share/action/action/{vehicle,
 // rider,wingrider,pet}. See docs/MOUNTS.md.
 import { fetchJSON } from '../../engine/assets.js';
-import { wingDesignForItem, wingAssetKey } from '../../content/wings-catalog.js';
+import { wingDesignForItem } from '../../content/wings-catalog.js';
 
 export const EQUIP_SLOT = { wing: 7, costume: 18, pet: 19, vehicle: 20, reserveCostume: 114 };
 /** Action ids (items-actions.json actionIds) used here. */
@@ -139,8 +139,8 @@ export class MountsData {
 
   // ------------------------------------------------------------------ wings / costumes
   wing(item) {
-    const design = wingDesignForItem(item);
-    if (design) return { asset: { mesh: wingAssetKey(design.id) }, table: null, action: null, design };
+    // GLOBAL ONLY (WING-FX-REA): fabricated WING_DESIGNS / engine/wings/*.wing are not Global.
+    // Never short-circuit to design — live wings come only from mounts.json (Global meshes + action tables).
     const w = this.core?.wings?.[item];
     if (!w) return null;
     const asset = this.core.assets[w[0]];

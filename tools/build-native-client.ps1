@@ -3,7 +3,7 @@ $ErrorActionPreference='Stop'
 $engine=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $source=Join-Path $PSScriptRoot 'DKClient.cs'
 $output=Join-Path $engine 'GameWindow.exe'
-$icon=Join-Path $engine 'client-assets\dk-engine.ico'
+$icon=Join-Path $engine 'client-assets\dekaron-client.ico'
 if(-not (Test-Path -LiteralPath $icon -PathType Leaf)){& (Join-Path $PSScriptRoot 'build-client-icon.ps1')}
 foreach($target in @($engine,$source,$output)) {
  $ancestor=$target

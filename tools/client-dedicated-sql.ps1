@@ -16,6 +16,11 @@ function Select-DedicatedLocalSqlInstance([string]$Current) {
 }
 function Initialize-DedicatedSqlConfiguration {
  [Environment]::SetEnvironmentVariable('DEKARON_DEDICATED_STORAGE',(Read-DedicatedStorage),'Process')
+# SQL-SERVER-SPEED (~100 concurrent): pool=2 + SSE row deltas when using SQL storage (overridable).
+if((Read-DedicatedStorage) -eq 'sqlserver'){
+  if(-not $env:DEKARON_SQL_POOL){[Environment]::SetEnvironmentVariable('DEKARON_SQL_POOL','2','Process')}
+  if(-not $env:DK_ROWS_DELTA){[Environment]::SetEnvironmentVariable('DK_ROWS_DELTA','1','Process')}
+}
  $file=Join-Path $clientEngine 'run\dashboard-sql-instance.txt'
  $value=if(Test-Path -LiteralPath $file){[IO.File]::ReadAllText($file)}elseif($env:DEKARON_SQL_INSTANCE){$env:DEKARON_SQL_INSTANCE}else{'.\SQLEXPRESS'}
  [Environment]::SetEnvironmentVariable('DEKARON_SQL_INSTANCE',(ConvertTo-DedicatedSqlInstance $value),'Process')

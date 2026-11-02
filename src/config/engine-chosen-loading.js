@@ -1,14 +1,14 @@
-// ENGINE-CHOSEN scheduling/progress values; these affect loading only, never game data.
+﻿// ENGINE-CHOSEN scheduling/progress values; these affect loading only, never game data.
 // Shares reflect the measured load phases: ~4 s systems, ~1.3 s world,
 // ~1.4 s NPCs, ~15 s full artwork. Priority artwork now has a separate barrier.
 export const LOADING = Object.freeze({ tables: [0.02, 0.10], systems: [0.10, 0.30],
-  world: [0.30, 0.52], player: 0.52, npcs: 0.60, monsters: 0.68,
+  world: [0.30, 0.52], player: 0.52, npcs: 0.60, monsters: 0.68, globalPreload: [0.68, 0.72],
   artwork: [0.72, 0.94], icons: 0.94, scene: 0.98, complete: 1 });
 export const phaseFraction = (range, fraction) => range[0] + (range[1] - range[0]) * Math.max(0, Math.min(1, Number(fraction) || 0));
 
 export const ARTWORK_LANES = 8;
 export const SCRIPT_LANES = 4;
-export const PRIORITY_PANELS = Object.freeze(['bag', 'inventory', 'skills', 'dshop']);
+export const PRIORITY_PANELS = Object.freeze(['bag', 'inventory', 'skills', 'dshop', 'costumebag', 'cashinven', 'storage', 'character']);
 
 // ENGINE-CHOSEN idle-time window pre-building (src/ui/uiwin/prebuild.js): windows are built after the world is ready,
 // in requestIdleCallback slices that never exceed ~8 ms, never while a map loads, and never run onOpen/services.

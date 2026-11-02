@@ -10,6 +10,17 @@ import { AuthoredEffectsData } from '../items/authored-effects-data.js';
 import { tierHue } from '../items/preview-refinement.js';
 import { socketPhase } from '../../config/engine-chosen-socket-glow.js';
 import { auraValue } from '../../config/engine-chosen-aura.js';
+import { gfxB } from '../../config/gfx-b-switches.js'; // LANE-70: previewAuraAuthored
+//
+// LANE-70 check against Global (2026-10-29):
+//   * tierHue (items/preview-refinement.js FAMILY_HUE): ENGINE-CHOSEN colours picked per refinement family. GLOBAL DATA effectscene 7:10
+//     draws the shell as texture x colour x alpha with no glow key, and gfx-B already marks FAMILY_HUE ENGINE-CHOSEN (previewTierAuraOff).
+//     REMOVED by default: gfx-B previewAuraAuthored.
+//   * socketPhase (config/engine-chosen-socket-glow.js): GLOBAL DATA modeleffect.csv group 24 (7 rows, code3 always 0) has no gem-count
+//     rule, so 1 with any gem and 0 with none is correct. But the gem-hue halo it scales has no Global source (Global plays one sprite
+//     scene per stone attribute; the world removes the wash with socketWashOff). REMOVED by default as well.
+//   * GLOBAL DECOMPILE: the only glow binding is the material slot glowTexture; no refinement or gem glow constant exists.
+//   Switching previewAuraAuthored off restores the previous sources (old behaviour kept for compatibility).
 
 /** [blur radius as a fraction of the preview height, layer strength]: tight core, mid, wide tail. ENGINE-CHOSEN. */
 export const PREVIEW_AURA_LAYERS = Object.freeze([[0.012, 1], [0.03, 1], [0.06, 0.8]]);
@@ -24,6 +35,7 @@ const norm = value => String(value || '').replace(/\\/g, '/').toLowerCase();
 /** Sources for one previewed player: [{meshes, hue:[r,g,b], amount}] from the worn gear's refinement tiers and weapon gems.
  *  actor = the snapshot whose save.equipment is shown, inst = its body instance, weapons = the attached weapon objects. */
 export async function previewAuraSources(game, actor, inst, weapons = [], data = game?.items?.authoredEffects?.data || new AuthoredEffectsData()) {
+  if (gfxB('previewAuraAuthored')) return [];   // LANE-70: no Global aura source for refinement tiers or gems (see header)
   const db = game?.items?.db;
   if (!db || !actor?.save?.equipment) return [];
   let entries;

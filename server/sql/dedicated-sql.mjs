@@ -18,7 +18,7 @@ export async function createDedicatedSqlServices({env=process.env,log=console.lo
       const rows=await sql.query("SELECT COUNT(*) AS n FROM sys.tables WHERE name IN ('engine_account','engine_character','engine_social')",{}, {db:database});
       if(Number(rows[0]?.n)!==3)throw new Error('SQL engine schema is missing; initialize an isolated database explicitly.');
     }
-    const lock=await sql.query("DECLARE @result int; EXEC @result=sp_getapplock @Resource=N'DekaronDedicatedWorld', @LockMode='Exclusive', @LockOwner='Session', @LockTimeout=0; SELECT @result AS result",{}, {db:database});
+    const lock=await sql.query("DECLARE @result int; EXEC @result=sp_getapplock @Resource=N'DekaronDedicatedWorld', @LockMode='Exclusive', @LockOwner='Session', @LockTimeout=0; SELECT @result AS result",{}, {db:database,pin:0}); // session lock: pinned to pool host 0 (F1)
     if(lock[0]?.result==null||!Number.isInteger(Number(lock[0]?.result))||Number(lock[0]?.result)<0)
       throw new Error('Another dedicated host already owns this SQL world, or its SQL lock could not be confirmed.');
     const store=createEngineSqlStore({sql,database,strict:true,log});

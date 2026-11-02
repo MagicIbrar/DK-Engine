@@ -38,7 +38,11 @@ import { installProcs } from './procs.js';
 import { installGauges } from './gauges.js';
 import { fetchText } from '../../engine/assets.js';
 import { installRecoveryEffects } from './recovery.js';
-import { SkillEffectResources } from './effect-resources.js';
+import { resolveAwakeningGrade } from './trans-up-rules.js';
+import { SkillEffectResources, skillResourcePlan } from './effect-resources.js';
+import { skillWeaponCompatible } from './skill-weapon.js';
+import { createHotbarPrewarm } from './hotbar-prewarm.js';
+import { createClipWarmer } from './clip-warmer.js';
 
 let sys = null;
 
@@ -96,9 +100,10 @@ export async function install(game) {
   game.events?.on?.('levelup', () => autoUnlock(game, engine, list, { silent: false }));
 
   engine.effectResources = new SkillEffectResources(engine);
-  // Visual resources are prepared only by the requested-cast guards. Sweeping
-  // every learned skill here blocks required-system installation and competes
-  // with first map/UI loading; optional graphics must not gate world entry.
+  // Prepare only visible hotbar skills, after entry and without delaying it.
+  sys.hotbarPrewarm=createHotbarPrewarm(game,engine,skillResourcePlan,skillWeaponCompatible);
+  // SKILL-CLIP-COLD: every learned skill's body clips (current cast speed / weapon style) and nearby players' class clips, chunked
+  sys.clipWarmer=createClipWarmer(game,engine);
   sys.offResources=['skilllearn','equip','transup','map','teleport','network'].map(
     event=>game.events?.on?.(event,()=>engine.effectResources.cancel()));
 
@@ -113,6 +118,12 @@ export async function install(game) {
 
 export function update(dt, game) {
   if (!sys) return;
+  // Optional warmup must never suppress the actual skill/FX update if a
+  // malformed asset or renderer error makes planning throw synchronously.
+  try { sys.hotbarPrewarm?.update(); }
+  catch (error) { console.warn('[skills] hotbar warmup stopped', error); sys.hotbarPrewarm?.dispose(); }
+  try { sys.clipWarmer?.update(); }
+  catch (error) { console.warn('[skills] clip warmup stopped', error); sys.clipWarmer?.dispose(); sys.clipWarmer = null; }
   sys.fx.update(dt);
   sys.summons.update(dt);
   sys.hookUpdate?.(dt);
@@ -122,6 +133,8 @@ export function update(dt, game) {
 export function dispose() {
   if (!sys) return;
   sys.offRecovery?.();
+  sys.hotbarPrewarm?.dispose();
+  sys.clipWarmer?.dispose();
   for(const off of sys.offResources||[])off?.();
   sys.engine.effectResources?.dispose();
   sys.summons.clear();
@@ -209,7 +222,7 @@ export function autoUnlock(game, engine, list, { silent = false } = {}) {
   const s = game.save;
   if (!s) return [];
   const lv = Number(s.level) || 1;
-  const grade = Number(s.grade ?? s.transGrade ?? 0) || 0;
+  const grade = resolveAwakeningGrade(s, game);
   // A confirmed paid-skill reset survives reload/level-up. Other characters
   // and zero-cost first ranks retain the existing automatic unlock policy.
   const paidReset = new Set(Array.isArray(s.normalSkillResetSuppressed) ? s.normalSkillResetSuppressed : []);

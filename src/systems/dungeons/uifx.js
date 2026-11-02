@@ -6,10 +6,13 @@
 // scale (x = width, z = height; y is depth), 1 unit = 64 reference pixels (the 1024x64 text strips are authored at
 // scale 16 x 1), origin at the screen centre, x right / y up. Every control lives from lifetime[0] to lifetime[1] of
 // the scene timeline (0..1000 = the duration the caller gives), its keyframes t = 0..999 run over its own life.
-// Blend 'add' = additive, 'modulate' = alpha blend. Particles (pt_*) are drawn as additive sprite bursts
-// (emitrate < 0 = burst size, maxelementcount cap, lifetime / velocity / gravity / particlesize ranges).
+// Blend 'add' = additive, 'modulate' = alpha blend. Particles (pt_*) are drawn as additive sprites, emitted by Global's emit
+// tick (emitrate > 0 = ms per particle, < 0 = particles per frame, max 10 per tick, maxelementcount cap) and spun by
+// addrotate x age fraction (src/systems/skills/global-particle-rules.js, LANE-63); lifetime / velocity / gravity /
+// particlesize ranges as authored.
 import { fetchJSON } from '../../engine/assets.js';
 import { atlas } from '../../ui/atlas.js';
+import { globalEmitCount, globalSpawnRotation, globalStepRotation, globalAgeFraction } from '../skills/global-particle-rules.js'; // LANE-63
 
 export const UNIT_PX = 64;
 const URL = '/gamedata/dungeons_uifx.json';
@@ -142,10 +145,13 @@ export class UIEffects {
   }
 
   _particles(ctx, a, ci, c, u, img, x, y, U, lt, alpha, dt, sc) {
-    let ps = a.parts.get(ci);
-    if (!ps) {
-      ps = [];
-      const n = Math.max(1, Math.min(Number(u.max) || 8, Number(u.emitrate) < 0 ? -Number(u.emitrate) : Number(u.max) || 8));
+    let em = a.parts.get(ci);
+    if (!em) { em = { list: [], emitAcc: 0 }; a.parts.set(ci, em); }
+    // LANE-63: Global emit tick (FUN_011a65e0) instead of one burst of -emitrate / max at the first frame.
+    em.list = em.list.filter(p => p.t <= p.life);
+    const ps = em.list, cap = Math.max(1, Number(u.max) || 8);
+    const n = Math.min(globalEmitCount(em, dt * 1000, u.emitrate), Math.max(0, cap - ps.length));
+    if (n > 0) {
       const [l0, l1] = u.plife || [400, 600];
       const [v0, v1] = u.velocity || [2, 3];
       const [s0, s1] = u.psize || [1, 2];
@@ -153,15 +159,16 @@ export class UIEffects {
       for (let i = 0; i < n; i++) {
         const ang = Math.random() * Math.PI * 2, sp = v0 + Math.random() * (v1 - v0), r = r0 + Math.random() * (r1 - r0);
         ps.push({ x: Math.cos(ang) * r, y: Math.sin(ang) * r, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp, life: (l0 + Math.random() * (l1 - l0)) / 1000, t: 0,
-          size: s0 + Math.random() * (s1 - s0), rot: Math.random() * Math.PI * 2 });
+          size: s0 + Math.random() * (s1 - s0), rot: globalSpawnRotation(u.addrotate) });
       }
-      a.parts.set(ci, ps);
     }
     const g = u.gravity || [0, 0, 0];
     const k = Math.max(0.2, (sc[0] || 1) * 0.25);
     for (const p of ps) {
+      const age0 = globalAgeFraction(p.t, p.life);
       p.t += dt;
       if (p.t > p.life) continue;
+      p.rot = globalStepRotation(u.addrotate, age0, p.rot);   // Global FUN_011a7980: addrotate x age fraction
       p.vx += (g[0] || 0) * dt; p.vy += (g[1] || 0) * dt;
       p.x += p.vx * dt; p.y += p.vy * dt;
       const f = 1 - p.t / p.life;
@@ -169,7 +176,7 @@ export class UIEffects {
       ctx.save();
       ctx.globalAlpha = Math.max(0, Math.min(1, alpha * f));
       ctx.translate(x + p.x * U * 0.25, y - p.y * U * 0.25);
-      ctx.rotate(p.rot + (Number(u.addrotate) || 0) * p.t * 0.1);
+      ctx.rotate(p.rot);
       ctx.drawImage(img, -s / 2, -s / 2, s, s);
       ctx.restore();
     }

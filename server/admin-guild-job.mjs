@@ -12,9 +12,9 @@ export function createAdminGuildJob({prepare,shouldYield=()=>false,schedule=setI
    report={...report,phase:'queued',complete:false};let finish;flight=new Promise(resolve=>finish=resolve);
    schedule(async()=>{
     try{
-     if(yielding())report={...report,phase:'deferred',complete:false,reason:'human-admission-or-host-stopping'};
+     const y=yielding();if(y)report={...report,phase:'deferred',complete:false,reason:typeof y==='string'?y:'human-admission-or-host-stopping'};
      else{report={...report,phase:'running',complete:false};const result=await prepare(yielding);report={...result,phase:result.complete?'complete':result.partial?'partial':'deferred'};}
-    }catch{report={...report,phase:'failed',complete:false,reason:'ordinary-preparation-failed'};}
+    }catch(error){const setupReason=typeof error?.setupReason==='string'?error.setupReason:null;const msg=typeof error?.message==='string'?error.message.slice(0,160):'';console.error('[admin-guild] prepare failed',setupReason||msg||error);report={...report,phase:'failed',complete:false,reason:setupReason||'ordinary-preparation-failed',error:msg||undefined};}
     finally{
      flight=null;finish();
      // A long ordinary NPC walk can exceed one cooperative budget. Resume

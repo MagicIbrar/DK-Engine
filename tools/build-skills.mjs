@@ -24,6 +24,7 @@
 // The parsers below are pure functions (Buffer|Uint8Array|string in, plain objects out) and never touch the
 // file system, so the engine can port them to the browser unchanged.
 
+import { globalAttackClass } from '../src/game/global-attack-class.js';
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
@@ -414,7 +415,11 @@ export function describeResult(code, args, ctx = null, depth = 0) {
       const shape = +c[4], yy = +c.slice(5);
       out.shape = { 1: 'single', 2: 'area', 3: 'area_element', 4: 'single_status', 5: 'area_status', 7: 'area_dot' }[shape] || `shape${shape}`;
       out.damageType = yy;
-      const dt = shape === 3 ? { cls: 'magic', element: ELEMENT_AREA_PAIRS[yy] } : DAMAGE_TYPES[yy];
+      // Global server factory class wins (src/game/global-attack-class.js, MATH-VERIFY row 7c). Codes the factory does
+      // not register keep the old suffix decode and are flagged globalClass 'UNREGISTERED' (UNPROVEN).
+      const gc = globalAttackClass(+c);
+      const dt = gc || (shape === 3 ? { cls: 'magic', element: ELEMENT_AREA_PAIRS[yy] } : DAMAGE_TYPES[yy]);
+      out.globalClass = gc ? gc.attackClass : 'UNREGISTERED';
       if (dt) { out.damageClass = dt.cls; if (dt.element) out.element = dt.element; }
       if (shape === 7) { out.dotStatusIndex = a[0]; break; }
       if (a[0] > 0 && shape !== 1 && shape !== 4) out.radius = R(a[0]);
@@ -806,7 +811,7 @@ export async function build({ dataRoot, verbose = false } = {}) {
     }
     statuses.set(i, {
       index: i, type: num(r.Type), property: num(r.Property), style: num(r.Style), maxStack: num(r.MaxStackCount), group: num(r.GroupIndex),
-      description: cleanDesc(String(r.Description || '').replace(/\\/g, ' / ')), mapMoveDelete: num(r.MapMoveDelete), iconIndex: num(r.IconIndex),
+      description: cleanDesc(String(r.Description || '').split('\\').filter(part => part.trim()).join(' / ')), mapMoveDelete: num(r.MapMoveDelete), iconIndex: num(r.IconIndex),
       sendToOthers: num(r.SendToOthers), optionCount: num(r.OptionCount), options,
     });
   }
@@ -849,9 +854,10 @@ export async function build({ dataRoot, verbose = false } = {}) {
   const spellFx = {};
   for (const m of modelEffects) if (m.code[0] === 41) spellFx[m.code[1]] = { ...m.effect, note: m.note };
   // code1 21 = combat reactions (hit / block / dead / blood per material), 39 = game events (level up per class, revive,
-  // hp/mp recovery, skill level up, target markers, enhancement results); rows kept as { code: [code2, code3, code4], effect, note }
+  // hp/mp recovery, skill level up, target markers, enhancement results), 18 = quest overhead marks (! / Q logos on
+  // NPCs and huntable / quest-target monsters); rows kept as { code: [code2, code3, code4], effect, note }
   const modelRows = (c1) => modelEffects.filter(m => m.code[0] === c1 && m.effect.id).map(m => ({ code: m.code.slice(1), effect: { ...m.effect }, ...(m.note ? { note: m.note } : {}) }));
-  const combatFx = modelRows(21), gameFx = modelRows(39);
+  const combatFx = modelRows(21), gameFx = modelRows(39), questFx = modelRows(18);
 
   // ---- floating damage numbers (script/effect/damageeffect.csv: rows Alpha/Scale/Ypos/Zpos = (time 0..999, value) pairs)
   let damageText = null;
@@ -1102,7 +1108,13 @@ export async function build({ dataRoot, verbose = false } = {}) {
             if (r.remoteMissing) problems.push(`${ctxName} L${L}: remote ${r.remoteIndex} not in remote.csv`);
             if (r.statusMissing) notes.push(`${ctxName} L${L}: status ${r.statusIndex} not in status.csv`);
             step.result = r;
-          } else if (cb.resultEffectId) step.hitEffect = fxRef(cb.resultEffectId, cb.resultSceneId, cb.resultEffectTime, ctxName);
+          } else {
+            // Scan fix A: Global skill.dat carries aggro/pvpRate on combo rows with resultCode 0
+            // (skills 549/1566/2682/3043/3055/3426/3735); copy them verbatim instead of dropping them.
+            if (cb.pvpRate) step.pvpDamageRate = cb.pvpRate;
+            if (cb.aggro) { step.aggro = cb.aggro; usedAggro.add(cb.aggro); if (!aggroCodes.has(cb.aggro)) problems.push(`${ctxName} L${L}: aggro code ${cb.aggro} not in share/ai/aggroaccount.csv`); }
+            if (cb.resultEffectId) step.hitEffect = fxRef(cb.resultEffectId, cb.resultSceneId, cb.resultEffectTime, ctxName);
+          }
           if (cb.actionType || cb.timeTick) { actionKeys.add(`${cb.style}:${cb.actionIndex}`); comboStepsTotal++; }
           steps.push(step);
         }
@@ -1357,6 +1369,7 @@ export async function build({ dataRoot, verbose = false } = {}) {
   for (const [id, fx] of pcActionFx) refEffect(fx.cate, fx.id, `pc action effect ${id}`);
   for (const r of combatFx) refEffect(r.effect.cate, r.effect.id, 'modeleffect 21 (combat)');
   for (const r of gameFx) refEffect(r.effect.cate, r.effect.id, 'modeleffect 39 (game event)');
+  for (const r of questFx) refEffect(r.effect.cate, r.effect.id, 'modeleffect 18 (quest mark)');
   for (const r of statusEffectTable) { refEffect(11, r.keep.id, 'statuseffect.csv'); refEffect(11, r.start.id, 'statuseffect.csv'); refEffect(11, r.end.id, 'statuseffect.csv'); }
 
   // ---- effect library
@@ -1516,8 +1529,8 @@ export async function build({ dataRoot, verbose = false } = {}) {
     categories: EFFECT_CATEGORIES,
     damageText,
     modelEffects: {
-      note: 'script/effect/modeleffect.csv (code1, code2, code3, code4) -> effect {cate, id, scene, timeMs, loop}. status = code1 19 by status IconIndex (code4 1 start / 2 keep / 3 end); spell = code1 41 by spell id; pcActionEffects = code1 25 code2 0 by the "effect" id of PC action records (skill clips); combat = code1 21 rows [code2, code3, code4] (1 hit, 2 block, 4 dead, 0 blood per material code3 / blood sound); game = code1 39 rows (code2 1..13 level up of class code2-1, 14-17 revive, 21 hp / 31 mp recovery, 41 skill level up, 51 monster death, 61-66 target markers, 100-111 quest / enhancement results). loop 0 = persistent (keep until removed), 1 = one-shot for timeMs.',
-      status: Object.fromEntries(statusFx), spell: spellFx, pcActionEffects: Object.fromEntries(pcActionFx), combat: combatFx, game: gameFx,
+      note: 'script/effect/modeleffect.csv (code1, code2, code3, code4) -> effect {cate, id, scene, timeMs, loop}. status = code1 19 by status IconIndex (code4 1 start / 2 keep / 3 end); spell = code1 41 by spell id; pcActionEffects = code1 25 code2 0 by the "effect" id of PC action records (skill clips); combat = code1 21 rows [code2, code3, code4] (1 hit, 2 block, 4 dead, 0 blood per material code3 / blood sound); game = code1 39 rows (code2 1..13 level up of class code2-1, 14-17 revive, 21 hp / 31 mp recovery, 41 skill level up, 51 monster death, 61-66 target markers, 100-111 quest / enhancement results); quest = code1 18 rows (code2 1/2/3 general available/progress/complete quest_point / quest_Q_*, 5/6/7 repeat blue, 12/13/14 main red, 15/16/17 daily violet, 0 = NPC_Quest scene 4 clear). loop 0 = persistent (keep until removed), 1 = one-shot for timeMs.',
+      status: Object.fromEntries(statusFx), spell: spellFx, pcActionEffects: Object.fromEntries(pcActionFx), combat: combatFx, game: gameFx, quest: questFx,
     },
     statusEffectTable,
     scenes: scenesOut,

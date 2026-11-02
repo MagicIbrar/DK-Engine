@@ -15,7 +15,9 @@ export function installSharedPetServices(game,network){
   const sync=()=>{
     const current=job();
     if(!current){clearTimeout(timer);timer=null;if(pendingId)clearMix();pendingId=null;autoAttempted=null;return;}
-    const changed=pendingId!==current.id;pendingId=current.id;const win=game.uiwin?.window?.('petinfo');
+    const changed=pendingId!==current.id;
+    if(changed&&timer!==null){clearTimeout(timer);timer=null;}
+    pendingId=current.id;const win=game.uiwin?.window?.('petinfo');
     if(win?.data?.st&&changed){win.data.st.mix=current.uids.map(uid=>game.save.inventory?.find(item=>item.uid===uid)||null);win.data.st.busy=true;win.data.refresh?.();}
     const wait=Math.max(0,current.readyAt-now());
     if(!disposed&&!timer&&autoAttempted!==current.id)timer=setTimeout(()=>{timer=null;if(network.ready&&job()?.id===current.id){autoAttempted=current.id;void combine.finish(current.id);}},Math.min(2147483647,wait+30));

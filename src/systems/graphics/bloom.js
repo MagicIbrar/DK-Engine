@@ -9,9 +9,13 @@
 //
 // Parameters (per map, per time of day): map/light_*.txt `bloom_value enabled p1 p2 p3 p4` (environment.js key
 // `bloom.params`, interpolated by sampleEnvironment): g_fPowValue = p1 / 10, g_fWeightValue = p2 / 10 (bloomlow.fx
-// divides the same slider by 10 for its power) [inference: the scale]. p3 (1 in Ardeca, 5..20 in Braiken over the day,
-// 104 / 123 in the dark Highland / login scenes) grows as maps get darker: read as the add strength
-// 0.3 + 0.7 x p3 / 100 [inference], times the Options "Bloom brightness" level.
+// divides the same slider by 10 for its power).
+//
+// Add strength (GLOBAL-MATCHED 2026-10-27): bloomeffect.fx has NO intensity uniform; the DX9 exe adds AddTex with
+// fixed-function ONE/ONE blending (full-strength additive blit). p3 is the map-editor "factor" and only reaches the
+// exe blend path. 2026-10-28: the engine-invented p3 boost was removed; strength is fixed 1.0 (Global full add).
+// Times Options "Bloom brightness" (BLOOM_LEVELS, mid = 1.0).
+// Prior ENGINE-CHOSEN `0.3 + 0.7 x p3/100` left typical maps at ~0.30..0.40 intensity � visibly far under Global.
 //
 // Cost: the 3D scene still renders straight to the (antialiased) canvas; bloom adds one framebuffer copy, three passes
 // over a quarter-size target and one additive full-screen pass - well under a millisecond at 1080p. Quality `scale`
@@ -30,11 +34,9 @@ uniform float powValue;
 uniform float step;
 varying vec2 vUv;
 void main() {
-  // the mean of the source block under this texel (4 bilinear taps = 16 texels at 1/4 size)
-  vec2 o = srcTexel * step;
-  vec3 c = texture2D(tSrc, vUv + vec2(-o.x, -o.y)).rgb + texture2D(tSrc, vUv + vec2(o.x, -o.y)).rgb
-         + texture2D(tSrc, vUv + vec2(-o.x, o.y)).rgb + texture2D(tSrc, vUv + vec2(o.x, o.y)).rgb;
-  c *= 0.25;
+  // GLOBAL-MATCHED 2026-10-28 (bloomeffect.fx PS_PWO): ONE tex2D of the source with LINEAR filtering, then pow.
+  // (The DX9 exe StretchRects the frame into the 1/4 target with LINEAR; a single bilinear fetch here is that.)
+  vec3 c = texture2D(tSrc, vUv).rgb;
   gl_FragColor = vec4(pow(max(c, vec3(0.0)), vec3(powValue)), 1.0);
 }`;
 
@@ -72,7 +74,7 @@ function passMaterial(frag, uniforms, blend = false) {
   return m;
 }
 
-export const BLOOM_LEVELS = [0.6, 1.0, 1.5];   // Options "Bloom brightness" 0..2
+export const BLOOM_LEVELS = [0.7, 1.0, 1.45];   // Options "Bloom brightness" 0..2 (mid = Global full-add)
 
 export class Bloom {
   constructor(renderer) {
@@ -81,11 +83,12 @@ export class Bloom {
     this.rtA = null; this.rtB = null;
     this.size = new THREE.Vector2();
     this.scale = 4;              // divisor of the bloom target (4 = quarter, 8 = eighth)
-    this.params = { pow: 2.06, weight: 4.41, intensity: 0.4 };
+    this.blurPasses = 1;         // Global TBloomEffect: one H + one V; raise only for ENGINE scatter experiments
+    this.params = { pow: 2.35, weight: 4.41, intensity: 1.0 };
     const rt = { tSrc: { value: null } };
     this.powMat = passMaterial(POW_FRAG, { ...THREE.UniformsUtils.clone(rt), srcTexel: { value: new THREE.Vector2() }, powValue: { value: 2 }, step: { value: 1 } });
     this.blurMat = passMaterial(BLUR_FRAG, { ...THREE.UniformsUtils.clone(rt), dir: { value: new THREE.Vector2() }, weightValue: { value: 4.4 } });
-    this.addMat = passMaterial(ADD_FRAG, { ...THREE.UniformsUtils.clone(rt), intensity: { value: 0.4 } }, true);
+    this.addMat = passMaterial(ADD_FRAG, { ...THREE.UniformsUtils.clone(rt), intensity: { value: 1.0 } }, true);
     this.quad = new FullScreenQuad(this.powMat);
     this.lastMs = 0;
   }
@@ -128,16 +131,20 @@ export class Bloom {
       pu.powValue.value = p.pow;
       this.quad.material = this.powMat;
       r.setRenderTarget(this.rtA); this.quad.render(r);
-      // 2. blur x, 3. blur y  (tap offsets in quarter-size texels, whatever the target scale)
+      // 2. blur x/y  (tap offsets in quarter-size texels, whatever the target scale)
+      // Global TBloomEffect: one H + one V. Optional extra passes widen scatter without changing the kernel.
       const k = 4 / this.scale;
       const bu = this.blurMat.uniforms;
       bu.weightValue.value = p.weight;
       this.quad.material = this.blurMat;
-      bu.tSrc.value = this.rtA.texture; bu.dir.value.set(k / this.rtA.width, 0);
-      r.setRenderTarget(this.rtB); this.quad.render(r);
-      bu.tSrc.value = this.rtB.texture; bu.dir.value.set(0, k / this.rtB.height);
-      r.setRenderTarget(this.rtA); this.quad.render(r);
-      // 4. add onto the frame
+      const passes = Math.max(1, Math.min(3, this.blurPasses | 0));
+      for (let i = 0; i < passes; i++) {
+        bu.tSrc.value = this.rtA.texture; bu.dir.value.set(k / this.rtA.width, 0);
+        r.setRenderTarget(this.rtB); this.quad.render(r);
+        bu.tSrc.value = this.rtB.texture; bu.dir.value.set(0, k / this.rtB.height);
+        r.setRenderTarget(this.rtA); this.quad.render(r);
+      }
+      // 3. add onto the frame (Global: fixed-function ONE/ONE of AddTex)
       this.addMat.uniforms.tSrc.value = this.rtA.texture;
       this.addMat.uniforms.intensity.value = p.intensity;
       this.quad.material = this.addMat;
@@ -161,17 +168,20 @@ const _v2 = new THREE.Vector2();
 /**
  * Bloom parameters of an environment sample (environment.js sampleEnvironment result) -> {enabled, pow, weight, strength}.
  * Raw key values: bloom.params = [p1, p2, p3, p4] (the enabled flag is bloom.enabled).
+ *
+ * strength: Global add is full-strength ONE/ONE (no .fx uniform) -> fixed 1.0 (the engine-invented p3 boost was removed 2026-10-28).
  */
 export function bloomFromEnvironment(e) {
   const b = e?.bloom;
   // a light file without any bloom_value line: the common field setting (1 20.59 44.12 10.00)
-  if (!b || !(b.raw?.length || b.params?.length)) return { enabled: true, pow: 2.06, weight: 4.41, strength: 0.37 };
+  if (!b || !(b.raw?.length || b.params?.length)) return { enabled: true, pow: 2.35, weight: 4.41, strength: 1.0 };
   const P = Array.isArray(b.params) ? b.params : Array.isArray(b.raw) ? b.raw.slice(1) : [];
   const p1 = Number(P[0]), p2 = Number(P[1]), p3 = Number(P[2]);
   return {
     enabled: b.enabled !== false && Number(b.enabled) !== 0,
     pow: Math.min(10, Math.max(1, (p1 > 0 ? p1 : 20.6) / 10)),
     weight: Math.min(12, Math.max(2, (p2 > 0 ? p2 : 44.1) / 10)),
-    strength: 0.3 + 0.7 * Math.min(1.25, Math.max(0, (Number.isFinite(p3) ? p3 : 10) / 100)),
+    strength: 1.0,   // GLOBAL-MATCHED: ONE/ONE full add, no intensity uniform in bloomeffect.fx (p3 not used by the shader)
   };
 }
+

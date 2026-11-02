@@ -70,7 +70,9 @@ export class SpriteRibbon {
     geo.setAttribute('uv', new THREE.BufferAttribute(this.uv, 2).setUsage(THREE.DynamicDrawUsage));
     geo.setIndex(new THREE.BufferAttribute(idx, 1));
     geo.setDrawRange(0, 0);
-    this.material = new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, blending, side: THREE.DoubleSide, vertexColors: true, fog: true });
+    // blending may be a THREE blending enum or fxBlendFields() object (Global SrcAlpha, One).
+    const blendProps = (blending && typeof blending === 'object') ? blending : { blending };
+    this.material = new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, ...blendProps, side: THREE.DoubleSide, vertexColors: true, fog: true });
     this.material.visible = false;
     this.mesh = new THREE.Mesh(geo, this.material);
     this.mesh.frustumCulled = false; this.mesh.renderOrder = 10;

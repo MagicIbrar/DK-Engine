@@ -1,14 +1,14 @@
-// Items system (src/systems/items): the original inventory / equipment / stash / cash inventory with real item
+﻿// Items system (src/systems/items): the original inventory / equipment / stash / cash inventory with real item
 // instances from gamedata/items*.json (docs/formats/items.md), weapon holding per class and weapon type, item use,
 // the item NPC windows (upgrade, sockets, brand, crest, options, accessories, helmet rank, amplify, disassemble...)
 // and the loot integration. Public API = game.items.
+import { gfxC } from '../../ui/gfx-parity-c.js';
 import { ItemDB } from './db.js';
 import { Container, createItem, cloneItem, newUid } from './model.js';
 import { Equipment, emptyEquip, S, clonePresetTo } from './equip.js';
 import { computeItemStats, applyPost } from './stats.js';
 import { Look, styledClass } from './look.js';
 import { Icons } from './icons.js';
-import { borrowPreviewIcon } from '../../ui/preview-cache.js';
 import {AuthoredEquipmentEffects} from './authored-effects.js';
 import {installWeaponTargetSounds} from './weapon-target-sound.js';
 import { ItemUse } from './use.js';
@@ -19,11 +19,12 @@ import { askSplit, askDropDil, confirmDiscard } from './ui/dialogs.js';
 import { statProviders, statPostHooks } from '../../game/progression.js';
 import { strings } from '../../ui/uiwin/strings.js';
 import { atlas } from '../../ui/atlas.js';
-import { warmIcons } from '../../ui/icon-prewarm.js';
+import { preloadUiNoLag } from './ui-preload-nolag.js';
 import { disposePreviewEncoder } from './preview-export.js';
 import {applyCursorOperation,cursorState} from './cursor-custody.js';
-import {restoreCursor} from './ui/common.js';
+import {restoreCursor,cursorPlaceSound,cursorActionResult,inventoryStateBusy} from './ui/common.js';
 import { confirmItemUse } from './use-confirm.js';
+import {canDiscardDef,canDropToGround,canEnterSharedStorage,bindsOnPickup,isBoundInst} from './flags.js';
 
 const ACCOUNT_KEY = 'dekaron-solo:account:v1';
 const BAG = { pages: 7, cols: 10, rows: 5 };
@@ -100,19 +101,9 @@ class ItemsSystem {
       for (const inst of this.bag.items(this.inv?.state?.page || 0)) { try { buildTooltip(this, inst, { where: 'bag' }); } catch { /* warm only */ } }
       for (const { inst } of this.equip.entries()) { try { buildTooltip(this, inst, { where: 'equip' }); } catch { /* warm only */ } }
       await this.icons.queue; // Keep selected-page and worn rotations first.
-      // Other owned bag pages must have real stills ready before play, too.
-      // The finite carried list excludes storage and the unowned item catalogue.
-      const grid = win?.control?.('slotbag'), cw = grid?.cw || 37, ch = grid?.ch || 36;
-      const carried = [...new Map(this.bag.list.map(inst => [inst.itemIndex, inst])).values()];
-      await warmIcons(carried, async inst => {
-        const [w, h] = this.bag.size(inst);
-        const icon = await this.icons.get(inst.itemIndex, w * cw, h * ch);
-        if (!icon?.url || typeof Image === 'undefined') return;
-        const release = borrowPreviewIcon(icon);
-        try { const image = new Image(); image.src = icon.url;
-          if (typeof image.decode === 'function') await image.decode().catch(() => {});
-        } finally { release(); }
-      }, { concurrency: 2 });
+      // UI-PRELOAD-NOLAG: spin every unlocked bag page + all 5 preset equip slots,
+      // costume/cash icons, and preset body meshes so bag/preset switches never hitch.
+      await preloadUiNoLag(this);
       await this.icons.queue;
     } catch (err) { console.warn('[items] warm-up', err); }
   }
@@ -232,25 +223,28 @@ class ItemsSystem {
     const a = this.game.audio;
     const T = a?.S?.item?.[kind];
     if (!T || !def) return;
-    const list = T[String(def.index)] || T[String(def.quality)] || (kind === 'pick' || kind === 'get' ? T['0'] : null);
+    // Global soundscript 11 (equip / set down) is keyed by Quality only (def +0x12); other kinds try the item index first
+    const list = (kind === 'equip' ? null : T[String(def.index)]) || T[String(def.quality)] || (kind === 'pick' || kind === 'get' ? T['0'] : null);
     if (list) { try { a.playOne(list, at ? { at } : {}); } catch { /* audio optional */ } }
   }
 
   // ------------------------------------------------------------------------------------ strings / messages
   str(cate, code) { return strings.get({ group: 'NORMAL', cate, code }); }
   /** HUD message from a client string (cate, code) or a text. */
-  msg(cate, code, text = null) {
+  msg(cate, code, text = null, kind = null) {
+    // gfxC: Global 43.19 shows 40:56 in green (#00FF00); other item messages keep the engine-chosen error colour
+    const k = kind || (cate === 40 && code === 56 && gfxC('chatcolor') ? 'warn' : 'err');
     let t = text;
     if (t == null && cate != null) {
       t = this.str(cate, code);
-      if (t == null) { strings.resolve({ group: 'NORMAL', cate, code }).then(v => v && this.msg(null, null, v)); return; }
+      if (t == null) { strings.resolve({ group: 'NORMAL', cate, code }).then(v => v && this.msg(null, null, v, k)); return; }
     }
     if (!t) return;
     t = String(t).replace(/<[^>]+>/g, '');
     const now = this.game.time || 0;
     if (t === this._lastMsg && now - (this._msgAt ?? -9) < 1) return;
     this._lastMsg = t; this._msgAt = now;
-    try { this.game.hud?.log?.(t, 'err'); } catch { /* optional */ }
+    try { this.game.hud?.log?.(t, k); } catch { /* optional */ }
   }
 
   // ------------------------------------------------------------------------------------ state changes
@@ -449,30 +443,30 @@ class ItemsSystem {
 
   // ------------------------------------------------------------------------------------ equipment actions
   cursorPickup(source) { return this._cursorApply({operation:'pickup',container:source.from,uid:source.uid,...(source.slot==null?{}:{slot:source.slot}),...(source.preset==null?{}:{preset:source.preset}),...(source.parentUid==null?{}:{parentUid:source.parentUid})}); }
-  cursorPlace(container,point) { return this._cursorApply({operation:'place',container,...point,uid:this.game.save.itemCursor?.item?.uid}); }
+  cursorPlace(container,point) { const def=this.db.def(this.game.save.itemCursor?.item?.itemIndex);const ok=this._cursorApply({operation:'place',container,...point,uid:this.game.save.itemCursor?.item?.uid});if(ok)cursorPlaceSound(this,container,def);return ok; }
   cursorCancel() { return this._cursorApply({operation:'cancel',uid:this.game.save.itemCursor?.item?.uid}); }
   cursorDiscard(uid,revision) { return this._cursorApply({operation:'discard',uid,revision}); }
   _cursorApply(input) {
     if(this.game.save.authority==='server')return false; // Shared adapters must obtain a host commit.
     const save=this.game.save,profile=structuredClone(save),account=structuredClone(this.account());profile.accountFeatures=account;
     try {
-      if(input.operation==='discard'&&Number(this.game.world?.info?.row?.ItemDrop??1)===0)throw Error('This map does not allow ground drops.');
+      if(input.operation==='discard'&&Number(this.game.world?.info?.row?.ItemDrop??1)===0)throw Error(this.str(40, 9) || 'You cannot discard items or dil while in this map.');
       const discarded=input.operation==='discard'?structuredClone(profile.itemCursor?.item):null;
-      if(discarded&&!discarded.bound&&Number(this.db.def(discarded.itemIndex)?.trade)!==0&&(!this.game.player||!this.game.loot?.spawnDrop))throw Error('Ground items are unavailable here.');
+      if(discarded&&canDropToGround(this.db.def(discarded.itemIndex),discarded)&&(!this.game.player||!this.game.loot?.spawnDrop))throw Error(this.str(40, 79) || 'Failed to discard the item(s).'); // Global drop result 6 -> 40:79
       applyCursorOperation(profile,this.db,{...input,revision:input.revision??cursorState(save).revision},{stats:this.game.player?.stats,access:(name,operation,item,origin)=>{
-        if(name==='bag'&&this.bag.locked)throw Error('Inventory is locked.');
-        if(operation==='pickup'&&this.reserved?.has(item.uid))throw Error('That item is registered in another window.');
+        if(name==='bag'&&this.bag.locked)throw Error(''); // silent: no Global string for a locked-inventory refusal
+        if(operation==='pickup'&&this.reserved?.has(item.uid))throw Error(''); // silent, like the registered-item pickup refusal in the grid
         if(name==='shared'&&!account.sharedStash)throw Error('Unlock account-shared storage first.');
-        if(name==='shared'&&operation==='place'&&origin?.container!=='shared'&&(item.bound||Number(this.db.def(item.itemIndex)?.trade)===0||item.pet?.active||item.pet?.inv?.length))throw Error('That item cannot enter account-shared storage.');
-        if(['stash','shared'].includes(name)&&operation==='place'&&origin?.container!==name){const fee=Number(this.db.equipment.formula?.stStorageCostPerUnit)||10;if((profile.dil||0)<fee)throw Error('Not enough DIL for storage.');profile.dil-=fee;}
+        if(name==='shared'&&operation==='place'&&origin?.container!=='shared'&&(!canEnterSharedStorage(this.db.def(item.itemIndex),item)||item.pet?.active||item.pet?.inv?.length))throw Error(this.str(190, 7) || 'You cannot store items in the selected location.');
+        if(['stash','shared'].includes(name)&&operation==='place'&&origin?.container!==name){const fee=Number(this.db.equipment.formula?.stStorageCostPerUnit)||10;if((profile.dil||0)<fee)throw Error(this.str(190, 8) || 'You do not have enough dil to pay the storage fee.');profile.dil-=fee;}
       }});
       for(const [field,c]of [['inventory',this.bag],['storage',this.stash],['costumeBag',this.costumeBag]])c.list.splice(0,c.list.length,...profile[field]||[]);
       save.equip=profile.equip;save.potionBelt=profile.potionBelt||[];save.cashInv=profile.cashInv||[];save.itemCursor=profile.itemCursor;save.dil=profile.dil;
       const liveAccount=this.account();liveAccount.shared=profile.accountFeatures.shared||[];this.shared.list=liveAccount.shared;this.saveAccount();
       this.changed('cursor');
-      if(discarded&&!discarded.bound&&Number(this.db.def(discarded.itemIndex)?.trade)!==0)dropToGround(this,{kind:'item',itemIndex:discarded.itemIndex,name:this.db.def(discarded.itemIndex)?.name,count:discarded.count,inst:discarded});
+      if(discarded&&canDropToGround(this.db.def(discarded.itemIndex),discarded))dropToGround(this,{kind:'item',itemIndex:discarded.itemIndex,name:this.db.def(discarded.itemIndex)?.name,count:discarded.count,inst:discarded});
       return true;
-    }catch(error){this.msg(null,null,error.message);return false;}
+    }catch(error){if(error.message)this.msg(null,null,error.message);return false;}
   }
 
   /** Offline equipment changes are one ownership transaction, including dependent off-hand items.
@@ -522,7 +516,7 @@ class ItemsSystem {
     const pos = src ? { page: inst.page, x: inst.x, y: inst.y } : null;
     if (src) src.take(inst);
     delete inst.page; delete inst.x; delete inst.y;
-    if (def.belong === 1) inst.bound = true;
+    if (bindsOnPickup(def)) inst.bound = true;
     const r = E.place(inst, slot, presetIdx);
     for (const d of r.displaced) {
       // the replaced item takes the new item's old place when it fits, else any free spot
@@ -686,16 +680,44 @@ class ItemsSystem {
     this.bag.list.push(part);
     this.changed('split');
   }
+  /** Global Shift + click: StackDivideWnd first (ui_stackdivide), then the divided part is held on the cursor
+   *  (Global oxlist.csv row 13; StackDivideWnd confirm). Uses the existing split request and cursor pickup. */
+  async splitPickup(inst) {
+    const bag=this.bag,uid=inst?.uid,itemIndex=inst?.itemIndex,g=this.game;
+    const characterId=g.save.id,authority=g.save.authority,network=g.network,lease=network?.token;
+    const owned=typeof uid==='string'&&bag.byUid(uid);
+    if(!owned||owned.itemIndex!==itemIndex||bag.locked||this.reserved?.has(uid)||g.save.itemCursor?.item)return false;
+    const n=await askSplit(this,owned);
+    const current=this.bag===bag&&bag.byUid(uid);
+    if(!Number.isSafeInteger(n)||n<=0||!current||current.itemIndex!==itemIndex||n>=(current.count||1)||bag.locked||this.reserved?.has(uid)||g.save.itemCursor?.item||g.save.id!==characterId||g.save.authority!==authority||g.network!==network||network?.token!==lease)return false;
+    const [w,h]=bag.size(current),spot=bag.findSpot(w,h);
+    if(!spot){this.msg(40,77);return false;}
+    let part=null;
+    if(authority==='server'){
+      if(!await network.action('split',{uid,count:n,page:spot.page,x:spot.x,y:spot.y}))return false;
+      if(g.save.id!==characterId||g.network!==network||network?.token!==lease||g.save.itemCursor?.item)return false;
+      part=this.bag.list.find(it=>it.uid!==uid&&it.itemIndex===itemIndex&&it.page===spot.page&&it.x===spot.x&&it.y===spot.y&&(it.count||1)===n)||null;
+    }else{
+      part=bag.take(current,n);Object.assign(part,spot);bag.list.push(part);this.changed('split');
+    }
+    if(!part)return false;
+    const held=await cursorActionResult(this,this.cursorPickup({from:'bag',uid:part.uid}));
+    if(held)restoreCursor(this);
+    return !!held;
+  }
   async discardAsk(inst) {
     const def = this.db.def(inst.itemIndex);
     const w = this.game.world?.info?.row;
+    if (inventoryStateBusy(this)) return false;   // Global Inven::State::<X> +0x30: no world drop outside Normal
+    if (this.game.uiwin?.isOpen?.('costumebag')) { this.msg(260, 72); return false; } // Global 008931d0
     if (w && Number(w.ItemDrop ?? 1) === 0) { this.msg(40, 9); return false; }
-    if (def?.type === 0 && def.code === 4) { this.msg(40, 80); return false; }
-    if (inst.bound || Number(def?.trade) === 0) {
-      // bound / untradeable items are destroyed instead of dropped
+    if (!canDiscardDef(def)) { this.msg(40, 80); return false; }
+    if (isBoundInst(inst)) { this.msg(40, 81); return false; } // Global drop result 4 (01315df0): binding items stay
+    if (!canDropToGround(def, inst)) {
+      // untradeable (unbound) items are destroyed instead of dropped
       if (!(await confirmDiscard(this, inst))) return false;
       this.removeInst(inst);
-      this.msg(null, null, `${def?.name}${this.str(40, 52) || ''}`.replace(' has been used.', ' has been destroyed.'));
+      // no system line: Global has no "destroyed" string for this path (the old text was a re-worded 40:52)
       return true;
     }
     if (!(await confirmDiscard(this, inst))) return false;
@@ -732,8 +754,8 @@ class ItemsSystem {
     for (const { slot, inst } of this.equip.entries()) if (inst.expiresAt && inst.expiresAt < now) { this.equip.remove(slot); any = true; }
     if (any) this.changed('expire');
   }
+  updateEquipmentEffects(dt) { this.authoredEffects?.update(dt); }
   update(dt) {
-    this.authoredEffects?.update(dt);
     this._t = (this._t || 0) + dt;
     if (this._t > 30) { this._t = 0; this._expire(); }
   }
@@ -747,6 +769,8 @@ export async function install(game) {
   return SYS;
 }
 export function update(dt) { SYS?.update(dt); }
+export function updateEquipmentEffects(dt) { SYS?.updateEquipmentEffects(dt); }
 export function dispose() { SYS?.icons?.cache.clear(); disposePreviewEncoder(); SYS?.authoredEffects?.dispose(); SYS?.targetSounds?.dispose(); SYS = null; }
 export { ItemsSystem };
 void cloneItem;
+

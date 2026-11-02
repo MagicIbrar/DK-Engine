@@ -17,6 +17,7 @@ import { UIEffects } from '../dungeons/uifx.js';
 import { itemName } from '../life/common.js';
 import { COLOSSEUM_ENGINE_CHOSEN as C } from '../../config/engine-chosen-colosseum.js';
 import { installCarnivalWindows } from './monster-carnival.js';
+import { presentGlobalMessage } from '../events/mode-ui-rules.js';
 
 const DIR = 'game2/colosseum/';
 const plain = s => String(s ?? '').replace(/<\/?center>/gi, '').replace(/<\/?color[^>]*>/gi, '').replace(/@<effectui>\S*/g, '').replace(/^\s*\[message\]\s*/i, '').replace(/\\n/g, '\n').trim();
@@ -38,6 +39,9 @@ export function installSharedColosseum(game, network) {
   void loadEventData().then(d => { S.data = d; }).catch(() => {});
   void loadDungeonData().catch(() => {});
   const T = (code, fb = '') => plain(S.data?.txt?.('stringtable_colosseum.txt', 360, code)) || fb;
+  // Global Chat::UIHandler: a string-table line plays its @<effectui> banners and its [siege]/[message] window, then chats.
+  const sayGlobal = (raw, fb = '') => { const t = plain(raw) || fb; try { presentGlobalMessage(game, raw, t); } catch { /* banners are optional */ } if (t) say(t); };
+  const sayT = (code, fb = '') => sayGlobal(S.data?.txt?.('stringtable_colosseum.txt', 360, code) ?? '', fb);
   const say = (t, kind = 'sys') => { if (!t) return; if (game.chat?.system) game.chat.system(t, kind); else game.hud?.log?.(t, kind); };
   const report = e => say(e?.message || String(e), 'err');
   const st = () => network.colosseumState || {};
@@ -76,8 +80,8 @@ export function installSharedColosseum(game, network) {
     renew: w => { w.find('btn_close')?.onClick(() => close('renew')); w.find('btn_exit')?.onClick(() => { void send('exit'); close('renew'); }); },
     pvp: w => { w.find('btn_exit')?.onClick(() => { void send('exit'); close('pvp'); }); },
   };
-  const fx = code => {
-    const map = st().match?.map ?? game.world?.info?.index;
+  const fx = (code, at) => {
+    const map = at ?? st().match?.map ?? game.world?.info?.index;
     try { S.fx ||= new UIEffects(game); for (const u of messageFx(map, code).ui) void S.fx.play(u.ui, u.ms); } catch { /* effects are optional */ }
     const t = plain(messageText(map, code)); if (t) say(t);
   };
@@ -87,7 +91,7 @@ export function installSharedColosseum(game, network) {
     if (s.queue) { void openWait(); return; }
     if (s.match) return;
     const open = Object.entries(s.open || {}).filter(([, v]) => v).map(([k]) => k);
-    if (!open.length) { say(T(166)); return; }
+    if (!open.length) { sayT(166); return; }
     const br = open.includes('renew') && open.includes('classic') ? (game.inventory?.count?.(4002357) > 0 ? 'renew' : 'classic') : open.find(k => k !== 'individual');
     let mode = br || 'individual';
     if (br && open.includes('individual')) {
@@ -95,7 +99,7 @@ export function installSharedColosseum(game, network) {
       if (r === 'cancel') return; mode = r === 'yes' ? br : 'individual';
     }
     const r = await send('register', { mode });
-    if (r?.registered) { say(T(101)); void openWait(); }
+    if (r?.registered) { sayT(101); void openWait(); }
   }
   async function openWait() {
     const s = st(); if (!s.queue) return;
@@ -133,7 +137,7 @@ export function installSharedColosseum(game, network) {
     S.seen.set(m.id, Math.max(seen, ...fresh.map(ev => ev.seq)));
     for (const ev of fresh) {
       if (ev.code && !(ev.code === 700 && ev.playerId !== network.self?.id)) fx(ev.code);
-      if (ev.kind === 'round' && m.mode === 'renew') say(plain(messageText(m.map, 301 + m.round)));
+      if (ev.kind === 'round' && m.mode === 'renew') fx(301 + m.round, m.map);
       // Blessing of the Dead taken from a Crystal of the Dead (360|15 "Buffs"): the status icons arrive with the buffs themselves.
       if (ev.kind === 'blessing') say(`${ev.name} ${T(15, 'Buffs')} +${(ev.statuses || []).length}`);
       const line = deathLine(ev);
@@ -198,9 +202,9 @@ export function installSharedColosseum(game, network) {
   async function sync(s) {
     minimapButton();
     carnival.update(s.carnival || null);
-    if (s.notice && s.notice.at !== S.lastNotice) { S.lastNotice = s.notice.at; say(plain(s.notice.text)); }
+    if (s.notice && s.notice.at !== S.lastNotice) { S.lastNotice = s.notice.at; sayGlobal(s.notice.text); }
     const brOpen = !!(s.open?.classic || s.open?.renew);
-    if (S.lastOpen === false && brOpen) say(T(149));
+    if (S.lastOpen === false && brOpen) sayT(149);
     S.lastOpen = brOpen;
     if (s.queue) { const w = S.wins.wait; if (w?.isOpen) fillWait(w); else if (!S.waitShown) { S.waitShown = true; void openWait(); } }
     else { S.waitShown = false; close('wait'); }

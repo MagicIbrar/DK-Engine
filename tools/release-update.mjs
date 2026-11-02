@@ -174,8 +174,21 @@ export async function updateStatus({installRoot}={}){
  const known=new Set(['queued','downloading','waiting','applying','complete','failed','current']);
  const phase=known.has(latest?.type)?latest.type:pending?'queued':'idle';
  const version=/^\d{1,5}\.\d{1,5}\.\d{1,5}$/.test(latest?.version||'')?latest.version:/^\d{1,5}\.\d{1,5}\.\d{1,5}$/.test(pending?.version||'')?pending.version:null;
- const messages={queued:'Update requested. Preparing the download.',downloading:'Downloading and verifying the update.',waiting:'Update ready. Close the game, world and launcher to install it.',applying:'Installing the verified update.',complete:'Update installed. Reopen DK Client.',failed:'Update could not finish. Your installed game was preserved; click Retry.',current:'Your game is current.',idle:'No update is pending.'};
- return {status:phase,version,updatedAt:typeof latest?.at==='string'?latest.at:null,message:messages[phase]};
+ const messages={queued:'Update requested. Preparing the download.',downloading:'Downloading and verifying the update.',waiting:'Update ready. Close the game, world and launcher to install it.',applying:'Installing the verified update.',complete:'Update installed. Reopen DK Client.',failed:'Update could not finish. Click Retry. If it fails again, report code UPDATE-UNKNOWN.',current:'Your game is current.',idle:'No update is pending.'};
+ const failures={
+  check:'Update check could not finish. Check your connection and retry. If it persists, report code UPDATE-CHECK.',
+  download:'Update download could not finish. Check your connection and retry. If it persists, report code UPDATE-DOWNLOAD.',
+  verify:'The update package could not be verified. Retry the update. If it persists, report code UPDATE-VERIFY.',
+  prepare:'The update could not be prepared. Retry the update. If it persists, report code UPDATE-PREPARE.',
+  wait:'The update could not continue while waiting for the game to close. Close the game, world and launcher, then retry. Report code UPDATE-WAIT if it persists.',
+  install:'The update could not be installed. Retry the update. If it persists, report code UPDATE-INSTALL.',
+  space:'There is not enough free space to update. Free some disk space and retry. Report code UPDATE-SPACE if it persists.',
+  permission:'The updater could not access a required file or folder. Check file permissions and retry. Report code UPDATE-PERMISSION if it persists.',
+  busy:'A required file is in use. Close the game, world and launcher, then retry. Report code UPDATE-BUSY if it persists.',
+  manual:'This installation cannot be updated automatically. Request help with manual migration and report code UPDATE-MANUAL.'
+ };
+ const reason=phase==='failed'&&typeof latest?.reason==='string'&&Object.hasOwn(failures,latest.reason)?latest.reason:null;
+ return {status:phase,version,updatedAt:typeof latest?.at==='string'?latest.at:null,message:reason?failures[reason]:messages[phase]};
 }
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
  const args=process.argv.slice(2),arg=n=>{const i=args.indexOf(n);return i>=0?args[i+1]:undefined;};

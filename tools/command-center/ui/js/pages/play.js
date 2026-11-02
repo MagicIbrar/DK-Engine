@@ -14,7 +14,7 @@ const TARGETS = [{value: 'native', label: 'DX11 Client'}, {value: 'native-fullsc
 export function create({navigate}) {
   const panels = {play: h('div', {class: 'tab-panel', id: 'panel-play', role: 'tabpanel', 'aria-labelledby': 'tab-play'}), join: h('div', {class: 'tab-panel', id: 'panel-join', role: 'tabpanel', 'aria-labelledby': 'tab-join', hidden: true}), host: h('div', {class: 'tab-panel', id: 'panel-host', role: 'tabpanel', 'aria-labelledby': 'tab-host', hidden: true}), bench: h('div', {class: 'tab-panel', id: 'panel-bench', role: 'tabpanel', 'aria-labelledby': 'tab-bench', hidden: true})};
   let active = 'play';
-  const bar = tabs([{id: 'play', label: 'Play', ico: 'play'}, {id: 'join', label: 'Join', ico: 'globe'}, {id: 'host', label: 'Host', ico: 'users'}, {id: 'bench', label: 'Test Bench', ico: 'bolt'}], {current: 'play', label: 'Play & Connect sections', onSelect: t => select(t)});
+  const bar = tabs([{id: 'play', label: 'Play', ico: 'play'}, {id: 'join', label: 'Join', ico: 'globe'}, {id: 'host', label: 'Host', ico: 'users'}, {id: 'bench', label: 'Test Bench', ico: 'bolt'}], {current: 'play', label: 'Play & Connect categories', overview: false, onSelect: t => select(t), onOverview: () => { for (const b of Object.values(built)) b.hide?.(); history.replaceState(null, '', '#/play'); }});
   const el = h('div', {class: 'stack loose'}, bar, ...Object.values(panels));
   const built = {};
   function select(t) { active = t; for (const [k, p] of Object.entries(panels)) p.hidden = k !== t; if (!built[t]) { built[t] = ({play: buildPlay, join: buildJoin, host: buildHost, bench: buildBench})[t](); } built[t].show?.(); for (const [k, b] of Object.entries(built)) if (k !== t) b.hide?.(); history.replaceState(null, '', `#/play/${t}`); }
@@ -33,14 +33,24 @@ export function create({navigate}) {
     const confirm2 = textField({label: 'Repeat password', type: 'password', maxLength: 128, fieldId: 'play-confirm'});
     const remember = switchRow({title: 'Save account on this server', desc: 'Stores a server-issued token with Windows DPAPI for your user. No password is stored.', checked: false, fieldId: 'play-remember'});
     const owner = switchRow({title: 'Auto-sign in as local admin', desc: 'Installation owner of this local world: owner characters and guild are prepared before the game opens.', checked: false, fieldId: 'owner'});
-    owner.input.addEventListener('change', () => { acct.input.disabled = pass.input.disabled = owner.input.checked; });
+    const staffGm = switchRow({title: '[GM]', desc: 'Load as the [GM] bracket account into the GM guild (Fire Glory statue). Max staff privileges.', checked: false, fieldId: 'staff-gm'});
+    const staffDev = switchRow({title: '[DEV]', desc: 'Load as the [DEV] bracket account into the DEV guild (Dark Glory statue). Max staff privileges.', checked: false, fieldId: 'staff-dev'});
+    const staffAdmin = switchRow({title: '[ADMIN]', desc: 'Load as the [ADMIN] bracket account into the ADMIN guild (Purple Star Glory statue). Max staff privileges.', checked: true, fieldId: 'staff-admin'});
+    const staffRows = [staffGm, staffDev, staffAdmin];
+    const staffRoleOf = () => staffGm.input.checked ? 'gm' : staffDev.input.checked ? 'dev' : staffAdmin.input.checked ? 'admin' : 'admin';
+    function syncStaffVisibility() { const show = !owner.hidden && owner.input.checked; for (const r of staffRows) r.hidden = !show; }
+    function pickStaff(which) { for (const r of staffRows) r.input.checked = r === which; }
+    staffGm.input.addEventListener('change', () => { if (staffGm.input.checked) pickStaff(staffGm); else if (!staffDev.input.checked && !staffAdmin.input.checked) pickStaff(staffAdmin); });
+    staffDev.input.addEventListener('change', () => { if (staffDev.input.checked) pickStaff(staffDev); else if (!staffGm.input.checked && !staffAdmin.input.checked) pickStaff(staffAdmin); });
+    staffAdmin.input.addEventListener('change', () => { if (staffAdmin.input.checked) pickStaff(staffAdmin); else if (!staffGm.input.checked && !staffDev.input.checked) pickStaff(staffAdmin); });
+    owner.input.addEventListener('change', () => { acct.input.disabled = pass.input.disabled = owner.input.checked; syncStaffVisibility(); });
     const savedList = h('datalist', {id: 'saved-ids'});
     const savedBox = h('div', {class: 'rows', id: 'saved'});
     const result = h('div', {class: 'stack tight', 'aria-live': 'polite'});
     const submit = button('Open DX11 Client', {kind: 'primary', size: 'large', ico: 'play', attrs: {id: 'signin'}, onClick: () => go()});
     const serverInfo = h('div', {class: 'stack tight'});
     const form = h('div', {class: 'stack'}, h('div', {class: 'form-grid'}, h('div', {class: 'field'}, h('label', {for: 'play-server', text: 'Server'}), serverSel, h('div', {class: 'help', text: 'Your world, or a server you joined. Accounts belong to one server.'})), h('div', {class: 'field'}, h('span', {class: 'label', text: 'Mode'}), modeSeg)), serverInfo,
-      h('div', {class: 'field'}, h('span', {class: 'label', text: 'Open the game in'}), targetSeg), owner, invite, h('div', {class: 'form-grid'}, acct, pass, confirm2), savedList, remember, h('div', {class: 'row wrap'}, submit, button('Create account', {kind: 'ghost', attrs: {id: 'signup'}, onClick: () => { modeSeg.querySelectorAll('button')[1].click(); }})), result);
+      h('div', {class: 'field'}, h('span', {class: 'label', text: 'Open the game in'}), targetSeg), owner, staffGm, staffDev, staffAdmin, invite, h('div', {class: 'form-grid'}, acct, pass, confirm2), savedList, remember, h('div', {class: 'row wrap'}, submit, button('Create account', {kind: 'ghost', attrs: {id: 'signup'}, onClick: () => { modeSeg.querySelectorAll('button')[1].click(); }})), result);
     const signCard = card({title: 'Sign in and play', desc: 'Every target signs in first and opens the game already signed in with a one-use ticket.', children: [form]});
     const savedCard = card({title: 'Saved accounts on this server', children: [savedBox]});
     const gamesBox = h('div', {class: 'rows'});
@@ -53,6 +63,7 @@ export function create({navigate}) {
     function renderForm() {
       const signup = mode === 'signup', local = chosenServer === 'local';
       confirm2.hidden = !signup; remember.hidden = signup; owner.hidden = signup || !local || !(state.world?.ownerAvailable && state.world?.mode !== 'hosted');
+      syncStaffVisibility();
       invite.hidden = !(meta?.requiresInvite || (local && state.world?.hostMode === 'friends'));
       targetSeg.parentElement.hidden = signup;
       submit.querySelector('span').textContent = signup ? 'Create account' : 'Open ' + TARGETS.find(t => t.value === target).label;
@@ -82,12 +93,12 @@ export function create({navigate}) {
     }
     async function go() {
       for (const w of [acct, pass, confirm2, invite]) setError(w, null);
-      const signup = mode === 'signup', params = {server: chosenServer, target, id: acct.input.value.trim().toLowerCase() || undefined, password: pass.input.value || undefined, invitePassword: invite.hidden ? undefined : (invite.input.value || undefined), remember: remember.input.checked, owner: !owner.hidden && owner.input.checked};
+      const signup = mode === 'signup', params = {server: chosenServer, target, id: acct.input.value.trim().toLowerCase() || undefined, password: pass.input.value || undefined, invitePassword: invite.hidden ? undefined : (invite.input.value || undefined), remember: remember.input.checked, owner: !owner.hidden && owner.input.checked, staffRole: (!owner.hidden && owner.input.checked) ? staffRoleOf() : undefined};
       if (signup) { params.confirm = confirm2.input.value; }
       let job; try { job = await call(signup ? 'play.signup' : 'play.signin', signup ? {server: chosenServer, id: params.id || '', password: params.password || '', confirm: params.confirm || '', invitePassword: params.invitePassword} : params); } catch (e) { fieldError(e); return; }
       const view = jobView(job, {compact: true}); replace(result, view);
       const final = await view.done; for (const w of [pass, confirm2, invite]) w.input.value = '';
-      if (final?.state === 'succeeded') { toast(signup ? `Account ${final.result.created} created. Sign in with it now.` : `Game opened for ${final.result.account === 'admin' ? 'the local admin' : final.result.account}.`, 'ok'); if (signup) modeSeg.querySelector('button').click(); loadSaved(); loadGames(); }
+      if (final?.state === 'succeeded') { toast(signup ? `Account ${final.result.created} created. Sign in with it now.` : `Game opened for ${['admin','gm','dev'].includes(final.result.account) ? '['+String(final.result.account).toUpperCase()+'] bracket' : final.result.account}.`, 'ok'); if (signup) modeSeg.querySelector('button').click(); loadSaved(); loadGames(); }
       else if (final?.state === 'failed') { replace(result, notice('err', final.error)); }
     }
     function fieldError(e) { const map = {id: acct, password: pass, confirm: confirm2, invitePassword: invite}; const w = map[e.field?.replace(/^params\./, '')]; if (w) { setError(w, e.message.replace(/^params\.\w+: /, '')); w.input.focus(); } else replace(result, notice('err', e.message)); }
@@ -136,7 +147,7 @@ export function create({navigate}) {
     const statusCard = card({title: 'Your hosted world', id: 'host-setup', children: [statusBox]});
     const name = textField({label: 'Server name', value: 'Dekaron Online', maxLength: 64, fieldId: 'host-name'});
     const access = selectField({label: 'Access', options: [{value: 'invite', label: 'Invite only (server password)'}, {value: 'open', label: 'Open (accounts required)'}], value: 'invite', fieldId: 'host-access'});
-    const gm = textField({label: 'New GM account ID', maxLength: 32, fieldId: 'host-gm'}), gmPass = textField({label: 'GM password (12+ characters)', type: 'password', maxLength: 128, fieldId: 'host-gm-pass'}), gmPass2 = textField({label: 'Repeat GM password', type: 'password', maxLength: 128, fieldId: 'host-gm-pass2'});
+    const gm = textField({label: 'Admin / GM / Dev account ID', maxLength: 32, fieldId: 'host-gm'}), gmPass = textField({label: 'Staff password (12+ characters)', type: 'password', maxLength: 128, fieldId: 'host-gm-pass'}), gmPass2 = textField({label: 'Repeat staff password', type: 'password', maxLength: 128, fieldId: 'host-gm-pass2'});
     const invitePass = textField({label: 'Invite password (different, 12+)', type: 'password', maxLength: 128, help: 'Players enter it once per session. It is never listed publicly.', fieldId: 'host-invite'});
     const rates = ['exp', 'dil', 'drop'].map(k => textField({label: {exp: 'EXP multiplier', dil: 'DIL multiplier', drop: 'Drop multiplier'}[k], value: '1', type: 'number', attrs: {min: '0.1', max: '100', step: '0.1'}, fieldId: 'rate-' + k}));
     access.input.addEventListener('change', () => { invitePass.hidden = access.input.value === 'open'; });
@@ -189,5 +200,5 @@ export function create({navigate}) {
   }
   function buildBench() { const b = createBench({navigate}); panels.bench.append(b.el); return b; }
   function qrSvg(q) { const n = q.size, z = q.quietZone, s = h('svg', {svg: true, viewBox: `0 0 ${n + 2 * z} ${n + 2 * z}`, width: 220, height: 220, role: 'img', 'aria-label': 'Server QR code', 'shape-rendering': 'crispEdges'}); s.append(h('rect', {svg: true, width: n + 2 * z, height: n + 2 * z, fill: '#ffffff'})); let d = ''; q.matrix.forEach((row, y) => { for (let x = 0; x < n; x++) if (row[x] === '1') d += `M${x + z},${y + z}h1v1h-1z`; }); s.append(h('path', {svg: true, d, fill: '#000000'})); return h('div', {class: 'row'}, s); }
-  return {el, show(tab) { const t = ['play', 'join', 'host', 'bench'].includes(tab) ? tab : active; bar.select(t); }, hide() { for (const b of Object.values(built)) b.hide?.(); }};
+  return {el, show(tab) { bar.show(['play', 'join', 'host', 'bench'].includes(tab) ? tab : active); }, hide() { for (const b of Object.values(built)) b.hide?.(); }};
 }

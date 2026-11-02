@@ -57,8 +57,8 @@ define('world.accounts.setRole', {input: v.object({account: v.string({min: 3, ma
   if (account === 'admin') throw new UserError('Select a registered player account.');
   const r = await launcherCall('accounts', {method: 'POST', body: {account, role}, timeoutMs: 15000});
   if (r.account !== account || r.role !== role || r.leaseInvalidated !== true) throw new UserError('The permission change could not be verified. Refresh accounts.', 409);
-  event('ok', 'world', `${role === 'gm' ? 'Granted GM to' : 'Revoked GM from'} ${account}. The player must re-enter their character.`);
-  return {...r, message: `${role === 'gm' ? 'Granted GM to' : 'Revoked GM from'} ${account}. The player must re-enter their character.`};
+  event('ok', 'world', `${role === 'gm' ? 'Granted Admin / GM / Dev to' : 'Revoked Admin / GM / Dev from'} ${account}. The player must re-enter their character.`);
+  return {...r, message: `${role === 'gm' ? 'Granted Admin / GM / Dev to' : 'Revoked Admin / GM / Dev from'} ${account}. The player must re-enter their character.`};
 }});
 define('world.characters', {input: v.object({}), timeoutMs: 30000, run: async () => {
   if (!await running()) throw new UserError('The character roster is read from the running world.', 409);

@@ -7,10 +7,18 @@
 // colours of the strings. The rules between them are src/game/pvp-rules.js PARTY_WAR_CHOSEN (each tagged ENGINE-CHOSEN).
 import { partyWarPlaces, partyWarHostilePhase } from '../../src/game/pvp-rules.js';
 import { registerPvpMode } from './pvp.mjs';
+// Lane 59: the Dead Front final / close / timeout steps follow the older server reference script (ScriptProcess.dll)
+// Lane 68: Ice Castle takes the same frame (same Global frame codes; src/config/ice-castle-script-ref.js).
+import { DEAD_FRONT_SCRIPT_TIMINGS as DFT } from '../../src/config/dead-front-script-ref.js';
+// Lane 59 (d): Dungeon+0x88 (PvP needed) / +0x8c (tie) of the older server reference DekaronServer.exe, as pure functions
+import { pvpNeeded, isTie } from '../../src/config/dead-front-script-extras.js';
 
 const LANES = ['A', 'B', 'C', 'D'];
 const FINAL = ['waitPvp', 'pvp', 'waitExtension', 'extension'];
 const JOIN_MARGIN_SEC = 5;   // the start countdown (map line 1002, 5..1) plays in the last 5 s of waitStart
+// Dead Front map line 1002 (all 16 stringtable_deadfront cates: "Dead Front / PvP / extension start countdown effect",
+// @<effectui>2033,1,5000,1 = the 5 s 01_blue countdown) also counts down the PvP and extension starts of a contested war.
+const FINAL_COUNTDOWN_SEC = 5;
 const fail = (message, status = 400) => { throw Object.assign(new Error(message), { status }); };
 export const PARTY_WAR_TEXT = {
   revive: 'You cannot revive during the final battle.',   // engine text (no original string)
@@ -81,8 +89,11 @@ export function installPartyWar(world, i, run) {
     const id = i.creditId; i.creditId = null;
     const team = teamOf(i, (id && byId(world, id)) || i.actor?.()) || i.teams[0];
     if (n > 0 && team) team.score += n;
+    if (why === 'depot' && run.lastDepot) { (i.depots ||= []).push({ id: run.lastDepot.id, rank: run.lastDepot.rank, team: team?.index ?? null, points: n, at: world.now() }); run.lastDepot = null; }
     return addScore(n, why);
   };
+  // Ice Castle checkpoint owner = the team that gets the points for the same kill (creditId is still set: once() runs before addScore)
+  run.onCheckpoint = c => { const id = i.creditId; c.team = (teamOf(i, (id && byId(world, id)) || i.actor?.()) || i.teams[0])?.index ?? null; c.at = world.now(); };
   const channel = run.ui.channel.bind(run.ui);
   run.ui = Object.create(run.ui);
   // a side reaction on the same promise (registered before the run's await, so it runs first; no extra microtask hop)
@@ -96,7 +107,8 @@ export function installPartyWar(world, i, run) {
     captureStartingTeams(world, i);
     // Publisher guides: Dead Front reaches player combat only after its final boss.
     // A fortress timeout is a failed PvE attempt, never a substitute winner.
-    if(i.kind==='deadFront'&&(!win||!run.objectiveDone()))return failFortress(world,i,run);
+    // Lane 68: an Ice Castle tower that fell (or a timeout) fails the same way (older server reference frame).
+    if(!win||!run.objectiveDone())return failFortress(world,i,run);
     // Publisher July 25, 2024: initially solo skips PvP; later departures do
     // not erase the participation of two or more teams at the battle start.
     if (i.startingTeamCount < 2) return resolveFinal(win);
@@ -116,6 +128,11 @@ export function installPartyWar(world, i, run) {
 
 function members(world, i, team) { return live(world, i).filter(q => team.ids.has(q.id)); }
 function standing(world, i, team) { return members(world, i, team).filter(q => !q.dead && q.hp > 0 && !i.final?.down.has(q.id)); }
+/** Living members per team (the per-party counts Dungeon+0x88 / +0x8c read). */
+function aliveCounts(world, i) { return i.teams.map(t => standing(world, i, t).length); }
+/** Overtime after the PvP time: Dead Front = Dungeon+0x88 and +0x8c (more than one party alive and the top living count
+ *  tied, the reference top/second quirk kept); Ice Castle (no script in the reference) = +0x88 alone, as before. */
+function overtime(world, i) { const c = aliveCounts(world, i); return pvpNeeded(c) && (i.kind !== 'deadFront' || isTie(c)); }
 function standingTeams(world, i, present = false) { return i.teams.filter(t => (present ? members(world, i, t) : standing(world, i, t)).length > 0); }
 function captureStartingTeams(world, i) {
   if (i.startingTeamCount == null) i.startingTeamCount = standingTeams(world, i, true).length;
@@ -136,9 +153,12 @@ function moveTeam(world, i, team, point, revive = false) {
 function startFinal(world, i, run) {
   i.final = { down: new Set(), extended: false };
   for (const c of i.channels || []) c.resolve(false);
-  run.say(1401);
+  const df = i.kind === 'deadFront';
+  // Dead Front (older server reference): State 3, red cell 128 closes, no 1401 notice; Ice Castle sends its Global 1401
+  // "final battle soon" at the same state change (no timer involved)
+  if (df) run.bricks?.setPassable?.(128, false); else run.say(1401);
   for (const t of i.teams) moveTeam(world, i, t, run.data.fieldPoint(run.mode, run.map, run.field.pvpPoints?.[t.index]), true);
-  run.setPhase('waitPvp', phaseSec(run, 'waitPvp', 30));
+  run.setPhase('waitPvp', DFT.pvpWaitSec);
 }
 
 function failFortress(world,i,run){
@@ -146,28 +166,36 @@ function failFortress(world,i,run){
   i.fortressFailed=true;run.failed=true;run.won=false;
   for(const c of i.channels||[])c.resolve(false);
   for(const t of i.teams){t.place=null;moveTeam(world,i,t,run.data.fieldPoint(run.mode,run.map,run.field.loserRespawn));}
-  run.setPhase('waitClose',phaseSec(run,'waitClose',300));run.say(1504);run.rewards();
+  // older server reference timeout: +1 s 1504, +8 s 1503, end at 15 s (deadfront.js _timeout; also pays the rewards)
+  run._timeout();
 }
 
 function finalPhaseEnd(world, i, run, id) {
-  if (id === 'waitPvp') { run.setPhase('pvp', phaseSec(run, 'pvp', 240)); run.say(1402); return; }
-  if (id === 'pvp' && !i.final.extended && standingTeams(world, i).length > 1) {
+  if (i.final.done) return;
+  const df = i.kind === 'deadFront';
+  if (id === 'waitPvp') { run.setPhase('pvp', DFT.pvpSec); run.say(1402); return; }
+  if (id === 'pvp' && !i.final.extended && overtime(world, i)) {
     i.final.extended = true;
     // Dead Front 1406 / Ice Castle 1408 = the extra-time notice with its 2040 banner (Ice Castle 1407 is that banner alone)
-    run.setPhase('waitExtension', phaseSec(run, 'waitExtension', 10)); run.say(run.mode === 'iceCastle' ? 1408 : 1406); return;
+    run.setPhase('waitExtension', DFT.overtimeWaitSec); run.say(run.mode === 'iceCastle' ? 1408 : 1406); return;
   }
-  if (id === 'waitExtension') { run.setPhase('extension', phaseSec(run, 'extension', 60)); run.say(1402); return; }
+  if (id === 'waitExtension') { run.setPhase('extension', DFT.overtimeSec); run.say(1402); return; }
   finishFinal(world, i, run);
 }
 
 function markDown(world, i, run, q) {
   if (i.final.down.has(q.id)) return;
   i.final.down.add(q.id); q.hp = 0; q.dead = true; q.path = []; world.changed(q);
-  if (['pvp', 'extension'].includes(run.phase) && standingTeams(world, i).length <= 1) finishFinal(world, i, run);
+  if (['pvp', 'extension'].includes(run.phase) && !pvpNeeded(aliveCounts(world, i))) finishFinal(world, i, run);
 }
 
 function warTick(world, i, run) {
   if (!i.final || i.final.done) return;
+  // older server reference: 1002 24 s into the 30 s PvP wait, 5 s into the 10 s overtime wait
+  const cdAt = run.phase === 'waitPvp' ? DFT.pvpWaitSec - DFT.pvpWaitCountdownSec : run.phase === 'waitExtension' ? DFT.overtimeWaitSec - DFT.overtimeCountdownSec : FINAL_COUNTDOWN_SEC;
+  if (['waitPvp', 'waitExtension'].includes(run.phase) && run.phaseT <= cdAt && !run.flags?.has(`cd-${run.phase}`)) {
+    run.flags?.add(`cd-${run.phase}`); run.say(1002);
+  }
   // Publisher July 25, 2024: one remaining team also wins during PvP waiting.
   if (!['waitPvp', 'pvp', 'extension'].includes(run.phase)) return;
   if (run.phase === 'waitPvp') {
@@ -175,7 +203,7 @@ function warTick(world, i, run) {
     return;
   }
   for (const t of i.teams) for (const q of members(world, i, t)) if ((q.hp <= 0 || q.dead) && !i.final.down.has(q.id)) markDown(world, i, run, q);
-  if (!i.final.done && standingTeams(world, i).length <= 1) finishFinal(world, i, run);
+  if (!i.final.done && !pvpNeeded(aliveCounts(world, i))) finishFinal(world, i, run);
 }
 
 function finishFinal(world, i, run) {
@@ -183,14 +211,25 @@ function finishFinal(world, i, run) {
   const order = partyWarPlaces(i.teams.map(t => ({ index: t.index, standing: standing(world, i, t).length, score: t.score, kills: t.kills, team: t })));
   order.forEach((o, k) => { o.team.place = k + 1; o.team.score += Number(run.res.pvpPoints?.[k]) || 0; });
   run.won = true;
-  for (const t of i.teams) {
-    const ids = members(world, i, t).map(q => q.id);
-    if (ids.length) sayTo(i, run, ids, placeLine(run, t.place));
-    moveTeam(world, i, t, run.data.fieldPoint(run.mode, run.map, t.place === 1 ? run.field.winnerRespawn : run.field.loserRespawn), true);
+  if (i.kind === 'deadFront') {
+    // older server reference: no 1403 / 1404; the close step (1501 to everybody, treasure, rewards) 5 s after the PvP end.
+    // The winner / loser rooms are the Global field.csv respawns.
+    run.after(DFT.closeSec, () => {
+      for (const t of i.teams) moveTeam(world, i, t, run.data.fieldPoint(run.mode, run.map, t.place === 1 ? run.field.winnerRespawn : run.field.loserRespawn), true);
+      run._closeStep();
+    });
+    return;
   }
-  run.rewards();
-  run.setPhase('waitClose', phaseSec(run, 'waitClose', 300));
-  for (const t of i.teams) { const ids = members(world, i, t).map(q => q.id); if (ids.length) sayTo(i, run, ids, t.place === 1 ? 1501 : 1504); }
+  // Ice Castle (Lane 68): the same close step 5 s after the PvP end (older server reference frame); the place lines
+  // 1403-1406 are Ice Castle's own Global lines, sent to each team with the move.
+  run.after(DFT.closeSec, () => {
+    for (const t of i.teams) {
+      const ids = members(world, i, t).map(q => q.id);
+      if (ids.length) sayTo(i, run, ids, placeLine(run, t.place));
+      moveTeam(world, i, t, run.data.fieldPoint(run.mode, run.map, t.place === 1 ? run.field.winnerRespawn : run.field.loserRespawn), true);
+    }
+    run._closeStep();
+  });
 }
 
 /** Reward inputs of one team (the PartyWarRun result formula; place 1 = won). */
@@ -235,6 +274,8 @@ export function partyWarSnapshot(world, p, i) {
     failed:!!i.fortressFailed,
     enemies: live(world, i).filter(q => q !== p && q.instanceId === i.id && i.teams.length > 1 && teamOf(i, q) && teamOf(i, q) !== mine && i.run?.won == null && combatPhase(i) && !q.dead && !i.final?.down.has(q.id)).map(q => q.id),
     down: !!i.final?.down.has(p.id),
+    depots: (i.depots || []).map(d => ({ ...d })),
+    checkpoints: i.run?.checkpoints ? [...i.run.checkpoints.values()].map(c => ({ ...c })) : [],
   };
 }
 

@@ -137,8 +137,13 @@ export class WingVisual {
     const table = riding ? { rows: w.table.riderRows } : w.table;
     const row = this.data.row(table, action, index, style);
     const e = { done: false, clip: null };
-    e.promise = row ? Promise.resolve(this.game.models.loadClip(normKey(row.anim), w.model, { duration: row.timeLength })).catch(() => null)
-      .then(c => { e.clip = c || null; e.done = true; return e; }) : Promise.resolve((e.done = true, e));
+    e.promise = row ? this.game.models.loadClipWithStatus(normKey(row.anim), w.model, { duration: row.timeLength })
+      .then(c => { e.clip = c || null; e.done = true; return e; })
+      .catch(err => {
+        // Transient transport nulls must not stick in the per-wing Map (CLIP-LOADING-EVIDENCE outer caches).
+        if (err?.transient) { w.clips.delete(k); }
+        e.clip = null; e.done = true; return e;
+      }) : Promise.resolve((e.done = true, e));
     w.clips.set(k, e);
     return e;
   }

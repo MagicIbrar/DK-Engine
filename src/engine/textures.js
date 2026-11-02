@@ -32,6 +32,7 @@ import { breathe } from './yield.js';
 import { assetWork } from './asset-work.js';
 import { TextureUploads } from './texture-uploads.js';
 import { decodeTGA, decodeBMP, decodePSD, decodeImageAsync } from '../formats/image.js';
+import { d3dxImageFormat } from './global-alpha-modes.js';   // LANE-54: the D3DX load format of non-DDS images
 import { DEFAULT_SAMPLER, MIP_BIAS, threeFilters, textureHasMips } from './sampler-state.js';
 import { recordTextureRequest } from './prefetch.js';
 
@@ -212,6 +213,8 @@ export class TextureCache {
       case 'png': case 'jpeg': case 'gif': tex = this._fromRGBA(await decodeImageAsync(u8), key, o, kind.toUpperCase()); break;
       default: throw new Error(`unrecognised image data (${kind})`);
     }
+    // LANE-54: Global loads non-DDS files in their own D3DX format and classifies that (32-bit FUN_0151e070); null = UNRESOLVED.
+    if (kind !== 'dds' && tex?.userData) tex.userData.d3dFormat = kind === 'gif' ? null : d3dxImageFormat(u8);
     const later = this._applySampler(tex, true, sampler) === 'defer';   // The map's sampler state from the start
     const up = this.uploads.upload(tex);
     return later ? up.then(t => { if (this._applySampler(t, false, sampler) === true) return this.uploads.upload(t); return t; }) : up;

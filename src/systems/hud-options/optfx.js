@@ -180,10 +180,13 @@ export class OptionHooks {
     h._npcPlateText = (a, pl) => {
       orig(a, pl);
       if (!pl?.name) return;
-      const fixed = npcNameFix({ name: pl.name.textContent, title: String(pl.title?.textContent || '').replace(/^<|>$/g, '') }, a?.name);
-      if (fixed.name !== pl.name.textContent) pl.name.textContent = fixed.name;
-      const tt = fixed.title || '';
-      if (pl.title && pl.title.textContent !== tt) pl.title.textContent = tt;
+      // Re-split a possible already-combined "Name (Role)" so garbled-KR fix still applies, then one yellow line only.
+      const raw = String(pl.name.textContent || '');
+      const m = /^(.+?)\s*\(([^()]*)\)\s*$/.exec(raw);
+      const fixed = npcNameFix({ name: m ? m[1].trim() : raw, title: m ? m[2].trim() : '' }, a?.name);
+      const line = fixed.title ? `${fixed.name} (${fixed.title})` : (fixed.name || '');
+      if (pl.name.textContent !== line) pl.name.textContent = line;
+      if (pl.title) pl.title.textContent = '';
     };
   }
 

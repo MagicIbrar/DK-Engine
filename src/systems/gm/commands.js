@@ -55,6 +55,23 @@ export const EXTRA = [
   { id: 'monsterloot', category: 'drops', origin: 'solo-extra', syntax: '/gm monsterloot <monster ID> <item ID> <chance per 100000> [count]', args: [{name:'monsterId',type:'int',min:1},{name:'itemId',type:'int',min:1},{name:'chance',type:'int',min:0,max:100000},{name:'count',type:'int',min:1,max:99,optional:true}], desc: 'Shared server: add or replace one monster-specific item drop. Chance 0 removes it; restart restores original tables.' },
   // GM event prizes (src/config/engine-chosen-gm-prize.js): makeitem's arguments after one online character name.
   { id: 'giveitem', category: 'item', origin: 'solo-extra', syntax: '/gm giveitem <character> <item> [count=1] [upgrade=0] [sockets=0] [option value]…', args: [{name:'player',type:'player',desc:'online character name ("quotes" for spaces)'},{name:'item',type:'item',list:'items'},{name:'count',type:'int',optional:true,default:1,min:1,max:9999},{name:'upgrade',type:'int',optional:true,default:0,min:0,max:15,desc:'upgrade level (+N)'},{name:'sockets',type:'int',optional:true,default:0,min:0,max:4},{name:'options',type:'itemOption',list:'itemOptions',optional:true,repeat:6,desc:'up to 6 option index + value pairs'}], desc: 'Shared server: create an item straight in a connected player\'s bag, e.g. a GM event prize such as Camouflage [Frontier] (1755139, Dead Island runs 4-6). Untradeable prizes work because nothing is traded; the player is told who granted it and every grant is recorded.' },
+  // Lane 47: Global GM event commands (syntax = the Global client GM help strings); the shared host runs them
+  // (server/world/gm-global-events.mjs). Shared-server only (online-support.js GLOBAL_EVENT_GM).
+  { id: 'dkrpvp_create', category: 'world', origin: 'solo-extra', syntax: '/gm dkrpvp_create', args: [{ name: 'args', type: 'text', optional: true }], desc: 'Global GM event command (shared server): dkrpvp_create' },
+  { id: 'dkrpvp_delete', category: 'world', origin: 'solo-extra', syntax: '/gm dkrpvp_delete [code]', args: [{ name: 'args', type: 'text', optional: true }], desc: 'Global GM event command (shared server): dkrpvp_delete [code]' },
+  { id: 'dkrpvp_applystart', category: 'world', origin: 'solo-extra', syntax: '/gm dkrpvp_applystart [teamname] [teammark] [teammarkbg]', args: [{ name: 'args', type: 'text', optional: true }], desc: 'Global GM event command (shared server): dkrpvp_applystart [teamname] [teammark] [teammarkbg]' },
+  { id: 'dkrpvp_applymember', category: 'world', origin: 'solo-extra', syntax: '/gm dkrpvp_applymember [membername] [membercharno] [memberuserno] [class] [grade] [world] [level]', args: [{ name: 'args', type: 'text', optional: true }], desc: 'Global GM event command (shared server): dkrpvp_applymember [membername] [membercharno] [memberuserno] [class] [grade] [world] [level]' },
+  { id: 'dkrpvp_selectteam', category: 'world', origin: 'solo-extra', syntax: '/gm dkrpvp_selectteam', args: [{ name: 'args', type: 'text', optional: true }], desc: 'Global GM event command (shared server): dkrpvp_selectteam' },
+  { id: 'dkrpvp_createleague', category: 'world', origin: 'solo-extra', syntax: '/gm dkrpvp_createleague', args: [{ name: 'args', type: 'text', optional: true }], desc: 'Global GM event command (shared server): dkrpvp_createleague' },
+  { id: 'dkrpvp_open', category: 'world', origin: 'solo-extra', syntax: '/gm dkrpvp_open [type] [group] [order]', args: [{ name: 'args', type: 'text', optional: true }], desc: 'Global GM event command (shared server): dkrpvp_open [type] [group] [order]' },
+  { id: 'dkrpvp_finish', category: 'world', origin: 'solo-extra', syntax: '/gm dkrpvp_finish [type] [group] [order]', args: [{ name: 'args', type: 'text', optional: true }], desc: 'Global GM event command (shared server): dkrpvp_finish [type] [group] [order]' },
+  { id: 'dkrpvp_setstatus', category: 'world', origin: 'solo-extra', syntax: '/gm dkrpvp_setstatus [start|apply|league|tournament|end] [end time]', args: [{ name: 'args', type: 'text', optional: true }], desc: 'Global GM event command (shared server): dkrpvp_setstatus [start|apply|league|tournament|end] [end time]' },
+  { id: 'dkrpvp_createtournament', category: 'world', origin: 'solo-extra', syntax: '/gm dkrpvp_createtournament [league group1] [league order1] [league team1] [league group2] [league order2] [league team2] [tournament group] [tournament order] [match time]', args: [{ name: 'args', type: 'text', optional: true }], desc: 'Global GM event command (shared server): dkrpvp_createtournament [league group1] [league order1] [league team1] [league group2] [league order2] [league team2] [tournament group] [tournament order] [match time]' },
+  { id: 'set_dksquareinfo', category: 'world', origin: 'solo-extra', syntax: '/gm set_dksquareInfo [mode] [rank] [fightTime] [startPcCount] [maxPcCount] [LobbyIndex]', args: [{ name: 'args', type: 'text', optional: true }], desc: 'Global GM event command (shared server): set_dksquareInfo [mode] [rank] [fightTime] [startPcCount] [maxPcCount] [LobbyIndex]' },
+  { id: 'guildwarhunting_open', category: 'world', origin: 'solo-extra', syntax: '/gm guildwarhunting_open [world index]', args: [{ name: 'args', type: 'text', optional: true }], desc: 'Global GM event command (shared server): guildwarhunting_open [world index]' },
+  { id: 'guildwarhunting_ready', category: 'world', origin: 'solo-extra', syntax: '/gm guildwarhunting_ready [world index]', args: [{ name: 'args', type: 'text', optional: true }], desc: 'Global GM event command (shared server): guildwarhunting_ready [world index]' },
+  { id: 'guildwarhunting_start', category: 'world', origin: 'solo-extra', syntax: '/gm guildwarhunting_start [world index]', args: [{ name: 'args', type: 'text', optional: true }], desc: 'Global GM event command (shared server): guildwarhunting_start [world index]' },
+  { id: 'guildwarhunting_finish', category: 'world', origin: 'solo-extra', syntax: '/gm guildwarhunting_finish [world index]', args: [{ name: 'args', type: 'text', optional: true }], desc: 'Global GM event command (shared server): guildwarhunting_finish [world index]' },
 ];
 
 // ------------------------------------------------------------------------------------------ handlers
@@ -577,8 +594,14 @@ export const HANDLERS = {
     return null;
   },
   async snapshot(a, c) { return c.gm.snapshot(a.action, a.name); },
-  async mapevent(a, c) {
+    async mapevent(a, c) {
     const map = Number(a.map.id), code = num(a.code);
+    // When code is a mapevent.csv script index (1..5), also start the Global cinematic runner.
+    // Lane 64 bound indices 1..5 to map 706 (map-event-rules MAP_EVENT_BINDING); the GM starts by index directly (Global 0x05260021 body).
+    if (code >= 1 && code <= 5 && c.game.mapEvent?.start) {
+      const ok = c.game.mapEvent.start(code);
+      if (ok) return `Map-event cinematic index ${code} started (map ${map} is display-only; Global binding map 706).`;
+    }
     const t = await c.gm.dungeonTextAsync(map, code);
     if (!t) return c.fail(`DUNGEON string ${map}:${code} does not exist.`);
     c.game.dungeons?.notice?.(t);
@@ -586,6 +609,7 @@ export const HANDLERS = {
     c.game.events.emit('dungeon:notice', { text: t, flash: true });
     return `Map ${map} event ${code}: ${t.replace(/\s+/g, ' ').slice(0, 140)}`;
   },
+
   async effect(a, c) {
     const g = c.game;
     if (!g.effects?.play) return c.fail('The effect player (skills system) is not installed.');

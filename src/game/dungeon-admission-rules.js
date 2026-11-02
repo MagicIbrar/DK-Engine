@@ -12,6 +12,14 @@ const sectionSets={
  5992:[['263',/^\[ Solo Mode \]$/i],['234',/^\[ Normal Mode \]$/i],['250',/^\[ Hard Mode \]$/i]],
  5965:[['608',/^Undo Mazokie's Test \(Party\)$/i],['617',/^Undo Mazokie's Test$/i]],
 };
+/** Reverse lookup: dungeon id -> shared entrance NPC that owns its sectionSets fee text. */
+function sectionSetsNpcFor(id){
+ const key=String(id);
+ for(const [npc,pairs] of Object.entries(sectionSets)){
+  if(pairs.some(([d])=>d===key))return Number(npc);
+ }
+ return null;
+}
 const unavailable=()=>{throw Object.assign(Error('The original dungeon entrance cost is unavailable.'),{status:503});};
 const plain=text=>String(text||'').replace(/<\/?(?:color|font)\b[^>]*>/gi,'');
 function section(npc,id,greeting){
@@ -61,16 +69,24 @@ const ticketBindings={
  260:{npc:6215,item:4003102,quest:285,require:/^Requirement: Forbidden Fetters Entry Ticket$/im},
  265:{npc:6107,item:4003082,quest:284,require:/^Entry Ticket : Hidden Mansion of Kastotica Solo Ticket x1$/im},
  617:{npc:5965,item:4002240,quest:467,require:/^1 entry ticket for Undo Mazokie's training$/im},
+ // Lane 57: event dungeons whose entrance text names an entry item. 258: the only item named
+ // 'The Cursed Night Entry Ticket' (1195394; type 0 code 5, 3600 s period, reqLv 195 = text 'Solo Lv 195+',
+ // desc 2354 'grants access to Halloween: The Cursed Night'). 236: diving point NPC 6060 says 'Use a Requies
+ // Beach Diving Ticket.'; the only items with that name are 1194509 (reqLv 201 = text 'below level 201 are not
+ // allowed') and 1602973 (reqLv 185 = dungeonlist level 185), both desc 1983 'Requies special diving board'.
+ 236:{npc:6060,items:[1194509,1602973],name:'Requies beach diving ticket',require:/^- Use a Requies Beach Diving Ticket\.$/im},
+ 258:{npc:6203,item:1195394,name:'The Cursed Night Entry Ticket',require:/^Entry Item : The Cursed Night Entry Ticket$/im},
 };
 function explicitTicket(world,id,d,dialogs){
  const binding=ticketBindings[id];if(!binding)return null;
  if(![...(d.entry?.npcs||[]),...(d.entry?.unplacedNpcs||[])].some(n=>Number(n.npc)===binding.npc))unavailable();
  const text=section(binding.npc,id,dialogs.npcs?.[binding.npc]?.greeting);
  if(!binding.require.test(text))unavailable();
- const def=world.data.itemDB.def(binding.item);if(!def||Number(def.type)!==0||![4,5].includes(Number(def.code)))unavailable();
- if(binding.quest){const q=world.data.progression?.quests?.quests?.[binding.quest];if(Number(q?.rewards?.timedItem?.item)!==binding.item||Number(q?.giver?.npc)!==binding.npc)unavailable();}
- else if(def.name?.trim()!==binding.name)unavailable();
- return {items:[binding.item],count:1};
+ const ids=binding.items||[binding.item];
+ for(const index of ids){const def=world.data.itemDB.def(index);if(!def||Number(def.type)!==0||![4,5].includes(Number(def.code)))unavailable();
+  if(binding.quest){const q=world.data.progression?.quests?.quests?.[binding.quest];if(Number(q?.rewards?.timedItem?.item)!==index||Number(q?.giver?.npc)!==binding.npc)unavailable();}
+  else if(def.name?.trim()!==binding.name)unavailable();}
+ return {items:[...ids],count:1};
 }
 // Infinite Battle 2 entrance text: "Ticket : Infinite Battle 2 ticket or 2 Super
 // Pass" (NPC 5358 for 534/535, NPC 5927 for Stardion 613). The in-game NPC
@@ -109,8 +125,27 @@ function passTicket(world,id,d,dialogs){
  return {items:tickets.map(([index])=>index),count:1,alternatives:[{items:superPasses(world),count:2}],...(binding.payer?{payer:binding.payer}:{})};
 }
 export function dungeonEntranceCosts(world,id,npc){
- const c=world.data.dungeonData,d=c.dg.dungeons[String(id)],source=entranceSource(d,c.dialogs,npc),text=source?section(source.npc,id,c.dialogs.npcs?.[source.npc]?.greeting):'';
- const fees=[...text.matchAll(feePattern)].map(match=>Number(match[1].replaceAll(',',''))),unique=[...new Set(fees)];if(unique.length>1||unique.some(fee=>!Number.isSafeInteger(fee)||fee<0))unavailable();
+ const c=world.data.dungeonData,d=c.dg.dungeons[String(id)];
+ // Modes that share an NPC's greeting (sectionSets) keep that NPC's fee text even
+ // when the player enters from the KickTo fallback gate (npc 4001) or another
+ // non-informative source. Evidence: NPC 5266 greeting lists Elleghos [Time Attack]
+ // (id 614) at 100,000 DIL while dialog jobs only target 180.
+ let source=entranceSource(d,c.dialogs,npc);
+ const sectionNpc=sectionSetsNpcFor(id);
+ if(sectionNpc!=null){
+  const greeting=c.dialogs.npcs?.[sectionNpc]?.greeting;
+  let ok=false;try{section(sectionNpc,id,greeting);ok=true;}catch{ok=false;}
+  if(ok&&(!source||Number(source.npc)!==sectionNpc))source={npc:sectionNpc};
+ }
+ const text=source?section(source.npc,id,c.dialogs.npcs?.[source.npc]?.greeting):'';
+ // Most fees are "Fee: N DIL". Elleghos [Time Attack] (NPC 5266 section for id 614)
+ // writes a bare "100,000 DIL" under <Entry Condition> with "(The entry fee will be
+ // collected as you enter the dungeon.)" — the only bare-DIL fee line in dialogs.json.
+ let fees=[...text.matchAll(feePattern)].map(match=>Number(match[1].replaceAll(',','')));
+ if(!fees.length&&/entry fee/i.test(text)){
+  fees=[...text.matchAll(/^\s*([\d,]+)\s+DIL\s*$/gim)].map(match=>Number(match[1].replaceAll(',','')));
+ }
+ const unique=[...new Set(fees)];if(unique.length>1||unique.some(fee=>!Number.isSafeInteger(fee)||fee<0))unavailable();
  const requirements=[],native=d.entry?.ticket?.item;if(native)requirements.push({items:[Number(native)],count:1});
  const ticket=explicitTicket(world,String(id),d,c.dialogs);if(ticket&&!requirements.some(r=>r.items.includes(ticket.items[0])))requirements.push(ticket);
  const pass=passTicket(world,String(id),d,c.dialogs);if(pass)requirements.push(pass);

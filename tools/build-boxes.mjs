@@ -501,6 +501,7 @@ function main() {
   chains.sort((a, b) => b.length - a.length || a.root - b.root);
   for (const c of chains) for (let i = 1; i < c.stages.length; i++) if (!(c.levels[i] > c.levels[i - 1])) hard(`chain ${c.root}: level does not increase at ${c.stages[i]}`);
 
+  // ENGINE-CHOSEN / ADDITION (starter pack F1, kept ON by owner choice; scan fix A): the item picks below are engine judgement.
   // recommended new-character grant (no starter-kit table exists in the client; see docs/formats/boxes.md §4)
   const STARTER = [
     { item: 54389, count: 1, why: 'item literally named "New Character Gift Pack" (package: 7-day Growth Blessing, 7-day battle amulet, bound pet egg, 1000+1000 potion packages); nothing in the client grants it, so the server did at character creation' },

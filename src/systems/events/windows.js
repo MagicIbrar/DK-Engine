@@ -1,5 +1,6 @@
 // The original event windows (docs/UIWIN.md), registered on the UI platform and driven by the event runs.
-//   ev_message    game2/ui_eventmessagewnd.txt            centre event message (4 s)
+//   ev_message    game2/ui_eventmessagewnd.txt            centre event message: up to 5 stacked lines, oldest drops after 15 s
+//                 (decompile FUN_00b341b0 / FUN_00b34220 / FUN_00b34270; EventMessageQueue in mode-ui-rules.js)
 //   ev_limittime  game2/partywar/ui_limittimewnd.txt      Dead Front / Ice Castle phase timer ("Waiting to Start : 02 Min 59 Sec")
 //   ev_remaintime game2/partywar/ui_remainwartimewnd.txt separate application / entry timer in the lobby
 //   ev_partyinfo  game2/partywar/ui_mypartyinfownd.txt    score / rank
@@ -14,6 +15,7 @@
 //   ev_effect     game2/ui_effectuiwnd.txt                pan_effect: the effect UI banners (effectui.js)
 // Timer strings use the client's own formats (%02d Min %02d Sec), so the printf fill here pads like C.
 import { hudLog } from './text.js';
+import { EventMessageQueue } from './mode-ui-rules.js';
 
 /** C printf subset: %d %02d %s %u %% (zero/width), then the remaining args ignored. */
 export function pf(fmt, ...args) {
@@ -38,7 +40,7 @@ export class EventUI {
     this.game = game;
     this.sys = sys;
     this.ui = game.uiwin;
-    this._msgT = 0;
+    this._msgQ = new EventMessageQueue();
     this._channel = null;
     this._result = null;
     this._timerRequests = new Map();
@@ -95,11 +97,26 @@ export class EventUI {
   }
 
   // ---------------------------------------------------------------------------------------- centre message
-  async notice(text, sec = 4) {
+  /** Add one line to the Global EventMessage stack (5 lines, shared 15 s age; see EventMessageQueue). */
+  async notice(text) {
+    const line = String(text ?? '');
+    this._msgQ.push(line);
+    const w = await this._paintNotice();
+    if (!w) this._msgQ.drop(line);
+  }
+  /** Remove one queued line (OX quiz wall-time expiry) and repaint or hide. */
+  dropNotice(text) {
+    if (!this._msgQ.drop(text)) return false;
+    void this._paintNotice();
+    return true;
+  }
+  async _paintNotice() {
+    if (!this._msgQ.visible) { this.close('ev_message'); return null; }
     const w = await this._open('ev_message');
-    if (!w) return;
-    w.control('lbl_message').setRichText(String(text ?? ''));
-    this._msgT = sec;
+    if (!w) return null;
+    if (!this._msgQ.visible) { this.close('ev_message'); return null; }
+    w.control('lbl_message').setRichText(this._msgQ.display);
+    return w;
   }
 
   // ---------------------------------------------------------------------------------------- phase timer
@@ -264,10 +281,7 @@ export class EventUI {
 
   // ---------------------------------------------------------------------------------------- frame
   update(dt) {
-    if (this._msgT > 0) {
-      this._msgT -= dt;
-      if (this._msgT <= 0) this.close('ev_message');
-    }
+    if (this._msgQ.tick(dt * 1000)) void this._paintNotice();
     const ch = this._channel;
     if (ch && ch.win) {
       if(ch.server){

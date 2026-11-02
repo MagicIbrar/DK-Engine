@@ -4,6 +4,7 @@
 // answered as codes so the client prints the localized line with the partner's name. Rules the data does not state are
 // ENGINE-CHOSEN and listed in MESSENGER_CONFIG and docs/MESSENGER-CHAT.md.
 import {WorldError} from './core.mjs';
+import {isBlacklisted} from './blacklist.mjs';
 
 export const MESSENGER_SCHEMAS={messenger:['token','type','operation','targetName','text','on']};
 export const MESSENGER_MAX_TEXT=60;                // ui_chatwnd.txt edit_text maxlength 60
@@ -42,6 +43,9 @@ export function messengerCommand(world,p,input){
   if(target===p)fail(MESSENGER_SELF_TEXT);
   if(!target)return {sent:false,code:MESSENGER_CODES.notConnected,targetName:name};
   if(target.messengerDecline)return {sent:false,code:MESSENGER_CODES.declines,targetName:name};
+  // Blacklist: recipient who listed the sender does not receive messenger (fandom Interface; Chinese regional guide).
+  // No Global 1006 code names blacklist-on-send; reuse declines (1006:42) so the client shows a refusal.
+  if(isBlacklisted(target,p.profile?.name))return {sent:false,code:MESSENGER_CODES.declines,targetName:name};
   if(now<(p.messengerAt||0))fail('Wait one second between messages.',429);
   p.messengerAt=now+MESSENGER_CONFIG.cooldownMs;
   world.emit(null,{type:'messenger',actorId:p.id,name:p.profile.name,targetId:target.id,targetName:name,text,time:now,recipients:[p.id,target.id]});

@@ -228,4 +228,4 @@ export function update(dt, game) {
   API?.premium?.update?.(dt);
 }
 
-export function dispose() { API = null; }
+export function dispose() { API?.search?.dispose?.(); API = null; }

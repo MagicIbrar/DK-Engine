@@ -25,6 +25,13 @@ export const MOVEMENT_SYNC = Object.freeze({
   COLLISION_TOLERANCE_CELLS: 0.75,
   /** Reports already in flight when a skill lock / mount cast starts on the host are still accepted for this long. */
   BLOCK_GRACE_MS: 400,
+  /** ENGINE-CHOSEN (RUBBERBAND-RELEASE): the host clears a finished skill/mount lock only on its next 100 ms tick, while
+   *  the client resumes the moment its own lock ends. A report that arrives while the host still holds the lock and has
+   *  moved at most this long at full speed from the last accepted pose is deferred (not applied, not punished); the
+   *  next report after the host releases is measured from the same pose, so cheating gains nothing. */
+  BLOCK_RELEASE_MS: 300,
+  /** ENGINE-CHOSEN: a rejected report closer than this to the host pose is eased back (tween), not hard-snapped. */
+  REJECT_SMOOTH_CELLS: 3,
   /** A reporting player who sends nothing for this long is no longer "moving" for remote viewers. */
   REPORT_IDLE_MS: 350,
   /** ENGINE-CHOSEN: ... but never shorter than this many times the mover's own report arrival spacing (peak-held,
@@ -57,6 +64,10 @@ export const MOVEMENT_SYNC = Object.freeze({
   LEAD_BASE_CELLS: 0.25,
   /** Polling transport (relay without SSE) refresh interval while connected. Was 500 ms. */
   POLL_INTERVAL_MS: 150,
+  /** ENGINE-CHOSEN: brief hold after WASD/stick release before stop/report, so 1-frame A/S or W/S gaps never stop+restart (rubberband). */
+  WASD_RELEASE_DEBOUNCE_MS: 66,
+  /** ENGINE-CHOSEN: on a true heading reverse within one report spacing, refund this fraction of the spent travel so zigzag spam does not exhaust the burst bank and snap. */
+  REVERSE_BUDGET_REFUND: 0.85,
 
   // ---- remote players (viewer) - ENGINE-CHOSEN
   /** Remote players render this far behind the smoothed host clock at minimum ... */

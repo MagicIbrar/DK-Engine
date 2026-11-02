@@ -10,7 +10,7 @@ export function create({navigate, saveSettings}) {
   const ids = ['launch', 'global', 'tools', 'overrides'];
   const panels = Object.fromEntries(ids.map(i => [i, h('div', {class: 'tab-panel', id: 'panel-' + i, role: 'tabpanel', 'aria-labelledby': 'tab-' + i, hidden: i !== 'launch'})]));
   let active = 'launch'; const built = {};
-  const bar = tabs([{id: 'launch', label: 'Game window', ico: 'play'}, {id: 'global', label: 'Global data', ico: 'layers'}, {id: 'tools', label: 'Tools', ico: 'wand'}, {id: 'overrides', label: 'Content', ico: 'map'}], {current: 'launch', label: 'Game & Content sections', onSelect: t => select(t)});
+  const bar = tabs([{id: 'launch', label: 'Game window', ico: 'play'}, {id: 'global', label: 'Global data', ico: 'layers'}, {id: 'tools', label: 'Tools', ico: 'wand'}, {id: 'overrides', label: 'Content', ico: 'map'}], {current: 'launch', label: 'Game & Content categories', onSelect: t => select(t), onOverview: () => history.replaceState(null, '', '#/content')});
   function select(t) { active = t; for (const [k, p] of Object.entries(panels)) p.hidden = k !== t; if (!built[t]) built[t] = ({launch, global, tools, overrides})[t](); built[t].show?.(); history.replaceState(null, '', `#/content/${t}`); }
   const el = h('div', {class: 'stack loose'}, bar, ...Object.values(panels));
 
@@ -19,6 +19,7 @@ export function create({navigate, saveSettings}) {
     p.append(h('div', {class: 'split'}, card({title: 'Game window options', id: 'launch-opts', desc: 'What the launcher itself controls. Graphics, audio and key bindings are changed inside the game (Options) and saved per game window profile.', children: [opts]}), card({title: 'Remembered window sizes', desc: 'Saved by the DX11 window per account (Options › resolution, window mode, F11).', children: [wins]})));
     function render(s) {
       replace(opts, selectField({label: 'Default game window', value: s.defaultTarget, applies: 'now', options: [{value: 'native', label: 'DX11 Client (windowed 1280×720)'}, {value: 'native-fullscreen', label: 'DX11 Fullscreen (borderless)'}, {value: 'desktop', label: 'Desktop App (Edge/Chrome app window)'}, {value: 'browser', label: 'Web Browser tab'}], onChange: v => saveSettings({defaultTarget: v}).then(() => toast('Default game window saved.', 'ok'), e => toast(e.message, 'err'))}),
+        selectField({label: 'Frame rate cap', value: s.frameCap || '240', applies: 'next-game-window', options: [{value: '60', label: '60 FPS'}, {value: '120', label: '120 FPS'}, {value: '144', label: '144 FPS'}, {value: '165', label: '165 FPS'}, {value: '240', label: '240 FPS (default)'}, {value: 'uncapped', label: 'Uncapped (no vsync, can tear)'}], onChange: v => saveSettings({frameCap: v}).then(() => toast('Frame rate cap saved. It applies to the next game window.', 'ok'), e => toast(e.message, 'err'))}),
         h('div', {class: 'rows'}, switchRow({title: 'Uncapped frame rate (benchmark)', desc: 'Existing opt-in for Desktop App windows only: lifts the frame cap and vsync. The picture will tear.', checked: s.uncappedFps, applies: 'next-game-window', onChange: v => saveSettings({uncappedFps: v})})),
         kv([['DX11 window', `GameWindow.exe in ${state.mode === 'install' ? 'this engine' : 'the sandbox engine'}; F11 toggles fullscreen; the last applied resolution is remembered per account.`], ['Desktop App', 'Throw-away browser profile per window, removed after it closes; GPU rasterization and no background throttling (existing switches).'], ['Pre-launch byte verification', state.mode === 'install' ? 'Prepared assets are checked before the game window opens. Global data › Verify runs a full read-only integrity check.' : 'Not used in the preview: the engine verifier needs prepared data inside the engine folder and writes receipts there. Use Global data › Verify for a read-only check.']]));
     }
@@ -48,7 +49,7 @@ export function create({navigate, saveSettings}) {
       replace(body, h('div', {class: 'grid two stretch'},
         h('section', {class: 'card tint amber stat'}, h('div', {class: 'stat-label', text: 'Item Builder'}), h('div', {class: 'stat-bottom'}, h('div', {class: 'stat-note', text: 'Create custom items from native looks or rigid GLB models.'}), button('Open', {kind: 'primary', disabled: !ready, onClick: () => open('itembuilder')}))),
         h('section', {class: 'card tint sky stat'}, h('div', {class: 'stat-label', text: 'Map Builder'}), h('div', {class: 'stat-bottom'}, h('div', {class: 'stat-note', text: 'Edit custom maps and overlays on original maps.'}), button('Open', {kind: 'primary', disabled: !ready, onClick: () => open('mapbuilder')})))),
-        ready ? notice('ok', `Ready in primary account ${w.primary}.`) : notice('info', w?.status !== 'running' ? 'Start the world, sign in with a GM account and enter a character.' : w.primary ? `Waiting for primary account ${w.primary} to finish loading in game (GM permission required).` : 'Sign in to the first game window and enter a character first.', {action: button('Test Bench', {size: 'small', kind: 'ghost', onClick: () => navigate('play/bench')})}));
+        ready ? notice('ok', `Ready in primary account ${w.primary}.`) : notice('info', w?.status !== 'running' ? 'Start the world, sign in with an Admin / GM / Dev account and enter a character.' : w.primary ? `Waiting for primary account ${w.primary} to finish loading in game (GM permission required).` : 'Sign in to the first game window and enter a character first.', {action: button('Test Bench', {size: 'small', kind: 'ghost', onClick: () => navigate('play/bench')})}));
     }
     async function open(tool) { try { const r = await call('world.tool', {tool}); toast(r.message, 'ok'); } catch (e) { toast(e.message, 'err'); } }
     on('world', w => { if (active === 'tools') render(w); });
@@ -65,5 +66,5 @@ export function create({navigate, saveSettings}) {
     which.addEventListener('change', runPrev); q.addEventListener('input', () => { clearTimeout(t); t = setTimeout(runPrev, 250); });
     return {show() { load(); runPrev(); }};
   }
-  return {el, show(tab) { bar.select(ids.includes(tab) ? tab : active); }};
+  return {el, show(tab) { bar.show(tab); }};
 }

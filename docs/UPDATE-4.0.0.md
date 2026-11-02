@@ -149,5 +149,5 @@ Version 4.0.0 brings the following changes since 3.3.5.
 
 - Validation includes 38 passing integrated regression suites, 229 grade-reward checks, 14 skill-installation checks, 46 cast-resource guard checks and 9 focused browser/WebGL checks, alongside existing inventory, server, rendering and audio coverage. These results do not establish all-skill visual or native-client parity or replace in-game testing.
 
-- Big thanks to Franky, DEV ShadoW, CYBER and Magic Ibrar for helping with the project, and to everyone contributing, testing and sharing feedback.
+- Big thanks to DEV ShadoW, CYBER and Magic Ibrar for helping with the project, and to everyone contributing, testing and sharing feedback.
 

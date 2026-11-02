@@ -3,6 +3,7 @@ import {commitLife,serializeLife,validateLife,lifeError as fail} from './life-tr
 import {mapFor} from './scene.mjs';
 import {createQuestContext} from './quests.mjs';
 import {recordTitleKill} from './titles.mjs';
+import {randomUUID} from 'node:crypto';
 export const LIFE_EVENT_SCHEMAS={lifeevent:['token','type','event','uid','revision','requestId']};
 const deaths=new WeakMap(),MAX_RECEIPTS=128;
 const integer=n=>Number.isSafeInteger(n)&&n>=0;
@@ -35,14 +36,37 @@ export function lifeEventCommand(world,p,input){return serializeLife(p,async()=>
   if(p.dead||p.leaving||p.sceneTransition)fail('Event rewards are unavailable while dead or changing maps.');
   if(input.revision!==(current.revision??0))fail('Event progress changed. Refresh the reward first.');
   const a=active(world,p.profile);if(!a||a.r.Index!==input.event||a.item.uid!==input.uid)fail('Choose the currently active owned event item.');
-  const r=a.r;if(r.Type!==0||!r.RewardItem_Index||r.RewardMosnter_Index||!world.data.itemDB?.def(r.RewardItem_Index))fail('This outcome requires original server spawn rules that are not recovered.');
+  const r=a.r;
+  // Type 0 = RewardItem_Index; Type 1 = summon RewardMosnter_Index next to the player
+  // (Global client src/systems/life/events.js _reward Trace + string 2300:8).
+  const type0=r.Type===0&&r.RewardItem_Index&&!r.RewardMosnter_Index&&!!world.data.itemDB?.def(r.RewardItem_Index);
+  const type1=r.Type===1&&r.RewardMosnter_Index&&!r.RewardItem_Index&&!!world.data.monsterDef?.(r.RewardMosnter_Index);
+  if(!type0&&!type1)fail('This event reward is not a recovered Type 0 item or Type 1 Trace spawn.');
   const value=current.virus[String(r.Index)]??0;if(!integer(value)||value!==r.Object_Value)fail('The original event objective is not complete.');
   if(p.profile.inventory.filter(i=>i.uid===input.uid).length!==1)fail('The selected event item is ambiguous.');
   const profile=structuredClone(p.profile),inv=new AuthoritativeInventory(profile,world.data.itemDB,{now:world.now,random:world.random}),item=profile.inventory.find(i=>i.uid===input.uid);
-  if(!inv.consumeEntry(item,1)||!inv.add(r.RewardItem_Index,1))fail('Make bag space for the original event reward.');
-  const record={id:input.requestId,signature,event:r.Index,itemIndex:r.RewardItem_Index,count:1,revision:input.revision+1};
+  if(!inv.consumeEntry(item,1))fail('The selected event item could not be consumed.');
+  let record,spawned=null;
+  if(type0){
+    if(!inv.add(r.RewardItem_Index,1))fail('Make bag space for the original event reward.');
+    record={id:input.requestId,signature,event:r.Index,itemIndex:r.RewardItem_Index,count:1,revision:input.revision+1};
+  }else{
+    const def=world.data.monsterDef(r.RewardMosnter_Index);
+    const map=mapFor(world,p);
+    if(!map)fail('Event Trace spawn needs the player on a map.');
+    const rnd=typeof world.random==='function'?world.random():Math.random();
+    const ang=rnd*Math.PI*2;
+    const hx=p.x+Math.cos(ang)*3,hz=p.z+Math.sin(ang)*3;
+    const near=map.collision?.nearestWalkable?.(hx,hz,6)||(typeof map.nearest==='function'?map.nearest(hx,hz):null)||{x:p.x+1,z:p.z};
+    if(!Number.isFinite(near.x)||!Number.isFinite(near.z))fail('Event Trace spawn found no walkable point near the player.');
+    const id=`lifeevent:${p.id}:${randomUUID()}`;
+    spawned={id,map:p.map,instanceId:p.instanceId||null,monsterIndex:r.RewardMosnter_Index,name:def.name,x:near.x,z:near.z,hp:def.hp,maxHp:def.hp,home:{x:near.x,z:near.z},dead:false,targetId:null,attackAt:0,respawnAt:0,respawnSec:Infinity,oneShot:true,lifeEventSpawn:true,def};
+    map.monsters.set(id,spawned);
+    record={id:input.requestId,signature,event:r.Index,monsterIndex:r.RewardMosnter_Index,spawnId:id,revision:input.revision+1};
+  }
   profile.life||={};profile.life.events={...current,virus:{...current.virus,[String(r.Index)]:0},revision:record.revision,receipts:[...receipts.slice(-(MAX_RECEIPTS-1)),record]};
   const quests=createQuestContext(world,p,{profile,inventory:inv,commitToPlayer:false});quests?.engine.recountCollect(null,true);
-  await commitLife(world,p,profile);quests?.commit();world.emit(p.map,{type:'lifeevent',actorId:p.id,event:r.Index});
+  await commitLife(world,p,profile);quests?.commit();
+  world.emit(p.map,{type:'lifeevent',actorId:p.id,event:r.Index,...(spawned?{monsterId:spawned.id,monsterIndex:spawned.monsterIndex,x:spawned.x,z:spawned.z}:{})});
   return {receipt:structuredClone(record),replayed:false};
 });}

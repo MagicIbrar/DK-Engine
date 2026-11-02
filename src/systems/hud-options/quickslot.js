@@ -14,6 +14,7 @@ import {itemSwapResult,itemPayload,cursorActionResult} from '../items/ui/common.
 //   * potion belt: F1..F10 on 10 item cells.
 // Save: save.quickslot = { sets:[[12]x3], rows, rowSet:[3], fixed:[3], locked, belt:[10] }; save.hotbar mirrors the
 // set of the bottom row (skills.use(slot) / older code keep working).
+import { gfxC } from '../../ui/gfx-parity-c.js';
 import { skillMap, skillLevel, skillMpCost } from '../../ui/gameinfo.js';
 import { keyName, bindingName } from './keymap.js';
 import { str, fmtInt } from './util.js';
@@ -102,7 +103,7 @@ export function quickState(game) {
     const set0 = Array.from({ length: SLOTS }, (_, i) => old[i] || null);
     q = s.quickslot = {
       sets: [set0, Array(SLOTS).fill(null), Array(SLOTS).fill(null)],
-      rows: 3, rowSet: [0, 1, 2], fixed: [false, false, false], locked: true,
+      rows: gfxC('quickslot') ? 1 : 3 /* gfxC3: Global bin/optionEtc.txt quickslotcount 1 + recording (one row) */, rowSet: [0, 1, 2], fixed: [false, false, false], locked: true,
       belt: Array(10).fill(null),
     };
     // potions that sat on the old bar move to the belt

@@ -6,6 +6,7 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { FRAME_LIMITS, BG_FRAMES, QUAKE_SCALE, effectiveFrameLimit } from './settings.js';
+import { setOptionTriFilter } from '../../engine/sampler-state.js';
 import { createFramePacer } from './frame-pacer.js';
 import { saveSettings } from '../../game/save.js';
 import { clamp } from './util.js';
@@ -19,7 +20,7 @@ export const DISPLAY_MODES = [
   [2560, 1080], [2560, 1440], [3440, 1440], [3840, 2160],
 ];
 /**
- * 1280x720 by default unless the user changes it, saves and applies it; the next time it starts it is the resolution they saved. A chosen display mode (Options > resolution, Apply / OK; restored from the saved options
+ * 1024x768 by default (DEFAULTS.resolution and Global data/shadow.txt [init] display_width/height) unless the user changes it, saves and applies it; the next time it starts it is the resolution they saved. A chosen display mode (Options > resolution, Apply / OK; restored from the saved options
  * at start) sizes the game window itself in the desktop clients: Dekaron.exe reads globalThis.__dekaronWindowSize (it polls
  * it, sets its client area and remembers it for the next start, tools/DekaronClient.cs); the Desktop App window is resized
  * by script. A plain browser tab keeps its size ('native' = the window as it is, everywhere).
@@ -39,10 +40,15 @@ export function requestClientWindow(w, h, win = globalThis) {
   }
   return false;
 }
-// com_shadow Low / Middle / High / Highest. Global lists no "off" entry and ships one shadow technique set for every tier
-// (data/binary/shadowobject.fx = lowshadowobject.fx: ShadowBone + ShadowBoneDepth), so Low still casts shadows - at the
-// smallest map the shadow tuner allows (graphics/shadows.js 512).
-const SHADOW_MAP = [512, 1024, 2048, 4096];
+// com_shadow combo index = Global rc_shadowlevel (LANE-66): the option window sends its +0x47 byte unchanged as
+// "rc_shadowlevel %d" (FUN_00b43310; combo writer FUN_00b40370 stores the selection, presets FUN_00b42c00 2/1/0).
+// RenderTexture::Shadow (FUN_0159c5f0 / FUN_0159c810): level 0 -> no shadow pass at all, 1 -> 256, 2 -> 512, 3 -> 1024
+// (levels >= 2 also use a separate depth surface). Global option.txt default shadowlevel 2. WebGL has depth textures, so
+// the exe's no-depth-caps clamp (core +0x132 false -> level <= 2 / presets <= 1) never applies.
+export const GLOBAL_SHADOW_MAP = Object.freeze([0, 256, 512, 1024]);
+const SHADOW_MAP = GLOBAL_SHADOW_MAP;
+// Quality-tier multiplier on Environment.viewDistance (= map Clip_Far / env.clipFar, default 75).
+// Global option.txt clipfar 75.00 matches that base (environment.js clipFar || 75); not an OptionStore key (no ui_optionwnd control).
 const DRAW_DISTANCE = { good: 1, average: 0.85, poor: 0.7 };
 const BLOOM_STRENGTH = [0.45, 0.8, 1.2];
 
@@ -84,7 +90,8 @@ export class OptionEffects {
     if (has('resolution') || has('winmode')) this.applyResolution();
     if (has('winmode') && patch) this.applyFullscreen();
     if (has('gamma')) this.applyGamma();
-    if (has('shadow') || has('quality')) this.applyShadows();
+    if (has('shadow') || has('quality') || has('highShadow')) this.applyShadows();
+    if (has('triFilter')) this.applyTriFilter();
     if (has('quality')) this.applyQuality();
     if (has('bloom') || has('bloomLevel')) this.applyBloom();
     if (['bgm', 'bgmMute', 'effect', 'effectMute', 'ambient', 'ambientMute', 'skillSound', 'skillSoundMute', 'servant', 'servantMute'].some(has)) this.applySound();
@@ -99,8 +106,9 @@ export class OptionEffects {
   // ------------------------------------------------------------------ resolution & interface scale
   /**
    * Resolution: 'native' renders at the window size with the interface at 1:1 (auto-fit down to 1024x720 on small
-   * windows); an explicit mode renders the 3D view at that many pixels (stretched to the
-   * window, as the client does full screen) and lays the interface out on that virtual screen.
+   * windows); an explicit mode sizes the desktop window to WxH (Global windowed) and renders at that many pixels;
+   * fullscreen still stretches the mode buffer (as the client does). If the window did not take WxH,
+   * render at window pixels so the view is not upscaled; UI still lays out on the virtual WxH screen.
    */
   applyResolution() {
     const g = this.game, r = g.renderer;
@@ -111,8 +119,16 @@ export class OptionEffects {
     let scale;
     if (m) {
       const w = Number(m[1]), h = Number(m[2]);
-      r?.setPixelRatio?.(1);
-      r?.setSize?.(w, h, false);
+      const matched = Math.abs(vw - w) <= 2 && Math.abs(vh - h) <= 2;
+      const stretch = matched || !!document.fullscreenElement;
+      if (stretch) {
+        r?.setPixelRatio?.(1);
+        r?.setSize?.(w, h, false);
+      } else {
+        // Windowed but shell did not take WxH (tab / maximize): avoid upscaling a small buffer.
+        r?.setPixelRatio?.(Math.min(devicePixelRatio || 1, 2));
+        r?.setSize?.(vw, vh, false);
+      }
       scale = Math.min(vw / w, vh / h);
     } else {
       r?.setPixelRatio?.(Math.min(devicePixelRatio || 1, 2));
@@ -154,16 +170,36 @@ export class OptionEffects {
   applyShadows() {
     const g = this.game;
     const q = Math.round(Number(this.store.get('shadow')) || 0);
-    const on = q >= 0;
+    // high_shadow (option +0x12) is stored only: FUN_00a28080 is a UI layout clamp, not a shadow-size gate (LANE-66),
+    // so it no longer changes the shadow tier.
+    const high = !!this.store.get('highShadow');
+    const tier = clamp(q, 0, 3);
+    const on = tier > 0;                  // Global level 0 = no shadow pass (FUN_0159c810)
     g.settings.shadows = on;              // environment.js reads it every update
+    g.settings.highShadow = high;
     g.renderer.shadowMap.enabled = on;
-    g.renderer.shadowMap.type = q >= 3 ? THREE.PCFSoftShadowMap : q === 2 ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
+    // One filter for every level (WebGL sampling of the depth map; Global samples its shadow texture in shadowobject.fx).
+    g.renderer.shadowMap.type = THREE.PCFShadowMap;
     const sun = g.world?.environment?.sun || g.world?.env?.sun;
-    const size = SHADOW_MAP[clamp(q, 0, 3)] || 0;
+    const size = SHADOW_MAP[tier] || 0;
+    g.settings.shadowMapSize = size;      // environment.js _setupShadows uses it for a newly loaded map
     if (sun?.shadow && size && sun.shadow.mapSize.x !== size) {
       sun.shadow.mapSize.set(size, size);
       sun.shadow.map?.dispose?.();
       sun.shadow.map = null;
+    }
+  }
+  /**
+   * tri_filter (option.txt / decompile +0x11): force trilinear + anisotropic sampler state on TextureCache.
+   * No ui_optionwnd control; defaults false. Does not change the approved options UI layout.
+   */
+  applyTriFilter() {
+    const on = !!this.store.get('triFilter');
+    setOptionTriFilter(on);
+    this.game.settings.triFilter = on;
+    const cache = this.game.textures || this.game.models?.textures;
+    if (cache?.setSampler) {
+      try { cache.setSampler(cache.sampler); } catch { /* textures may not be ready yet */ }
     }
   }
   applyQuality() {

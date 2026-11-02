@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import {ParticleUnit} from './fx-units.js';
+import {GLOBAL_WEATHER_SPAWN_ROTATION} from './global-particle-rules.js';
 
 // MEL fireflies are weather/snow sprite volumes, not radial skill emitters.
 // Other weather (rain/splashes/mesh leaves) retains an explicit unsupported result.
@@ -15,8 +16,9 @@ export function supportsPlacedSnowWeather(unit){
 // Reuse the shared texture flipbook, authored control keys, gravity/lifetime,
 // bounded particle pool, loading barrier and disposal. The snow spawn box and
 // unnormalised direction match the existing native-weather path. Here the
-// anchor is the authored MEL placement, never the moving viewer. Emission keeps
-// the shared renderer's authored-rate policy; native tick-unit parity is unproven.
+// anchor is the authored MEL placement, never the moving viewer. Emission and spin
+// follow Global's weather unit (FUN_011a9d00 emit, FUN_011a9eb0 spawn rotation 0,
+// FUN_011aa570 addrotate x age): see global-particle-rules.js (LANE-63).
 export class MapSnowWeatherUnit extends ParticleUnit {
  constructor(ctx,unit,parent){
   if(!supportsPlacedSnowWeather(unit))throw Error('Unsupported placed weather unit');
@@ -35,7 +37,7 @@ export class MapSnowWeatherUnit extends ParticleUnit {
    if(!e.spawnDirAbs)velocity.applyQuaternion(rotation);
    const sizes=e.particleSize||[0,0],size=(Number(u.size)||1)*(sizes.some(Boolean)?sample(sizes):1),cr=(Number(e.colorRange)||0)/100;
    this.parts.push({p:origin.clone().add(offset),v:velocity,t:0,life:sample(e.lifetimeMs)/1000,size,
-    rot:(Math.random()*2-1)*THREE.MathUtils.degToRad(Number(e.addRotate)||0),frameSeed:Math.random(),trail:null,
+    rot:GLOBAL_WEATHER_SPAWN_ROTATION,frameSeed:Math.random(),trail:null,
     tint:cr>0?[1-Math.random()*cr,1-Math.random()*cr,1-Math.random()*cr]:null});
    this.spawned=(this.spawned||0)+1;
   }

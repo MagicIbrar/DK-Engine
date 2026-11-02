@@ -1,11 +1,13 @@
 import {sameScene,sceneKey} from './scene.mjs';
 import {pkRefusal} from './field-pk.mjs';
 import {duelOpponent,isPvpTarget} from './pvp.mjs';
-// ENGINE-CHOSEN player decisions, never combat/PK balance: ordinary requests,
+// JUDGMENT (lane 51 g): Global has no player bots, so no source can exist for their choices. These are bot decisions only,
+// never combat/PK balance (a bot's hits run the same field-PK / PvP rules as a player's): ordinary requests,
 // cooldowns, safe areas, alliances, shield/damage, death and penalties apply.
 const distance=(a,b)=>Math.hypot(a.x-b.x,a.z-b.z);
 const areas=new WeakMap();
-// ENGINE-CHOSEN outlaw preferences, not native PK legality. New-player fields
+// JUDGMENT (lane 51 g) outlaw preferences, not native PK legality (chance by the map's typical monster level, level 60 floor,
+// 2-3 min between ambushes, 10 s self-defence memory; reasoning: bots must not grief low-level fields). New-player fields
 // do not receive unsolicited bot ambushes; actual attacks may still be defended.
 export function npcPkAreaPolicy(world,p){
  const data=world.data;let cache=areas.get(data);if(!cache){cache=new Map();areas.set(data,cache);}let area=cache.get(Number(p.map));
@@ -36,7 +38,7 @@ export async function npcPvpStep(world,p,b,{act,isNpc=()=>false}={}){
  if(defend&&pkRefusal(world,p,defend)===null){if(b.pkAnchor?.targetId!==defend.id)b.pkAnchor={targetId:defend.id,x:p.x,z:p.z,scene:sceneKey(p.map,p.instanceId,p.channel)};b.pkTarget=defend.id;b.pkUntil=now+10000;b.pkSource='self-defense';}
  const area=npcPkAreaPolicy(world,p);
  let target=live.find(q=>q.id===b.pkTarget);
- // ENGINE-CHOSEN finite pursuit: actual opponents can escape. Neither native
+ // JUDGMENT (lane 51 g) finite pursuit (40 cells): actual opponents can escape. Neither native
  // movement speed nor damage/skill ranges are changed by this decision radius.
  const chase=target&&distance(p,target)<=40&&(!b.pkAnchor||b.pkAnchor.scene===sceneKey(p.map,p.instanceId,p.channel)&&distance(p,b.pkAnchor)<=40);
  if(target&&chase&&(now<(b.pkUntil||0))&&(b.pkSource==='self-defense'||area.allowAmbush)&&pkRefusal(world,p,target)===null)return {handled:true,target,forced:true};

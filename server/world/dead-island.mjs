@@ -1,6 +1,8 @@
 // Dead Island admission: native guild/level/rank/channel/ticket refusals and 120-minute challenge.
-// ENGINE-CHOSEN missing bindings: Vascuda issues quest1637's three daily tickets;
-// creations are counted per guild/server day; corresponding named ships choose landings.
+// Ticket issuance: Global binds the quest1637 Frontier ticket dialogue to no NPC (npcs.json/dialogs.json jobs,
+// quest.csv S_npc/E_npc 0), and no shop, box, quest reward or event issues item 7519; the guessed Vascuda issuer
+// was removed (lane 57). UNRESOLVED: Global's 7519 source. ENGINE-CHOSEN: creations are counted per guild/server
+// day; corresponding named ships choose landings.
 // Creations 4-6 need one Camouflage [Frontier] (system_variable 51 = 1755139) per server day. No shop, box, quest
 // or drop issues it: it is a GM-event prize, awarded with the GM grant command (/gm giveitem, server/world/gm.mjs).
 import {socialState,socialRef} from './social-state.mjs';
@@ -18,9 +20,8 @@ const fail=(message,status=400)=>{throw Object.assign(Error(message),{status});}
 const plain=text=>String(text||'').replace(/^\[message\]\s*/,'').replace(/<[^>]*>/g,'').trim();
 const text=(world,code)=>plain(world.data.dungeonData?.dg?.maps?.[551]?.messages?.[code]?.t);
 const refuse=(world,code)=>fail(text(world,code)||`Dead Island admission refused (${code}).`);
-const questText=(world,code)=>plain(world.data.progression?.dialogs?.strings?.[1637]?.[code]);
 const SHIPS=new Map([[5665,5542],[5666,5543],[5667,5544]]);
-export const DEAD_ISLAND_POLICY=Object.freeze({map:551,durationMs:7200000,ticket:7519,eventTicket:1601106,camouflage:1755139,baseCreates:3,maxCreates:6,issuers:Object.freeze([[150,5532],[550,5668]]),label:'ENGINE-CHOSEN issuer, per-guild server-day counter and named-ship landing; native restrictions, items and challenge duration; Camouflage [Frontier] is a GM-event prize (/gm giveitem)'});
+export const DEAD_ISLAND_POLICY=Object.freeze({map:551,durationMs:7200000,ticket:7519,eventTicket:1601106,camouflage:1755139,baseCreates:3,maxCreates:6,label:'ENGINE-CHOSEN per-guild server-day counter and named-ship landing; native restrictions, items and challenge duration; Camouflage [Frontier] is a GM-event prize (/gm giveitem)'});
 function active(world,p){if(world.players.get(p.account)!==p||p.leaving||p.dead||p.instanceId||p.tradeId||p.tradeCommitting||p.combatUntil>world.now())fail('Leave battle, trading and your current instance before using this service.');}
 function guildLevel(world,g){if(Number.isSafeInteger(g.level)&&g.level>0)return g.level;let level=1;for(let n=1;n<=15;n++)if(Number(g.gpoint)>=Number(world.data.guild?.config?.[`LEVELSTEP${n}`]))level=n;return level;}
 function ancientQuickslot(profile){const entries=[...(profile.hotbar||[]),...(profile.quickslot?.belt||[]),...(profile.quickslot?.sets||[]).flat()];return entries.some(e=>e?.type==='item'&&e.itemIndex>=7499&&e.itemIndex<=7518);}
@@ -79,20 +80,6 @@ export async function restoreDeadIslandRun(world,profile){
  (world.deadIslandRestoring||=new Map()).set(rec.id,task);return task;
 }
 
-/** The unoffered native ticket dialogue is bound to the existing Frontier Vascuda NPCs, explicitly as an engine choice. */
-async function issue(world,p,input){
- active(world,p);const npc=Number(input.npc),source=DEAD_ISLAND_POLICY.issuers.some(([m,n])=>p.map===m&&npc===n);
- if(!source||!nearbyNpc(world,p,{npcIndex:npc,radius:10}))fail('Walk to Vascuda to receive a Frontier ticket.');
- const {guild}=guildFrontierAccess(world,p);if(!guild||guildLevel(world,guild)<5)fail(questText(world,100));
- const {current,state}=stateCopy(world),profile=structuredClone(p.profile),day=serverDayKey(world.now()),old=profile.frontierTickets;
- const count=old?.day===day?Number(old.count):0;if(!Number.isSafeInteger(count)||count<0)fail('The Frontier ticket record is invalid; it was preserved.',503);if(count>=3)fail(questText(world,101));
- const inv=new AuthoritativeInventory(profile,world.data.itemDB,{now:world.now,random:world.random}),def=world.data.itemDB.def(7519);
- if(Number(def?.period)!==10800)fail('The original Frontier ticket duration is unavailable.',503);
- if(!inv.add(7519,1,{period:def.period}))fail('Make room in your inventory for the Frontier ticket.');
- profile.frontierTickets={day,count:count+1,quest:1638+count};
- const staged=stageInstanceMembers(world,[p],[profile]),q=staged.candidates[0];world.changed(q);await save(world,current,state,q);
- return {staged,result:{frontierTicket:{item:7519,expiresAt:world.now()+10800000,remaining:2-count,text:questText(world,102)}}};
-}
 async function admit(world,p,input){
  const npc=Number(input.npc),access=eligibility(world,p,npc),{current,state}=stateCopy(world),profile=structuredClone(p.profile),guild=state.guilds[access.guild.id];
  let instance=[...(world.instances?.values()||[])].find(i=>i.map===551&&i.frontierGuild===guild.id&&!i.closed&&!i.closeRequested&&i.expiresAt>world.now());
@@ -121,10 +108,10 @@ async function admit(world,p,input){
  }catch(error){if(instance&&!existing){instance.director?.dispose();world.instances.delete(instance.id);world.maps.delete(sceneKey(551,instance.id));}else if(instance)instance.admitting=previousAdmitting;throw error;}
 }
 export async function deadIslandCommand(world,p,input){
- if(input.type!=='dungeon'||!['enter','frontier-ticket'].includes(input.operation)||input.operation==='enter'&&String(input.dungeonId)!=='551')return false;
+ if(input.type!=='dungeon'||input.operation!=='enter'||String(input.dungeonId)!=='551')return false;
  if(Object.keys(input).some(k=>!['type','token','operation','dungeonId','npc'].includes(k)))fail('Send the Frontier service intent only.');
  const transition=p.sceneTransition;if(transition)fail('Finish travelling before using this service.');p.sceneTransition=true;let pending;
- const task=(world.saveQueue||Promise.resolve()).catch(()=>{}).then(()=>input.operation==='frontier-ticket'?issue(world,p,input):admit(world,p,input));world.saveQueue=task.catch(()=>{});
+ const task=(world.saveQueue||Promise.resolve()).catch(()=>{}).then(()=>admit(world,p,input));world.saveQueue=task.catch(()=>{});
  try{pending=await task;await pending.staged.commit();if(pending.instance){pending.instance.acting=p;pending.instance.admitting=pending.previousAdmitting??false;}return pending.result;}
  finally{p.sceneTransition=transition;if(pending?.instance)pending.instance.admitting=pending.previousAdmitting??false;}
 }

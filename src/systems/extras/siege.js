@@ -16,6 +16,7 @@ import { SIEGE_CHOSEN } from '../../config/engine-chosen-siege.js';
 import { loadEventData } from '../events/data.js';
 import { Brick } from '../events/bricks.js';
 import { numText, msg } from '../life/common.js';
+import { presentGlobalMessage } from '../events/mode-ui-rules.js';
 
 export const SIEGE_SCRIPTS = Object.freeze({
   war: 'game2/siege/ui_warstatewnd.txt', time: 'game2/siege/ui_siege_play_timewnd.txt', stones: 'game2/siege/ui_allzeolitestatewnd.txt',
@@ -236,14 +237,15 @@ export class Siege {
       p.control('guildBg')?.setVisible?.(false); p.control('guildicon')?.setVisible?.(false); });
   }
   _fillWar(w, s, now) {
+    // LANE-61: ui_warstatewnd marks are 40x40 panels; the Global client fills them from the 40 px guildbg / guildicon atlases (decompile), not the 24 px _s cells.
     w.control('lbl_serverInfo')?.setText?.('Zenoa Castle');
     w.control('lbl_time')?.setText?.(s.phase === 'idle' ? '' : mmss(s.endAt - now));
     w.control('lbl_state')?.setText?.(plainText(this.u([290, s.phase === 'idle' ? (s.announced ? 111 : 116) : 112])));
     w.control('lbl_defenderName')?.setText?.(s.owner?.name || '-');
-    if (s.owner?.mark) { w.control('pan_defMarkBg')?.setImage?.('none', 'guildbg_s', s.owner.mark.bg); w.control('pan_defMark')?.setImage?.('none', 'guildicon_s', s.owner.mark.icon); }
+    if (s.owner?.mark) { w.control('pan_defMarkBg')?.setImage?.('none', 'guildbg', s.owner.mark.bg); w.control('pan_defMark')?.setImage?.('none', 'guildicon', s.owner.mark.icon); }
     for (let i = 0; i < 3; i++) { const r = s.seals[i]; w.control(`lbl_attackerName_${i}`)?.setText?.(r?.name || '');
       w.control(`pan_attMarkBg_${i}`)?.setVisible?.(!!r?.mark); w.control(`pan_attMark_${i}`)?.setVisible?.(!!r?.mark);
-      if (r?.mark) { w.control(`pan_attMarkBg_${i}`)?.setImage?.('none', 'guildbg_s', r.mark.bg); w.control(`pan_attMark_${i}`)?.setImage?.('none', 'guildicon_s', r.mark.icon); } }
+      if (r?.mark) { w.control(`pan_attMarkBg_${i}`)?.setImage?.('none', 'guildbg', r.mark.bg); w.control(`pan_attMark_${i}`)?.setImage?.('none', 'guildicon', r.mark.icon); } }
   }
 
   // ------------------------------------------------------------------ live
@@ -255,7 +257,7 @@ export class Siege {
     if (n && this._net !== n && typeof n._event === 'function') {
       this._net = n; const event = n._event.bind(n);
       n._event = record => {
-        if (record?.type === 'siegeNotice') { const text = record.text || (Array.isArray(record.code) ? this.say(record.code, ...(record.args || [])) : ''); if (text) { this.note(text); if (record.big || record.code?.[0] === 701) g.gm?.windows?.showNotice?.(text); } return; }
+        if (record?.type === 'siegeNotice') { const raw = record.text || (Array.isArray(record.code) ? fillText(this.t(record.code, ''), ...(record.args || [])) : ''); const text = plainText(raw); if (text) { this.note(text); void presentGlobalMessage(g, raw, text); } return; }
         event(record);
       };
       const hud = g.hud, showDeath = hud?.showDeath;

@@ -8,6 +8,7 @@ import { installServerControl } from './server-control.js';
 import { currentAccountId } from '../../game/save.js';
 import { loadChannelData } from '../channels/data.js';
 import { movedText } from '../channels/channel-rules.js';
+import { SYSTEM_LEAVE_WAIT_MS } from '../../config/owner-travel-freeze.js';
 
 // Channel list = share/channellist.csv (gamedata/channels.json field: Divine Valley, Kalibus, nonPK, PK).
 // Shared play runs every channel on the host (server/world/channels.mjs); single player has only Channel Index 0.
@@ -70,7 +71,7 @@ export function registerSystemMenu(game, ctx) {
     update(win, dt) {
       const d = win.data;
       d.t += dt;
-      const T = 3;
+      const T = SYSTEM_LEAVE_WAIT_MS / 1000; // Global purple Store-Game bar (~10-15s)
       win.control('processbar').setGauge(Math.min(1, d.t / T));
       if (d.t >= T && !d.fired) { d.fired = true; const a = d.arg; win.close('done'); a?.go?.(); d.fired = false; }
     },
@@ -168,3 +169,5 @@ export async function pickChannel(game, ctx, data, index, env = {}) {
     return false;
   } finally { casting.delete(game); }
 }
+
+

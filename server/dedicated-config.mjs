@@ -22,5 +22,11 @@ export function configureDedicatedHost({engine,env=process.env,interfaces=os.net
   else delete env.DEKARON_ACCOUNT_SQLITE;
   if(env.DEKARON_DEDICATED_STORAGE==='sqlserver'&&!env.DEKARON_DEDICATED_SQL_DB)
     env.DEKARON_DEDICATED_SQL_DB=hosted?'DEKARON_DEDICATED_HOSTED':'DEKARON_DEDICATED';
+  // SQL-SERVER-SPEED (~100 concurrent): pool=2 wins cps on .\DEKARONBETA (LOAD-SQL-FINISH F1); row deltas shrink SSE for crowded AOI.
+  // Only fill when unset so an explicit override still wins. tickMs stays 100 (createWorldApi default) with AOI viewCells=100.
+  if(env.DEKARON_DEDICATED_STORAGE==='sqlserver'){
+    if(env.DEKARON_SQL_POOL==null||env.DEKARON_SQL_POOL==='')env.DEKARON_SQL_POOL='2';
+    if(env.DK_ROWS_DELTA==null||env.DK_ROWS_DELTA==='')env.DK_ROWS_DELTA='1';
+  }
   return {port,host,hosted,account};
 }

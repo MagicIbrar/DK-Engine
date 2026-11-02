@@ -16,6 +16,7 @@ import {SiegeRenewGates} from './siege-renew-gates.js';
 import {bindSiegeGateWindow} from './siege-renew-gate-window.js';
 import {siegeUpgradeConfirm} from './siege-upgrade-confirm.js';
 import {renewGateHP,renewGateRows} from '../../game/siege-renew-gate-rules.js';
+import {presentGlobalMessage} from '../events/mode-ui-rules.js';
 const npcId=n=>Number(n?.npcIndex??n?.def?.index??n?.index);
 const script='game2/siege/ui_siege_play_timewnd.txt',windowName='siegeRenewTime';
 // stringtable_siegeUI.txt cates 290 / 320 load in group NORMAL; every other Renew code is group SIEGE.
@@ -28,7 +29,7 @@ export function installSharedSiegeRenew(game,network,{bridge,dialog}){
  const gates=new SiegeRenewGates(game,id=>bridge.data?.brick?.(id));client.gates=gates.actors;
  let gateWindow=null,gateGeneration=0;
  let disposed=false,latest=null,catalog=null,world=null,castleId=null,generation=0,timerGeneration=0,timerKey=null,taxScope=null,guardWindow=null,guardGeneration=0;
- const nativeText=pair=>plainText(game.uiwin?.strings?.get?.(sref(pair))||(NORMAL_CATES.has(Number(pair[0]))?'':bridge.data?.txt?.('stringtable_siege.txt',...pair))||'');
+ const nativeRaw=pair=>game.uiwin?.strings?.get?.(sref(pair))||(NORMAL_CATES.has(Number(pair[0]))?'':bridge.data?.txt?.('stringtable_siege.txt',...pair))||'';const nativeText=pair=>plainText(nativeRaw(pair));
  const say=(text,kind='sys')=>{if(text)game.chat?.system?.(plainText(text),kind);};
  const nativeError=message=>{const match=/^siege:(\d+):(\d+)$/.exec(String(message||''));if(!match)return false;const text=nativeText([Number(match[1]),Number(match[2])]);if(text){say(text,'err');void game.uiwin?.msgbox?.(text,{kind:'ok'});}return !!text;};
  game.uiwin?.registerWindow?.(windowName,{script,hud:true,escClose:false,remember:false,band:'hud'});
@@ -149,7 +150,7 @@ export function installSharedSiegeRenew(game,network,{bridge,dialog}){
  const previousSnapshot=network._snapshot.bind(network);network._snapshot=snapshot=>{if(disposed||network.disposed||!snapshot?.self||!Number.isFinite(Number(snapshot.sequence))||Number(snapshot.sequence)<network.sequence){previousSnapshot(snapshot);return;}if(Object.hasOwn(snapshot,'siegeRenew'))latest=snapshot.siegeRenew;previousSnapshot(snapshot);sync();};
  const previousEvent=network._event.bind(network);network._event=event=>{
   if(event?.type==='guardremote'){void guardEffects.event(event).catch(error=>console.warn('[siege] guard effect failed',error));return;}
-  if(!disposed&&event?.type==='siegeNotice'&&event.mode==='siegeRenew'){if(event.recipients&&!event.recipients.includes(network.self?.id))return;const key=event.sequence+':'+event.code?.join(':');if(seen.has(key))return;seen.add(key);if(seen.size>256)seen.delete(seen.values().next().value);say(fillText(nativeText(event.code||[]),...(event.args||[])));return;}
+  if(!disposed&&event?.type==='siegeNotice'&&event.mode==='siegeRenew'){if(event.recipients&&!event.recipients.includes(network.self?.id))return;const key=event.sequence+':'+event.code?.join(':');if(seen.has(key))return;seen.add(key);if(seen.size>256)seen.delete(seen.values().next().value);const raw=fillText(nativeRaw(event.code||[]),...(event.args||[])),text=plainText(raw);say(text);void presentGlobalMessage(game,raw,text);return;}
   // Forced movement remains owned by the normal authoritative snapshot path.
   previousEvent(event);
  };

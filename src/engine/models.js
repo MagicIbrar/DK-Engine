@@ -28,6 +28,8 @@ import { decodeText } from '../formats/binreader.js';
 import { patchSpecular, reapplySpecular, glowCandidates, GLOW_COLOR, loadEnvironmentCube } from './matfx.js';
 import { parseWingAssetKey } from '../content/wings-catalog.js';
 import { ITEM_GLASS_CHOSEN } from '../config/engine-chosen-item-glass.js';
+import { gfxB } from '../config/gfx-b-switches.js'; // gfx-B2
+import { globalAlphaMode, isDdsFormat, parseDxtAlphaFilterTable, DXT_ALPHA_FILTER_TABLE } from './global-alpha-modes.js'; // LANE-54
 
 export const STATIC_BONE_NAME = '__dk_static_root';
 const IDENTITY = new THREE.Matrix4();
@@ -52,6 +54,18 @@ function frozenUpdateMatrixWorld() { /* frozen: matrices stay as they are */ }
  * Freeze (true) or unfreeze (false) the matrices of a subtree. compute: bring them up to date first (static geometry
  * that was never rendered); false keeps the ones of the last render (animation-LOD frames).
  */
+/**
+ * gfx-B2 round 3 (switch scrollAlphaBlend): a UV-scrolling map object (object table uvx/uvy/uvspeed) whose texture alpha is
+ * smooth is drawn alpha blended like the table's transparent flag path (depthWrite off, alphaTest 0.02) instead of the
+ * engine's alphaTest 0.5 cut-out. Evidence: Global g195 fountain jets (sbs-9). Light shafts keep A2's additive material.
+ */
+export function scrollAlphaBlend(mat) {
+  if (!gfxB('scrollAlphaBlend') || !mat || mat.transparent || mat.userData?.dkLightShaft || mat.userData?.alphaKind !== 'smooth') return mat;
+  mat.transparent = true; mat.depthWrite = false; mat.alphaTest = 0.02; mat.needsUpdate = true;
+  mat.userData = { ...mat.userData, dkScrollAlphaBlend: true };
+  return mat;
+}
+
 export function freezeMatrices(obj, on = true, compute = true) {
   if (!obj) return;
   const frozen = obj.updateMatrixWorld === frozenUpdateMatrixWorld;
@@ -658,8 +672,24 @@ export class ModelCache {
     this._skinned = new Map();    // skelKey|parts -> Promise<SkinnedModel|null>
     this._skinnedParts = new Map(); // shared rig/part geometry across different equipment combinations
     this._clips = new Map();      // animKey|skelKey|duration -> Promise<AnimationClip|null>
+    this._clipPublic = new WeakMap(); // status-bearing promise -> null-on-failure public promise
     this._materials = new Map();  // texture uuid|flags -> Material
     this._geoms = new Map();      // meshKey#index -> base BufferGeometry (static use)
+    this._dxtFilter = null;       // LANE-54: Set of texture keys from script/DXTAlphaFilterTable.txt (null until loaded)
+    this._dxtFilterP = null;
+  }
+
+  /** LANE-54: Global's DXTAlphaFilterTable.txt (DXT1 textures listed there get no alpha cut-out; global-alpha-modes.js). */
+  dxtAlphaFilter() {
+    if (this._dxtFilter) return Promise.resolve(this._dxtFilter);
+    if (!this._dxtFilterP) {
+      this._dxtFilterP = tryFetchBuffer(DXT_ALPHA_FILTER_TABLE).then(buf => {
+        if (!buf) warnOnce('dxtfilter', `missing ${DXT_ALPHA_FILTER_TABLE}: no DXT1 texture is exempt from the alpha cut-out`);
+        this._dxtFilter = parseDxtAlphaFilterTable(buf ? decodeText(new Uint8Array(buf), false) : '');
+        return this._dxtFilter;
+      }).catch(err => { this._dxtFilterP = null; if (err?.transient) throw err; warnOnce('dxtfilter', `bad ${DXT_ALPHA_FILTER_TABLE}: ${err && err.message || err}`); return null; });
+    }
+    return this._dxtFilterP;
   }
 
   // ---------------------------------------------------------------------------------------- raw assets
@@ -685,6 +715,10 @@ export class ModelCache {
 
   /** Parsed .anim (not cached: clips are cached instead; the file buffer itself is cached by assets.js). */
   async anim(key) {
+    try { return await this.animWithStatus(key); } catch { return null; }
+  }
+
+  async animWithStatus(key) {
     const k = normPath(key);
     try {
       const buf = await tryFetchBuffer(k);
@@ -692,6 +726,7 @@ export class ModelCache {
       await breathe();
       return await assetWork('anim', buf);
     } catch (err) {
+      if (err?.transient) throw err;
       warnOnce(k, `bad anim ${k}: ${err && err.message || err}`);
       return null;
     }
@@ -706,7 +741,7 @@ export class ModelCache {
       let p = this._tpacks.get(k);
       if (!p) {
         p = tryFetchBuffer(k).then(buf => (buf ? parseTpack(decodeText(new Uint8Array(buf), false)) : null))
-          .catch(() => null);
+          .catch(error => { if (error?.transient) { if (this._tpacks.get(k) === p) this._tpacks.delete(k); throw error; } return null; });
         this._tpacks.set(k, p);
       }
       const tp = await p;
@@ -785,8 +820,14 @@ export class ModelCache {
     const spec = !maxDiffuse && specularMap && (specKind === 'env' || specKind === 'item') ? specKind : null;
     // itemmesh.fx (ItemMeshRender / ItemMeshSpecular) has no ShadeLighting: item meshes skip shade.js's sun fall-off
     const itemMesh = specKind === 'item' && !maxDiffuse;
+    // LANE-54 globalAlphaModes: Global's per-texture draw mode (global-alpha-modes.js) when neither the table transparent path
+    // nor an explicit alphaTest applies. DDS: the header format; non-DDS: the D3DX load format (textures.js userData.d3dFormat,
+    // 32-bit FUN_0151e070). Images without a resolved D3DX format keep the previous handling.
+    const gFormat = isDdsFormat(ud.format) ? ud.format : (ud.d3dFormat || null);
+    const gMode = gfxB('globalAlphaModes') && texture && gFormat && alphaTest == null && !(transparent && kind === 'smooth')
+      ? globalAlphaMode({ format: gFormat, key: ud.key, alphaKind: kind }, this._dxtFilter) : null;
     const key = [texture ? texture.uuid : 'none', twoSide ? 1 : 0, transparent ? 1 : 0, alphaTest ?? 'a',
-      maxDiffuse ? 1 : 0, depthWrite ?? 'a', spec ? `${spec}:${specularMap.uuid}` : '-', glowMap ? glowMap.uuid : '-', fog ? 1 : 0, itemMesh ? 'i' : '', !maxDiffuse && objectNormalMap ? objectNormalMap.uuid : '-', objectShininess ?? '-'].join('|');
+      maxDiffuse ? 1 : 0, depthWrite ?? 'a', spec ? `${spec}:${specularMap.uuid}` : '-', glowMap ? glowMap.uuid : '-', fog ? 1 : 0, itemMesh ? 'i' : '', !maxDiffuse && objectNormalMap ? objectNormalMap.uuid : '-', objectShininess ?? '-', gMode ? `g${gMode.mode}` : '-'].join('|');
     let mat = this._materials.get(key);
     if (mat) return mat;
     const params = { map: texture || null, color: texture ? 0xffffff : 0x9a9a9a, side: twoSide ? THREE.DoubleSide : THREE.FrontSide, fog };
@@ -803,8 +844,22 @@ export class ModelCache {
       mat.alphaTest = alphaTest ?? 0.02;
     } else if (alphaTest != null) {
       mat.alphaTest = alphaTest;
+    } else if (gMode) {
+      // Global: cut-out = ALPHAREF 240 no blend; blend = ALPHAREF 1 SrcAlpha/InvSrcAlpha; '#' = ALPHAREF 1 SrcAlpha/One.
+      // Depth writes stay on (no ZWRITE change in the Bone::Normal / MeshImpl draw).
+      if (gMode.alphaTest > 0) mat.alphaTest = gMode.alphaTest;
+      if (gMode.mode === 'blend' || gMode.mode === 'additive') {
+        mat.transparent = true;
+        mat.depthWrite = true;
+        if (gMode.mode === 'additive') {
+          mat.blending = THREE.CustomBlending;
+          mat.blendEquation = THREE.AddEquation;
+          mat.blendSrc = THREE.SrcAlphaFactor;
+          mat.blendDst = THREE.OneFactor;
+        } else mat.blending = THREE.NormalBlending;
+      }
     } else if (kind !== 'none') {
-      mat.alphaTest = 0.5;
+      mat.alphaTest = 0.5;   // ENGINE-CHOSEN legacy path (switch globalAlphaModes off, or an image with no resolved D3DX format)
     }
     if (depthWrite != null) mat.depthWrite = depthWrite;
     // glass: the cash potions' bottle subset (texture/item/gen_pot_cas_bottle.dds, DXT1 without alpha) is drawn over
@@ -812,7 +867,8 @@ export class ModelCache {
     // colourless white bottles when the glass was opaque) - normal alpha blending at the ENGINE-CHOSEN glass opacity, no
     // depth write, after the opaque liquid. Not additive: the full-bright inventory icon light added the white glass to the
     // liquid and washed the red / blue potions out to white (src/config/engine-chosen-item-glass.js).
-    if (/^texture\/item\/[^/]*bottle[^/]*\.dds$/.test(ud.key || '')) {
+    // gfx-B2 itemGlassOff: the bottle texture is DXT1 with no transparent texel and no blend data, so by default it is drawn as the data says.
+    if (!gfxB('itemGlassOff') && /^texture\/item\/[^/]*bottle[^/]*\.dds$/.test(ud.key || '')) {
       mat.transparent = true;
       mat.blending = THREE.NormalBlending;
       mat.opacity = ITEM_GLASS_CHOSEN.OPACITY;
@@ -821,7 +877,7 @@ export class ModelCache {
     }
     mat.name = texture ? texture.name : 'untextured';
     mat.userData = { ...mat.userData, alphaKind: kind, maxDiffuse: !!maxDiffuse, twoSide: !!twoSide, transparent: !!transparent,
-      specular: spec, glow: !!glowMap, fog, objectShininess, ...(itemMesh ? { dkNoShade: true } : {}) };
+      specular: spec, glow: !!glowMap, fog, objectShininess, ...(gMode ? { globalAlphaMode: gMode.mode, globalAlphaClass: gMode.cls } : {}), ...(itemMesh ? { dkNoShade: true } : {}) };
     this._materials.set(key, mat);
     return mat;
   }
@@ -851,7 +907,13 @@ export class ModelCache {
     const ck = parseWingAssetKey(k) ? `${k}|wing|${o.fog}` : `${k}|${o.tpackKey}|${JSON.stringify(o.textures)}|${o.twoSide}|${o.transparent}|${o.maxDiffuse}|${o.alphaTest}|${o.depthWrite}|${o.fog}${o.effectSpecular ? '|fxspec' : ''}|b${o.objectBump}|h${o.objectShininess}`;
     let p = this._static.get(ck);
     if (!p) {
-      p = this._buildStatic(k, o).catch(err => { if (err?.transient && this._static.get(ck) === p) this._static.delete(ck); warnOnce(`s:${k}`, `static ${k}: ${err && err.stack || err}`); return null; });
+      p = this._buildStatic(k, o).catch(err => {
+        if (err?.transient) {
+          if (this._static.get(ck) === p) this._static.delete(ck);
+          throw err;
+        }
+        warnOnce(`s:${k}`, `static ${k}: ${err && err.stack || err}`); return null;
+      });
       this._static.set(ck, p);
     }
     return p;
@@ -866,9 +928,9 @@ export class ModelCache {
 
   async _buildStatic(k, o) {
     if (k.startsWith('engine/wings/')) {
-      if (!parseWingAssetKey(k)) return null;
-      const { buildAuthoredWing } = await import('./wing-models.js');
-      return buildAuthoredWing(k, o);
+      // Fabricated procedural wings retired (ANIM-FX-GLOBAL-REA 2026-10-27).
+      // Live wings load only from Global mesh/item/armor/wing/* via mounts.json.
+      return null;
     }
     if (/^custom\/glb\/[a-f0-9]{64}\.glb$/.test(k)) return this._buildImportedStatic(k, o);
     const [parsed, tpack] = await Promise.all([this.mesh(k), this._resolveTpack(k, o.tpackKey)]);
@@ -876,6 +938,7 @@ export class ModelCache {
     const explicit = normalizeTextures(o.textures);
     const entries = parsed.meshes.filter(m => m.vertexCount > 0 && m.indices.length >= 3);
     const texs = await Promise.all(entries.map(m => this._textureFor(m.material, { tpack, explicit, meshKey: k })));
+    if (gfxB('globalAlphaModes')) await this.dxtAlphaFilter();   // LANE-54: material() reads the DXT1 filter list
     // item meshes (weapons, drops, inventory models) draw with itemmesh.fx: specular maps; map objects (geometry.fx)
     // have no specular technique. Glow maps for both.
     // effectSpecular (skill effect meshes, fx-units.js MeshUnit): unskinned effect meshes draw like boneanimation.fx Bone0
@@ -959,7 +1022,13 @@ export class ModelCache {
     const ck = `${sk}|${JSON.stringify(list)}`;
     let p = this._skinned.get(ck);
     if (!p) {
-      p = this._buildSkinned(sk, list).catch(err => { if (err?.transient && this._skinned.get(ck) === p) this._skinned.delete(ck); warnOnce(`k:${ck}`, `skinned ${sk}: ${err && err.stack || err}`); return null; });
+      p = this._buildSkinned(sk, list).catch(err => {
+        if (err?.transient) {
+          if (this._skinned.get(ck) === p) this._skinned.delete(ck);
+          throw err;
+        }
+        warnOnce(`k:${ck}`, `skinned ${sk}: ${err && err.stack || err}`); return null;
+      });
       this._skinned.set(ck, p);
     }
     return p;
@@ -1034,6 +1103,7 @@ export class ModelCache {
     const explicit = normalizeTextures(part.textures);
     const entries = parsed.meshes.filter(m => m.vertexCount > 0 && m.indices.length >= 3);
     const texs = await Promise.all(entries.map(m => this._textureFor(m.material, { tpack, explicit, meshKey: part.meshKey })));
+    if (gfxB('globalAlphaModes')) await this.dxtAlphaFilter();   // LANE-54
     // skinned bodies draw with boneanimation.fx: a specular map selects BoneAnimEnv (env reflection, matfx.js)
     const extra = await Promise.all(entries.map((m, i) => this._extraMaps(m.material, { tpack, textures: part.textures, meshKey: part.meshKey, diffuse: texs[i], specular: part.specular !== false })));
     await breathe();
@@ -1086,6 +1156,13 @@ export class ModelCache {
    *   boundTracks, skippedTracks }
    */
   loadClip(animKey, model, { duration } = {}) {
+    const pending = this.loadClipWithStatus(animKey, model, { duration });
+    let safe = this._clipPublic.get(pending);
+    if (!safe) { safe = pending.catch(() => null); this._clipPublic.set(pending, safe); }
+    return safe;
+  }
+
+  loadClipWithStatus(animKey, model, { duration } = {}) {
     if (!animKey || !model) return Promise.resolve(null);
     const k = normPath(animKey);
     let dur = Number(duration);
@@ -1096,14 +1173,20 @@ export class ModelCache {
     const ck = `${k}|${model.skelKey}|${dur ?? 'auto'}${model instanceof SkinnedModel ? '' : model.supportsShear === true ? '|bare-shear' : '|bare'}`;
     let p = this._clips.get(ck);
     if (!p) {
-      p = this._buildClip(k, model, dur).catch(err => { warnOnce(`c:${ck}`, `clip ${k}: ${err && err.stack || err}`); return null; });
+      p = this._buildClip(k, model, dur).catch(err => {
+        if (err?.transient) {
+          if (this._clips.get(ck) === p) this._clips.delete(ck);
+          throw err;
+        }
+        warnOnce(`c:${ck}`, `clip ${k}: ${err && err.stack || err}`); return null;
+      });
       this._clips.set(ck, p);
     }
     return p;
   }
 
   async _buildClip(k, model, dur) {
-    const anim = await this.anim(k);
+    const anim = await this.animWithStatus(k);
     if (!anim) return null;
     await breathe();
     if (dur == null) dur = anim.estDurationSec || (anim.frameCount ? anim.frameCount / AUTHORING_FPS : 1);

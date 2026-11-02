@@ -14,7 +14,8 @@
 //
 // Verified against the eight maps: the eye lies 7-8 m in front of `position`, `horizon` points it at the character,
 // and `direction` turns the character towards the camera (e.g. class 5: eye at x 92.1, character at x 98.0,
-// direction -81.8 deg -> faces -X). The file has one typo key ("vertical7"), read as "vertical".
+// direction -81.8 deg -> faces -X). The file has one typo key ("vertical7", class 10). Global's parser (FUN_0084c180)
+// matches keys by exact length, so that line is IGNORED and class 10 keeps the default vertical 0 (FUN_00848980).
 //
 // script/producer/char_previewinfo.txt: the close-up of the create screen's "Preview" tab, per class:
 //   target_x         camera distance from the character (negative = in front; 2.65 .. 4.8, the 1540 mount 7.0)
@@ -33,7 +34,7 @@ export function parseSelectInfo(text) {
   for (const raw of String(text || '').split(/\r?\n/)) {
     const t = raw.trim().split(/\s+/);
     if (t.length < 3) continue;
-    const key = t[0].toLowerCase().replace(/\d+$/, '');
+    const key = t[0].toLowerCase(); // exact keys like Global FUN_0084c180 (no typo folding: "vertical7" is ignored)
     const cls = Number(t[1]);
     if (!Number.isFinite(cls)) continue;
     const v = t.slice(2).map(Number);
@@ -58,6 +59,8 @@ export function parseSelectInfo(text) {
     }
     out.set(cls, e);
   }
+  // Global entry defaults (FUN_00848980): a select entry whose vertical line is missing/ignored keeps pitch 0.
+  for (const e of out.values()) if (e.eye && e.vertical === undefined) e.vertical = 0;
   return out;
 }
 
@@ -151,56 +154,87 @@ export function rowCamHeight(row, fallback = 1.3) {
   return h > 0 && h < 5 ? h : fallback;
 }
 
+/** Uniform character-select framing (2026-10-30): where the staged body sits in every card, as NDC rows of the band. */
+export const CARD_FEET_ROOM = 0.06;   // feet this far above the band's lower edge (NDC)
+export const CARD_HEAD_ROOM = 0.10;   // top of the body this far below the band's upper edge (helmet plumes / raised weapons use it)
+/** How far the camera may move back from Global's authored eye distance before the lens widens instead (walls of the stage). */
+export const CARD_MAX_BACK = 1.5;
+const FOV_MIN = 24, FOV_MAX = 62;
+
+/** Body height the cards are normalised on: the skinned body (bodyTop), not the weapons / wings that ride above it. */
+export function cardBodyHeight(body) {
+  const b = Number(body?.bottom);
+  const top = Number.isFinite(Number(body?.bodyTop)) ? Number(body.bodyTop) : Number(body?.top);
+  const h = top - b;
+  return Number.isFinite(h) && h > 0.5 && h < 8 ? h : 2.4;
+}
+
 /**
- * The select / create camera, framed like the original client:
- *  - char_selectinfo `cameratarget` is the camera's ANCHOR, not its eye: for every class it lies on the stage floor
- *    (0.06 .. 0.56 m above the surface the character stands on; 0.12 m below it for the Magician map), and the client
- *    raises it by the map's maplist Camera_Height as it does in the world (camera.js) -> a chest-high eye.
- *  - it looks from there at the character (horizon: the flip of classes 1 / 8 is implied) with the file's pitch
- *    (`vertical`), turned just enough that the whole body - measured from the posed model, helmet and weapon
- *    included - stands inside `band` (the picture between the screen's title / name plate and its bottom controls,
- *    CREATE_BAND / SELECT_BAND; by default FRAME_FILL of the picture between the letterbox bars) with BAND_MARGIN of
- *    head and foot room, centred in it horizontally.
- *  - a body too tall for the file's distance (the 1.2x Bagi is 3.3 m tall at 5.9 m) backs the eye off along the same
- *    line until it fits (at most `maxBack` m); beyond that the feet stay on the band's lower edge.
- * The vertical FOV is fixed and the windows scale with the height, so the framing is the same at 16:9 and 4:3.
- * @param {object} si     selectinfo entry
- * @param {{x:number, z:number, bottom:number, top:number}} body   FILE frame bounds of the staged model
- * @param {number} fov    vertical FOV (degrees)
- * @param {number} camHeight  maplist Camera_Height of the scene map
+ * The select / create camera - one framing for every class and map (owner 2026-10-30: "they should all be at the same
+ * center and back at the same spot"):
+ *  - Global's scene per class is kept: the class-select map (char_selectinfo mapindex), where the character stands
+ *    (position), its facing (direction) and the side the camera looks from (cameratarget -> position azimuth, with the
+ *    Hunter / Shooter mirror of classSceneInfo).
+ *  - Global's raw numbers stage every class differently (eye 0.06 .. 0.56 m above the stand + Camera_Height 1.0 / 1.3,
+ *    distance 5.86 m on the Bagi map vs 6.99 .. 7.78 m elsewhere, scale 1.1 .. 1.4, pitch -0.05 .. +0.05), which is what
+ *    put some characters closer / farther / higher / lower. The camera is now placed from the measured body instead:
+ *    a level look (pitch 0) through the character's stand point, the eye at a fixed share of the body height above the
+ *    feet, and the distance (or, past CARD_MAX_BACK, the lens) chosen so the feet and the top of the body land on the
+ *    same NDC rows in every card: feet at band[0] + CARD_FEET_ROOM, body top at band[1] - CARD_HEAD_ROOM.
+ *  - The body height is the skinned body (bodyTop; helmet included, weapons / wings excluded), so a raised weapon or a
+ *    wing never shrinks one card's character. At the default it is Global's look: a 2.2 m body is seen from ~7 m
+ *    with the map's own 37.24 deg lens.
+ * @param {object} si     selectinfo entry (after classSceneInfo)
+ * @param {{x:number, z:number, bottom:number, top:number, bodyTop?:number}} body   FILE frame bounds of the staged model
+ * @param {number} fov    the map's vertical FOV (degrees)
+ * @param {number} camHeight  maplist Camera_Height (kept for the call sites; no longer moves the card camera)
+ * @param {{band?:number[]}} opts  SELECT_BAND (default) or CREATE_BAND
  * @returns {{eye, target, fov}}
  */
-export function frameView(si, body, fov = 37.24, camHeight = 1.3, {
-  band = null, margin = BAND_MARGIN, maxBack = 6,
-} = {}) {
-  const tanHalf = Math.tan((fov * Math.PI) / 360);
-  const lim = FRAME_FILL * (1 - 2 * LETTERBOX);
-  const [b0, b1] = Array.isArray(band) ? band : [-lim, lim];
-  const lo = Math.min(b0, b1) + margin, hi = Math.max(lo + 0.2, Math.max(b0, b1) - margin);
-  const aLo = Math.atan(lo * tanHalf), aHi = Math.atan(hi * tanHalf);   // band edges as angles off the optical axis
-  let ux = body.x - si.eye.x, uz = body.z - si.eye.z;
-  let d0 = Math.hypot(ux, uz);
-  if (!(d0 > 0.3)) {                                           // degenerate entry: the file's own look direction
+export function frameView(si, body, fov = 37.24, camHeight = 1.3, { band = null } = {}) {
+  void camHeight;
+  const [lo, hi] = Array.isArray(band) && band.length === 2 ? band : SELECT_BAND;
+  const yF = lo + CARD_FEET_ROOM, yH = hi - CARD_HEAD_ROOM, span = yH - yF;
+  const bx = Number.isFinite(Number(body?.x)) ? Number(body.x) : si.x;
+  const bz = Number.isFinite(Number(body?.z)) ? Number(body.z) : si.z;
+  const feet = Number(body?.bottom) || 0;
+  const H = cardBodyHeight(body);
+  let ux = bx - si.eye.x, uz = bz - si.eye.z;
+  let authored = Math.hypot(ux, uz);
+  if (!(authored > 0.3)) {                                     // degenerate entry: the file's own look direction
     const v = selectView(si, fov);
     ux = v.target.x - v.eye.x; uz = v.target.z - v.eye.z;
     const l = Math.hypot(ux, uz) || 1;
-    ux /= l; uz /= l; d0 = 7;
-  } else { ux /= d0; uz /= d0; }
-  const bottom = Number(body.bottom), top = Math.max(bottom + 0.3, Number(body.top));
-  const H = top - bottom;
-  const need = H / ((hi - lo) * tanHalf);                      // distance at which the body spans the band
-  const d = Math.min(d0 + maxBack, Math.max(d0, need * 1.03));
-  const eye = { x: body.x - ux * d, y: si.eye.y + camHeight, z: body.z - uz * d };
-  const aB = Math.atan2(bottom - eye.y, d), aT = Math.atan2(top - eye.y, d);
-  // the pitch p must satisfy aT - p <= aHi and aB - p >= aLo: keep the file's pitch when it does, else the nearest.
-  // A body still too tall (backing off capped) keeps its feet on the band's lower edge and lets the top (a weapon
-  // raised during the STAND motion) run into the title band - never past FRAME_FILL of the letterbox picture.
-  const pMin = aT - aHi, pMax = aB - aLo;
-  let p = Math.max(-0.2, Math.min(0.2, Number(si.vertical) || 0));
-  if (pMin <= pMax) p = Math.max(pMin, Math.min(pMax, p));
-  else p = Math.max(pMax, aT - Math.atan(lim * tanHalf));
-  const c = Math.cos(p);
-  return { eye, target: { x: eye.x + ux * c * 10, y: eye.y + Math.sin(p) * 10, z: eye.z + uz * c * 10 }, fov };
+    ux /= l; uz /= l; authored = 7;
+  } else { ux /= authored; uz /= authored; }
+  let f = Number(fov) > 1 && Number(fov) < 170 ? Number(fov) : 37.24;
+  let t = Math.tan((f * Math.PI) / 360);
+  let d = H / (t * span);                                      // the map's own lens: back off with the body height
+  const dMax = authored + CARD_MAX_BACK, dMin = Math.max(2.5, authored - 4);
+  if (d > dMax || d < dMin) {                                  // stay inside the stage: keep the distance, widen / narrow the lens
+    d = Math.min(dMax, Math.max(dMin, d));
+    t = H / (d * span);
+    f = Math.min(FOV_MAX, Math.max(FOV_MIN, (Math.atan(t) * 360) / Math.PI));
+    t = Math.tan((f * Math.PI) / 360);
+    d = H / (t * span);
+  }
+  const eyeH = -yF * d * t;                                    // level look: feet at NDC yF, body top at NDC yH
+  const eye = { x: bx - ux * d, y: feet + eyeH, z: bz - uz * d };
+  return { eye, target: { x: eye.x + ux * 10, y: eye.y, z: eye.z + uz * 10 }, fov: f };
+}
+
+/** Where a FILE point lands on the card (NDC y), for the framing tests: level or pitched look from `view`. */
+export function cardNdcY(view, p) {
+  const fx = view.target.x - view.eye.x, fy = view.target.y - view.eye.y, fz = view.target.z - view.eye.z;
+  const fl = Math.hypot(fx, fy, fz) || 1;
+  const f = { x: fx / fl, y: fy / fl, z: fz / fl };
+  // camera up = world up made orthogonal to the look
+  let ux = -f.x * f.y, uy = 1 - f.y * f.y, uz = -f.z * f.y;
+  const ul = Math.hypot(ux, uy, uz) || 1; ux /= ul; uy /= ul; uz /= ul;
+  const rx = p.x - view.eye.x, ry = p.y - view.eye.y, rz = p.z - view.eye.z;
+  const depth = rx * f.x + ry * f.y + rz * f.z;
+  const up = rx * ux + ry * uy + rz * uz;
+  return up / (depth * Math.tan((view.fov * Math.PI) / 360));
 }
 
 /** The character's rotation.y in the class-select scene (selectYaw(direction), turned to the camera if needed). */

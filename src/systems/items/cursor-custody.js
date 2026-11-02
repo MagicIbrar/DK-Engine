@@ -1,8 +1,9 @@
-// Durable owned item custody. No hidden bag cells and no client-authored item values.
+﻿// Durable owned item custody. No hidden bag cells and no client-authored item values.
 // Callers transact a cloned profile and persist before publishing the result.
 import {Container,canStack} from './model.js';
 import {Equipment,emptyEquip,S} from './equip.js';
 import {beltEligible} from './belt.js';
+import {canDiscardDef,bindsOnPickup,isBoundInst} from './flags.js';
 
 const fail=message=>{throw Object.assign(Error(message),{status:400});};
 export const CURSOR_VERSION=1;
@@ -89,7 +90,8 @@ export function applyCursorOperation(profile,db,input,{stats=null,access=()=>{},
  }else if(input.operation==='discard'){
   if(!c.item||input.uid!==c.item.uid)fail('That item is not held.');
   if(c.origin.container==='cash')fail('Receive this cash item into your inventory before discarding it.');
-  const def=db.def(c.item.itemIndex);if(def?.type===0&&def.code===4)fail('This item cannot be discarded.');
+  const def=db.def(c.item.itemIndex);if(!canDiscardDef(def))fail('[Message] Quest or Event items cannot be discarded.');
+  if(isBoundInst(c.item))fail('[Message] Binding items cannot be discarded.'); // Global drop result 4 (01315df0) -> 40:81
   access('cursor','discard',c.item,c.origin);c.item=null;c.origin=null;promote(c);
  }else{
   if(!c.item||input.uid!==c.item.uid)fail('That item is not held.');
@@ -114,7 +116,7 @@ export function applyCursorOperation(profile,db,input,{stats=null,access=()=>{},
    if(input.operation==='cancel'&&old)fail('The original slot is occupied. Place the held item elsewhere.');
    if(input.operation==='place'&&(input.targetUid??null)!==(old?.uid??null))fail('The equipment destination changed.');
    const displaced=old?detachEquipped(E,old.uid):[];
-   if(db.def(held.itemIndex).belong===1)held.bound=true;
+   if(bindsOnPickup(db.def(held.itemIndex)))held.bound=true;
    const result=E.place(held,at.slot,at.preset);for(const item of result.displaced)displaced.push({item:strip(item),origin:{container:'equip',slot:at.slot===S.weapon2?S.offhand2:S.offhand,preset:at.preset}});
    c.item=null;c.origin=null;
    if(input.operation==='cancel'&&Array.isArray(oldOrigin.refs))for(const ref of oldOrigin.refs){if(E.preset(ref.preset)[ref.slot]&&E.preset(ref.preset)[ref.slot]!==held.uid)continue;if(E.check(held,ref.slot,stats,ref.preset).ok)E.preset(ref.preset)[ref.slot]=held.uid;}
@@ -137,3 +139,4 @@ export function applyCursorOperation(profile,db,input,{stats=null,access=()=>{},
  }
  c.revision++;assertCursorOwnership(profile,db);return c;
 }
+

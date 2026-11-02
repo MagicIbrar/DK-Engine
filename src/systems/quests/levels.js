@@ -1,6 +1,8 @@
 // The original guide recommendation and server acceptance window are distinct.
 // Starter rows reuse listLevel=1, while questnotice.csv advances 1,5,10,12,20.
 // Present that authored recommendation without changing when a quest can be accepted.
+// QUEST_LEVEL_CEILING = share/formula.ini wMaxLevel / classes.json maxLevel when a quest omits an upper bound.
+export const QUEST_LEVEL_CEILING = 250;
 const positive = value => Number.isFinite(Number(value)) && Number(value) > 0 ? Math.floor(Number(value)) : null;
 const recommendations = new WeakMap();
 
@@ -18,7 +20,7 @@ function guideLevel(q, catalog) {
 export function questLevelRange(q) {
   return {
     min: Math.max(positive(q?.level?.[0]) || 1, positive(q?.require?.level) || 1),
-    max: positive(q?.level?.[1]) || 250,
+    max: positive(q?.level?.[1]) || QUEST_LEVEL_CEILING,
   };
 }
 
@@ -31,6 +33,6 @@ export function questLevelTag(q, catalog) { return `[Lv.${questDisplayLevel(q, c
 
 export function questLevelRequirement(q, catalog) {
   const { min, max } = questLevelRange(q);
-  const required = `Required level: ${max < 250 ? `${min}–${max}` : `${min}+`}`;
+  const required = `Required level: ${max < QUEST_LEVEL_CEILING ? `${min}–${max}` : `${min}+`}`;
   return catalog ? `Recommended level: ${questDisplayLevel(q, catalog)}\n${required}` : required;
 }

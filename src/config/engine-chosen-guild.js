@@ -3,26 +3,32 @@ import {SERVER_TIME_OFFSET_MINUTES} from '../game/server-time.js';
 // client data (data/unpacked/data, re-checked against an untouched Global client install) does not
 // define them; they are server rules of the original game. Each one is a reasonable engine value, kept here in ONE place so it can be
 // replaced the moment a real value is known. Everything that IS in the data stays in the *-rules.js modules with its source.
+// LANE-61: values since re-sourced are labelled GLOBAL / DECOMPILE / OLDER SERVER REFERENCE / ONLINE (with the URL), or REMOVED.
 
 /** Alliance (ALLIANCE gate: server/world/alliance.mjs, src/systems/extras/alliance.js). */
 export const ALLIANCE_CHOSEN = Object.freeze({
-  /** ENGINE-CHOSEN (not in Global data): lifetime of an alliance formation / admission request (ui_alliancerequest.txt and
-   *  ui_allianceinvitewnd.txt draw a progress bar but the data holds no duration). Same 60 s as the engine's guild invitations. */
-  INVITE_TIMEOUT_MS: 60_000,
-  /** ENGINE-CHOSEN (not in Global data): the requester names the alliance (ui_alliancename.txt) after the target accepted; the
-   *  naming step expires after this long (140:61 "The Alliance formation has been cancelled."). */
-  NAMING_TIMEOUT_MS: 120_000,
-  /** ENGINE-CHOSEN (not in Global data): "Alliance Executives" (140:81, 140:112) = the Guild Masters of the member guilds. */
+  /** REMOVED (LANE-61): no request lifetime exists in Global (no timeout string in stringtable_alliance 140; the request /
+   *  invite windows' progress bar has no duration), the decompiles or the older server reference. A request now ends only the
+   *  Global ways (140:120-129): the requester cancels, goes offline or stops being the guild master, or a guild is gone.
+   *  null = no timeout (an old host may still send a number; the client then animates the bar). */
+  INVITE_TIMEOUT_MS: null,
+  /** REMOVED (LANE-61): no naming-step lifetime in any source; the naming step ends as above or by 140:61 (requester cancels). */
+  NAMING_TIMEOUT_MS: null,
+  /** OLDER SERVER REFERENCE + GLOBAL (LANE-61): "Alliance Executives" (Global 140:81 / 140:112) = the Guild Masters of the member
+   *  guilds: server-ref SP_ALLIANCE_ALLIANCEMASTER_UPDATE only accepts a member guild's master (peerage_code 0). */
   EXECUTIVES: 'member guild masters',
-  /** ENGINE-CHOSEN (not in Global data): only the Alliance Commander edits the notice (140:85 names a permission, no table). */
+  /** GLOBAL + OLDER SERVER REFERENCE (LANE-61): only the Alliance Commander edits the notice: Global 140 "You do not have permission
+   *  to change the notice" + server-ref ALLIANCE_INFO holds one leader and SP_ALLIANCE_UPDATE writes the notice for it. */
   NOTICE_EDITOR: 'commander',
-  /** ENGINE-CHOSEN (not in Global data): only the Alliance Commander changes / deletes the alliance mark (140:71 / 140:74). */
+  /** GLOBAL + OLDER SERVER REFERENCE (LANE-61): only the Alliance Commander changes / deletes the alliance mark and effect (Global
+   *  140:71 / 140:74 permission refusals; server-ref SP_ALLIANCE_UPDATE mark1/mark2/effect on the single-leader ALLIANCE_INFO row). */
   MARK_EDITOR: 'commander',
   /** ENGINE-CHOSEN (not in Global data): the original opens the request from the target guild master's player menu (not in the
    *  scripts); the engine uses chat commands next to the existing /ginvite: /ainvite <character>, /aleave. */
   COMMANDS: Object.freeze({ invite: '/ainvite', leave: '/aleave', window: '/awin' }),   // '/alliance' and '/a' are chat channel words
-  /** ENGINE-CHOSEN (not in Global data): when the commander's guild leaves (after delegating) nothing else changes; when an
-   *  alliance falls below 2 guilds (helper 1746) it is disbanded and its mark is removed with it (no refund of the 2,000,000 DIL). */
+  /** OLDER SERVER REFERENCE (LANE-61): an alliance that falls below 2 guilds (helper 1746) is disbanded with its mark and nothing is
+   *  refunded: server-ref SP_ALLIANCE_DELETE only archives the row to ALLIANCE_INFO_SECEDE (no DIL return). ONLINE (dekarons.com
+   *  guild wiki, labelled): founding costs 2,000,000 DIL, guild level 2+, at most 4 guilds (alliance.csv MONEY / MAX already). */
   DISBAND_REFUND: 0,
   /** ENGINE-CHOSEN (not in Global data): nameplate line for the alliance: the alliance mark (24 px guildbg_s/guildicon_s cells, as the
    *  guild mark) + the alliance name, above the guild line, shown while Options > View > Alliance name is on. */
@@ -63,8 +69,9 @@ export function engineFrontierWeek(now, M = FRONTIER_CHOSEN.MAINTENANCE) {
 
 /** Guild skills (server/world/guild-extras.mjs, src/systems/extras/guildextras.js). */
 export const GUILD_SKILL_CHOSEN = Object.freeze({
-  /** ENGINE-CHOSEN (not in Global data): who may press Enable Skill (130:418 names an authority but no rank table): the Guild Master. */
-  ENABLER: 'guild master',
+  /** GLOBAL (LANE-61): who may press Enable Skill = ranks with the ui_gradewnd box 12 'Enable Skill' (GradeManageWnd bit 0x100); refusal 130:418.
+   *  Default grades (older server reference GUILD_PEERAGE template): only the master. */
+  ENABLER: 'grade permission enableSkill (0x100)',
   /** ENGINE-CHOSEN (not in Global data): replacing the running guild skill (130:373) refunds nothing of the old skill's cost. */
   REPLACE_REFUND: 0,
   /** ENGINE-CHOSEN (not in Global data): the skill's status (Status_ID) runs on every guild member, online now or on their next
@@ -74,43 +81,68 @@ export const GUILD_SKILL_CHOSEN = Object.freeze({
   // skill window has lbl_dil_discount (src/systems/extras/guildextras-rules.js SKILL_DIL_DISCOUNT).
 });
 
+/** Online source used below (tier 4, labelled ONLINE): the official DEKARON JP operator notice of 2025-07-04 (Guild War
+ *  implementation), https://dekaron-hangame.brabragames.jp/news/notice.html?mode=read&no=1168 . */
+export const WAR_SOURCE_URL = 'https://dekaron-hangame.brabragames.jp/news/notice.html?mode=read&no=1168';
+
 /** Guild war declaration / acceptance. Durations 3 / 7 / 15 / 30 days ARE in the data (135:100..103). */
 export const GUILD_WAR_CHOSEN = Object.freeze({
-  /** ENGINE-CHOSEN (not in Global data): 135:25 shows "Required DIL" and "Required Guild Points" without a table: per war day,
-   *  paid at declaration from the guild's DIL (the guild treasury of the DIL Donation) and the guild's Guild Points. */
-  COST_PER_DAY: Object.freeze({ dil: 1_000_000, guildPoints: 1 }),
-  /** ENGINE-CHOSEN (not in Global data): open (pending + active) declarations a guild may have made (135:9). */
+  /** ONLINE (LANE-61, WAR_SOURCE_URL "期間別ギルド戦争申請時に必要財貨"): the cost of a declaration by duration, taken at declaration
+   *  from the guild's DIL (the DIL Donation treasury) and the guild's Guild Points (135:25 "Required DIL" / "Required Guild
+   *  Points"; 135:10 / 135:11 when short). Replaces the former engine-chosen 1,000,000 DIL + 1 GP per day. */
+  COST_BY_DAYS: Object.freeze({
+    3: Object.freeze({ dil: 100_000_000, guildPoints: 300 }),
+    7: Object.freeze({ dil: 217_000_000, guildPoints: 700 }),
+    15: Object.freeze({ dil: 425_000_000, guildPoints: 1_500 }),
+    30: Object.freeze({ dil: 700_000_000, guildPoints: 3_000 }),
+  }),
+  /** ONLINE (LANE-61, WAR_SOURCE_URL 4-6): a guild may declare on at most 3 guilds (alliances) at once (pending + active; 135:9). */
   MAX_DECLARATIONS: 3,
-  /** ENGINE-CHOSEN (not in Global data): open wars a target guild may be in (135:37). */
+  /** ONLINE (LANE-61, WAR_SOURCE_URL 4-6 "no further declaring / accepting" at the limit): open wars a target guild may be in (135:37). */
   MAX_TARGET_WARS: 3,
-  /** ENGINE-CHOSEN (not in Global data): who declares (135:8) / accepts or surrenders (135:38): the Guild Master. */
-  AUTHORITY: 'guild master',
-  /** ENGINE-CHOSEN (not in Global data): an unanswered declaration lapses after 24 h and counts as rejected (a loss, 135:26). */
-  PENDING_TIMEOUT_MS: 86_400_000,
-  /** ENGINE-CHOSEN (not in Global data): "current area" of 135:6 / 135:39: no declaration from inside an instance (dungeon,
+  /** GLOBAL (LANE-61): who declares (135:8) / accepts or surrenders (135:38) = ranks with ui_gradewnd box 9 'Declare War' (0x200) /
+   *  box 11 'Accept War' (0x400). Default grades: only the master. Surrender uses the Accept War right: DECOMPILE
+   *  AcceptanceOfWarWnd (FUN_00d5a370) sends accept 1 / decline 2 / surrender 3 on one packet (0x58 / 0x48000005) from one
+   *  window, and FUN_014b93c0 answers 135:38; ONLINE (WAR_SOURCE_URL 1-2): surrender is chosen by clicking the [In progress] war. */
+  AUTHORITY: 'grade permissions declareWar (0x200) / acceptWar (0x400, also surrender)',
+  /** ONLINE (LANE-61, WAR_SOURCE_URL 1-①): the target answers within 3 days; with no answer the war is AUTOMATICALLY ACCEPTED and
+   *  starts (it runs its full duration from the end of the 3 days). Replaces the former engine-chosen 24 h lapse-as-loss. */
+  PENDING_TIMEOUT_MS: 259_200_000,
+  /** ONLINE (LANE-61, WAR_SOURCE_URL 1-①): what an unanswered declaration becomes when PENDING_TIMEOUT_MS passes. */
+  PENDING_RESOLVE: 'accept',
+  /** JUDGMENT (lane 51 g; no source defines the area): "current area" of 135:6 / 135:39 read as the map: no declaration from inside an instance (dungeon,
    *  DK Square, siege); the target must be a character on the declarer's map. */
   AREA_RULE: 'not inside an instance; target on the same map',
-  /** ENGINE-CHOSEN (not in Global data): the original's war fighting rules are server code. In the engine, members of two
+  /** ONLINE (lane 51 g, official JP notice dekaron-hangame.jp no=1168): during a war the two guilds may fight each other without
+   *  limit in the field (excluded regions below), party / allies cannot be attacked, war kills raise no Niete, and content such as
+   *  DK Square / Dead Front keeps its own rules. JUDGMENT (damage): the PvP pipeline of pvp-rules.js. In the engine, members of two
    *  guilds at an ACTIVE war (status 135:111) are hostile to each other (server/world/guild-war-pvp.mjs registerPvpMode): basic
    *  attacks and skills hit them with the PvP damage of src/game/pvp-rules.js (pvpDamage, shield first), a down is an ordinary
    *  death (profile.deaths, the normal revive), and the kill counts once for the killer's guild on the war record. */
   COMBAT: 'active wars are hostile on PvP-allowed open maps; pvp-rules.js damage; kills recorded on the war',
-  /** ENGINE-CHOSEN (not in Global data): where war members may fight: maplist IsPvP 1 and PVP_PeaceZone 0, never inside an
-   *  instance (dungeon, DK Square, event run). Towns (IsPvP 0, e.g. Braiken 0, Loa 7, Ardeca 150) stay safe. */
+  /** ONLINE (no=1168: content keeps its own rules -> no instances) + JUDGMENT (lane 51 g: "field" read as the Global maplist PvP
+   *  flags, so a map the data marks non-PvP stays non-PvP): where war members may fight: maplist IsPvP 1 and PVP_PeaceZone 0, never inside an
+   *  instance (dungeon, DK Square, event run). Towns with PVP_PeaceZone 1 (Braiken 0, Loa 7, Ardeca 150) stay safe via that flag. */
   COMBAT_MAP: Object.freeze({ isPvP: 1, pvpPeaceZone: 0, instances: false }),
-  /** ENGINE-CHOSEN (not in Global data): a war kill = the character who landed the last PvP hit (pvpLastHit) belongs to the
+  /** ONLINE (LANE-61 / cleanup, WAR_SOURCE_URL excluded-region table): no war combat in Braiken Castle (0), Loa Castle (7),
+   *  Morse Yawalai / Mors (50), The Qualines / Quarin Islands (51), Ardeca (150). Braiken/Loa/Ardeca are also PVP_PeaceZone 1;
+   *  Morse and Qualines are IsPvP 1 / Peace 0 so they need this explicit list. Names show red there but attacks are refused. */
+  SAFE_MAP_INDEXES: Object.freeze([0, 7, 50, 51, 150]),
+  /** ONLINE (WAR_SOURCE_URL) + GLOBAL stringtable_color red1=FF3300: enemy guild (and auto-joined alliance) character names
+   *  draw in red while the war is active, including on SAFE_MAP_INDEXES where combat is refused. */
+  ENEMY_NAME_COLOR: '#ff3300',
+  /** JUDGMENT (lane 51 g; reasoning: the same last-hit owner the duel and field PK use; no source names the war killer): a war kill = the character who landed the last PvP hit (pvpLastHit) belongs to the
    *  other guild of an active war with the downed character's guild; one count per death, stored as war.kills[guildId]. */
   KILL_CREDIT: 'last PvP hitter, once per death',
-  /** ENGINE-CHOSEN (not in Global data): kills wait in host memory and are folded into the durable war record by the next guild
+  /** JUDGMENT (lane 51 g; storage cadence only, not a gameplay value): kills wait in host memory and are folded into the durable war record by the next guild
    *  write or the host war tick (at most KILL_FLUSH_MS later). */
   KILL_FLUSH_MS: 2_000,
-  /** ENGINE-CHOSEN (not in Global data): there is no original kill notice string; the war board / War Status show "kills : kills"
-   *  and both guilds get this system line. */
-  KILL_NOTICE: '[Guild War] %s defeated %s.',
-  /** ENGINE-CHOSEN (not in Global data): besides the player menu (pcpop 240:13) a chat command declares on a named character. */
-  COMMAND: '/gwar',
-  /** ENGINE-CHOSEN (not in Global data): closed wars kept per guild for War Status (newest first). */
-  HISTORY_LIMIT: 50,
+  /** GLOBAL + DECOMPILE (LANE-61): the guild kill notice 130:476 "In %s %s was killed by %s." (map name, victim, killer): the
+   *  client's guild packet 0x1103000a handler (FUN_01396f00) fills it with the map (short +0x9a), the victim (+0x46) and the killer
+   *  (+0x70) and prints it on chat channel 8. Replaces the former engine text '[Guild War] %s defeated %s.'. */
+  KILL_NOTICE: Object.freeze([130, 476]),
+  // COMMAND '/gwar' REMOVED (lane 51 g): no source for a chat declaration; the player menu 240:13 is the Global route.
+  // HISTORY_LIMIT 50 REMOVED (lane 51 g): no source for a cap; War Status keeps every closed war (newest first).
 });
 
 /** Guild / Alliance of Glory emblem illumination (src/ui/guild-nameplate-art.js). The scene itself is native: itemcash Type 0
@@ -151,8 +183,9 @@ export const GUILD_MEMBER_CHOSEN = Object.freeze({
   LAST_SEEN_STEP_MS: 60_000,
   /** ENGINE-CHOSEN (not in Global data): "Current Location" (130:77) of an online member = their map name; offline: 130:482 None. */
   LOCATION: 'map name while online',
-  /** ENGINE-CHOSEN (not in Global data): Guild storage = the guild's DIL treasury (DIL Donation, Asset Info "Guild DIL"), spent by
-   *  guild skills (Pay_Dil) and war declarations. The Global data has no guild item warehouse (no window, NPC role or string). */
+  /** GLOBAL + ONLINE (LANE-61): Guild storage = the guild's DIL treasury (Global DIL Donation 130:326-353, Asset Info "Guild DIL"),
+   *  spent by guild skills (Pay_Dil) and war declarations (ONLINE WAR_SOURCE_URL: war costs come from the guild DIL; dekarons.com guild
+   *  wiki: DIL is donated in 100,000 units). The Global data has no guild item warehouse (no window, NPC role or string). */
   STORAGE: 'guild DIL treasury',
 });
 

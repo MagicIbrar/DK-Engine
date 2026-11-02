@@ -10,7 +10,13 @@ export const TRANSFORM_COMPATIBILITY = Object.freeze({
   skillShapes: Object.freeze({2481:40201,2681:51041,2901:51503}),
 });
 
+// Scan fix A (2026-10-29): DISABLED. No Global data or client decompile source backs these
+// 21 rows (Global transform.csv has 84 rows, none for 2481/2681/2901), so per the evidence
+// order they are not shipped. Kept for reference only; returns no supplement.
+export const TRANSFORM_COMPATIBILITY_ENABLED = false;
+
 export function supplementTransforms(raw, transforms, shapes, has) {
+  if (!TRANSFORM_COMPATIBILITY_ENABLED) return [];
   if (createHash('sha256').update(raw).digest('hex') !== TRANSFORM_COMPATIBILITY.nativeSHA256) return [];
   if ([...transforms.values()].reduce((n,rows)=>n+rows.length,0)!==84) return [];
   const pending=[];

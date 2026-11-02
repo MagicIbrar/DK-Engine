@@ -2,9 +2,11 @@
 // tpclick: a local on/off; each Ctrl+click it enables travels through the server's authenticated GM route
 // (operation 'teleportDestination', server/world/gm-map-destination.mjs), never through client-side movement.
 export const ONLINE_PRESENTATION = new Set(['help','panel','console','sysinfo','usermonitor','userlog','pos','viewer','showdebug','hideui','fps','inspect','droptable','simdrops','effect','bgm','freecam','sky','weatherfx','time','itemedit','maptool','tpclick']);
-export const ONLINE_SERVER_COMMANDS = new Set(['exprate','droprate','dilrate','mapbuff','god','hide','onehit','infinitemp','gmmode','skill','allskills','skillreset','cooldowns','buff','level','exp','dil','dkc','vip','heal','revive','setstat','statreset','grade','speed','move','guildwarteleport','siegemonitor','goloc','gotonpc','usercount','mapusercount','notice','mute','freeze','ai','callmonster','killall','respawn','makeitem','clearinv','quest','queststate','repairall','save','monstertune','monsterloot','partywar','partywarevent','ox','oxentry','giveitem']);
+export const ONLINE_SERVER_COMMANDS = new Set(['exprate','droprate','dilrate','mapbuff','god','hide','onehit','infinitemp','gmmode','skill','allskills','skillreset','cooldowns','buff','level','exp','dil','dkc','vip','heal','revive','setstat','statreset','grade','speed','move','guildwarteleport','siegemonitor','goloc','gotonpc','usercount','mapusercount','notice','mute','freeze','ai','callmonster','killall','respawn','makeitem','clearinv','quest','queststate','repairall','save','monstertune','monsterloot','partywar','partywarevent','ox','oxentry','giveitem','dkrpvp_create','dkrpvp_delete','dkrpvp_applystart','dkrpvp_applymember','dkrpvp_selectteam','dkrpvp_createleague','dkrpvp_open','dkrpvp_finish','dkrpvp_setstatus','dkrpvp_createtournament','set_dksquareinfo','guildwarhunting_open','guildwarhunting_ready','guildwarhunting_start','guildwarhunting_finish']);
 // Tools that act on the shared world or on other connected characters: no solo counterpart.
 const SHARED_ONLY=new Set(['monstertune','monsterloot','giveitem']);
+// Lane 47: Global GM event commands (dkrpvp_*, set_dksquareInfo, guildwarhunting_*) exist only on a shared host.
+export const GLOBAL_EVENT_GM=new Set(['dkrpvp_create','dkrpvp_delete','dkrpvp_applystart','dkrpvp_applymember','dkrpvp_selectteam','dkrpvp_createleague','dkrpvp_open','dkrpvp_finish','dkrpvp_setstatus','dkrpvp_createtournament','set_dksquareinfo','guildwarhunting_open','guildwarhunting_ready','guildwarhunting_start','guildwarhunting_finish']);
 const REASONS={
   setclass:'Online class changes need a server migration for equipment, skills and saved character data.',
   noclip:'The shared world enforces movement collision. Use the GM 3D camera to inspect through geometry.',
@@ -32,6 +34,7 @@ export function keepClientLocalGM(previous,save){
   if(Object.keys(kept).length)save.gm={...(save.gm&&typeof save.gm==='object'?save.gm:{}),...kept};
 }
 export function commandSupport(game,id,args={}) {
+  if(game.save?.authority!=='server'&&GLOBAL_EVENT_GM.has(id))return{enabled:false,kind:'unsupported',reason:'Global event GM commands run on a shared server host.'};
   if(game.save?.authority!=='server')return SHARED_ONLY.has(id)?{enabled:false,kind:'unsupported',reason:id==='giveitem'?'GM prizes go to other connected characters on a shared server.':'This runtime monster tool belongs to a shared server.'}:{enabled:true,kind:'solo',reason:''};
   if(id==='save'&&['import'].includes(String(args.action).toLowerCase()))return{enabled:false,kind:'unsupported',reason:REASONS.importSave};
   if(id==='save'&&['export','edit'].includes(String(args.action).toLowerCase()))return{enabled:true,kind:'inspection',reason:'Read-only client snapshot/export; online JSON changes cannot be applied.'};

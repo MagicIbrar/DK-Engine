@@ -7,7 +7,7 @@ import {urbanWarfareRequiresAdmission,urbanWarfareUnavailableText} from '../../s
 // The ONE exception is the owner-directed single-server adaptation (src/game/urban-warfare-rules.js ZUTO_ADAPTATION):
 // the Zuto controller (server/world/urban-warfare-controller.mjs) validates a registered, host-assigned member for the
 // native Checkpoint teleport 133 and then opens exactly one synchronous destination check for map 650 through
-// withUrbanWarfareTravelPermit. Phantom Castle 653 never receives a permit (its native entry route is unresolved).
+// withUrbanWarfareTravelPermit. Phantom Castle 653 never receives a permit (CLOSED: Global has no entrance, lanes 57/71).
 let pending=null;
 /** Run `start` (which must call commitFieldTravel synchronously first) with a one-shot permit for `map` (650 only). */
 export function withUrbanWarfareTravelPermit(world,map,start){

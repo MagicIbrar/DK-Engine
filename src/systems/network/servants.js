@@ -5,8 +5,17 @@ export function installSharedServants(game,network) {
   const ui=game.uiwin||game.ui;
   let owned=null,pending=false,suspended=false;
   const close=()=>{owned=null;ui?.close?.('servant_win');ui?.close?.('servantskill');};
-  const find=(owner,dead)=>owner===game.player&&network.ready&&!suspended?
-    [...(network.servants?.values()||[])].find(a=>a.owner===owner&&!a.disposed&&!!a.dead===dead)||null:null;
+  const find=(owner,dead)=>{
+    if(owner!==game.player||!network.ready||suspended)return null;
+    const selfId=network.self?.id;
+    return [...(network.servants?.values()||[])].find(a=>{
+      if(a.disposed||!!a.dead!==dead)return false;
+      if(a.owner===owner)return true;
+      // ownerId is on every summon row; owner object can lag one snapshot behind player reconcile
+      if(selfId!=null&&a.ownerId===selfId){a.owner=owner;return true;}
+      return false;
+    })||null;
+  };
   sm.servantOf=owner=>find(owner,false);sm.deadServantOf=owner=>find(owner,true);
   const send=(type,input)=>{
     if(pending||!network.ready||!sm.servantOf(game.player)||game.player?.dead)return false;

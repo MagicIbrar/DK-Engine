@@ -1,4 +1,5 @@
 import {attackPreferenceRefusal} from './gameplay-preferences.mjs';
+import {pkSafeTimeActive} from './wanted.mjs';
 // PVP-DUEL: server-authoritative 1:1 duel + player-vs-player damage (rules: src/game/pvp-rules.js).
 // Flow (original windows/strings): request (pcpop 240:5 Duel) -> pvp_ask on the target (280:14, Accept/Decline) while the
 // requester waits (pvp_acceptwait 280:5, Cancel) -> countdown (pvp_countui 1008:8 + N 1008:10) -> fight inside the limited
@@ -8,11 +9,12 @@ import {fishingBusy} from './fishing.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { buildPvpRules, parseFormulaIni, parsePcclass, pvpDamage, duelPoints } from '../../src/game/pvp-rules.js';
+import { buildPvpRules, parseFormulaIni, parsePcclass, pvpDamage, duelPoints, withinBox } from '../../src/game/pvp-rules.js';
 import {criticalChance,criticalDamageMultiplier,modifyHitDamage} from '../../src/game/combat.js';
 import { sameScene, mapFor } from './scene.mjs';
 import { attackReady, nextAttackAt, playerAttackLimit } from '../../src/game/attack-timing.js';
 import { divideShare } from './damage-share.mjs';
+import { applyAbilityCap, capAttackerUsesBlock1 } from '../../src/game/ability-cap.js';
 
 export const PVP_SCHEMAS = { pvp: ['token', 'type', 'operation', 'targetId'] };
 const OPS = new Set(['request', 'accept', 'decline', 'cancel', 'restore']);
@@ -70,7 +72,14 @@ var MODES;
 function pvpModes(){return MODES ||= [];}
 export function registerPvpMode(mode) { if (!pvpModes().includes(mode)) pvpModes().push(mode); return mode; }
 /** q is a player p may hit right now (duel opponent or an enemy of another PvP mode). */
-export function isPvpTarget(world, p, q) { return !!q && q !== p && !attackPreferenceRefusal(world,p,q) && (isDuelTarget(world, p, q) || pvpModes().some(m => m.enemy(world, p, q))); }
+export function isPvpTarget(world, p, q) {
+  if (!q || q === p || attackPreferenceRefusal(world,p,q)) return false;
+  // Duels are exempt from Safe Time / NonPK (consensual; stringtable_helper PvP vs PK).
+  if (isDuelTarget(world, p, q)) return true;
+  // Mode + field NonPK: formula.ini *NonPKTime — neither side may hit while protected.
+  if (pkSafeTimeActive(world, p) || pkSafeTimeActive(world, q)) return false;
+  return pvpModes().some(m => m.enemy(world, p, q));
+}
 /** Every player p may hit right now. */
 /** Action guards of the PvP modes (e.g. no revive while downed in a final battle); called by core through partyPvpGuard. */
 export function pvpModeGuard(world, p, input) { for (const m of pvpModes()) m.guard?.(world, p, input); }
@@ -79,9 +88,21 @@ export async function pvpDowned(world, attacker, target) {
   if (isDuelTarget(world, attacker, target)) return finish(world, current(world, attacker), attacker, target, 'defeated');
   for (const m of pvpModes()) await m.onDown?.(world, attacker, target);
 }
-/** FIELD-PK (server/world/field-pk.mjs): a forced attack / skill command arms p for a short window. */
-export function noteForcedIntent(world, p) { p.pkForcedAt = world.now(); }
-export function pvpOpponents(world, p) { const d = duelOpponent(world, p); return [...(d ? [d] : []), ...pvpModes().flatMap(m => m.opponents(world, p) || [])].filter(q=>!attackPreferenceRefusal(world,p,q)); }
+/** FIELD-PK (server/world/field-pk.mjs): SOURCE (lane 51 g, FINAL 64-bit decompile) GameUser::EventHandler::Command::Force::State::PK
+ *  (ctor 0x7ff670988480 keeps the target id and a forced byte; check FUN_7ff670988550 reads that byte, no timer): the forced flag
+ *  belongs to the attack / cast command itself. A forced command arms p; the next command without the flag disarms it. */
+export function noteForcedIntent(world, p, forced = true) { p.pkForced = forced === true; delete p.pkForcedAt; }
+export function pvpOpponents(world, p) {
+  const d = duelOpponent(world, p);
+  const out = [];
+  if (d && !attackPreferenceRefusal(world, p, d)) out.push(d);
+  if (!pkSafeTimeActive(world, p)) {
+    for (const m of pvpModes()) for (const q of m.opponents(world, p) || []) {
+      if (q && !attackPreferenceRefusal(world, p, q) && !pkSafeTimeActive(world, q)) out.push(q);
+    }
+  }
+  return out;
+}
 
 function clear(world, duel) {
   duels(world).delete(duel.id);
@@ -101,13 +122,14 @@ async function finish(world, duel, winner, loser, reason) {
     for (const q of duel.players) { pvpProfile(q).draws++; q.pvpResult = { result: 'draw', gain: 0, loss: 0, total: pvpProfile(q).points, at: now, opponent: other(duel, q).profile.name }; world.changed(q); }
   } else {
     const wp = pvpProfile(winner), lp = pvpProfile(loser);
-    const { winnerGain, loserLoss, limited } = duelPoints(rules, { level: winner.profile.level }, { level: loser.profile.level, points: lp.points });
+    const { winnerGain, loserLoss, limited } = duelPoints(rules, { level: winner.profile.level, points: wp.points }, { level: loser.profile.level, points: lp.points });
     wp.points += winnerGain; wp.wins++; lp.points -= loserLoss; lp.losses++;
     winner.pvpResult = { result: 'win', gain: winnerGain, loss: 0, total: wp.points, at: now, limited, opponent: loser.profile.name };
     loser.pvpResult = { result: 'lose', gain: 0, loss: loserLoss, total: lp.points, at: now, limited, opponent: winner.profile.name };
-    // The loser resurrects at the spot (stringtable_helper) through pvp_restore after dwPVPReviveTick.
+    // The loser resurrects at the spot (stringtable_helper) through pvp_restore after the DeadRestoreWnd wait
+    // (restoreWaitSec 15, FINAL 64-bit decompile FUN_7ff670cfcbb0; src/game/pvp-rules.js).
     loser.hp = 0; loser.dead = true; loser.path = [];
-    loser.pvpRestore = { at: now + rules.reviveTick * 1000, x: loser.x, z: loser.z, map: loser.map };
+    loser.pvpRestore = { at: now + rules.restoreWaitSec * 1000, x: loser.x, z: loser.z, map: loser.map };
     world.changed(winner); world.changed(loser);
   }
   notify(world, duel, 'result', { reasonDetail: reason, winnerId: winner?.id || null, loserId: loser?.id || null });
@@ -138,7 +160,7 @@ export async function pvpCommand(world, p, input) {
     const own = condition(world, p); if (own) fail(own);
     const theirs = condition(world, target); if (theirs) fail(theirs);
     if (current(world, target)) fail(PVP_TEXT.busy);
-    if (dist(p, target) > rules.requestRange) fail(PVP_TEXT.far);
+    if (!withinBox(p, target, rules.requestRange)) fail(PVP_TEXT.far);   // OnRequest 0x61fd20 per-axis box
     const refusals = world.duelRefusals ||= new Map(), key = `${p.id}>${target.id}`;
     if ((refusals.get(key) || 0) > now) fail(PVP_TEXT.wait, 429);
     const id = randomUUID();
@@ -161,7 +183,7 @@ export async function pvpCommand(world, p, input) {
   const [a, b] = duel.players;
   if (!live(world, a) || !sameScene(a, b)) { cancel(world, duel, 'cancelled'); fail(PVP_TEXT.cancelled); }
   if (condition(world, a) || condition(world, b)) { cancel(world, duel, 'cancelled'); fail(PVP_TEXT.condition); }
-  if (dist(a, b) > rules.requestRange) { cancel(world, duel, 'cancelled'); fail(PVP_TEXT.far); }
+  if (!withinBox(a, b, rules.requestRange)) { cancel(world, duel, 'cancelled'); fail(PVP_TEXT.far); }
   duel.phase = 'countdown'; duel.startAt = now + rules.countdownSec * 1000;
   duel.flag = { x: (a.x + b.x) / 2, z: (a.z + b.z) / 2 }; duel.outside = new Map();
   for (const q of duel.players) { delete q.pvpResult; if (rules.shieldAtStart === 'full') q.shield = Number(q.stats.maxShield) || 0; world.changed(q); }
@@ -175,7 +197,9 @@ export async function pvpAttack(world, p, target, now, step) {
   if (!isPvpTarget(world, p, target)) fail('You can only attack your PvP opponent during the match.');
   if (p.dead || target.dead) fail(PVP_TEXT.dead);
   const map = mapFor(world, p);
-  if (dist(p, target) > Math.min(8, p.stats.attackRange || 5) + 0.5) fail(PVP_TEXT.reach);
+  // Reach = the weapon's own range from the data (itemweapon range -> stats.attackRange, src/game/progression.js), no engine cap or
+  // fallback; +0.5 is a JUDGMENT (lane 51 g): the same body tolerance the host uses for monster reach (core.mjs).
+  if (dist(p, target) > (Number(p.stats.attackRange) || 0) + 0.5) fail(PVP_TEXT.reach);
   if (map?.collision?.lineOfSight && !map.collision.lineOfSight(p.x, p.z, target.x, target.z)) fail('An obstacle blocks this attack.');
   const limit = playerAttackLimit(world.data, p);   // the data's combo cadence (src/game/attack-timing.js)
   if (!attackReady(p.attackAt, now, limit.burstMs)) fail('Attack is cooling down.', 429);
@@ -183,14 +207,16 @@ export async function pvpAttack(world, p, target, now, step) {
   p.attackAt = nextAttackAt(p.attackAt, now, limit.intervalMs);
   p.lastCombat = now; target.lastCombat = now; p.path = [];
   p._skills?.statuses.onAttack(p._skills.game.player);
+  // ENGINE-DEFAULT (configurable): fallback minimum 20 only when stats.attackMin is 0/absent; no Global source.
   const lo = p.stats.attackMin || 20, hi = p.stats.attackMax || lo;
   let raw = Math.max(1, lo + world.random() * (hi - lo));
   const chance=criticalChance(p,target,Number(p.stats.critRate)||0),crit=chance>0&&world.random()*100<chance;
+  const elementBase=raw;   // Global Melee calculator: element terms scale the weapon roll A (MATH-VERIFY row 7)
   if(crit)raw*=criticalDamageMultiplier(p,target,Number(p.stats.critMultiplier)||1);
-  raw=modifyHitDamage(p,target,raw,{round:false});
+  raw=modifyHitDamage(p,target,raw,{round:false,...((p.stats.attackType||'melee')!=='magic'?{elementBase}:{})});
   const hit = pvpHit(world, p, target, raw, p.stats.attackType || 'melee');
   world.emit(p.map, { type: 'attack', actorId: p.id, targetId: target.id, ...(Number.isInteger(step) ? { variant: step } : {}) });
-  world.emit(p.map, { type: 'damage', sourceId: p.id, targetId: target.id, amount: hit.amount + hit.shieldDamage, shieldDamage: hit.shieldDamage, dead: target.hp === 0, ...(hit.block ? { block: true } : {}), ...(hit.guard ? { guard: true } : {}), ...(crit ? {crit:true}:{}), pvp: true });
+  world.emit(p.map, { type: 'damage', sourceId: p.id, targetId: target.id, amount: hit.amount + hit.shieldDamage, shieldDamage: hit.shieldDamage, dead: target.hp === 0, ...(hit.block ? { block: true } : {}), ...(hit.guard ? { guard: true } : {}), ...(hit.miss ? { miss: true } : {}), ...(hit.immune ? { immune: true } : {}), ...(crit ? {crit:true}:{}), pvp: true });
   for (const m of pvpModes()) m.onHit?.(world, p, target);
   if (target.hp === 0) await pvpDowned(world, p, target);
   return hit;
@@ -213,13 +239,21 @@ function divideShareHit(world,attacker,target,hit){
   const shieldDamage=Math.min(Math.max(0,Number(target.shield)||0),shared.kept);
   hit.shieldDamage=shieldDamage;hit.amount=shared.kept-shieldDamage;hit.dividedDamage=shared.part;
 }
+// MATH-VERIFY 4.3.2 row 14: Global applies the map ability cap (levelcap) to PC->PC hits too - Calculator 0x596890 has no
+// defender-type check and a PC attacker (vt+0x28 = 0) selects block 1. Miss ends the hit; the Blocking / Guard columns feed avoidance.
+function pvpCap(world, attacker, target, amount, kind) {
+  return applyAbilityCap(world.data?.abilityCap?.(attacker.map), { attackerLevel: attacker.profile.level, defenderLevel: target.profile.level,
+    attackerIsPlayer: capAttackerUsesBlock1('pc'), kind: kind === 'magic' ? 'magic' : 'melee' }, amount, () => world.random());
+}
 export function pvpHit(world, attacker, target, raw, kind) {
   const rules = rulesOf(world);
   const defender=pvpDefender(target);
+  const cap = pvpCap(world, attacker, target, raw, kind);
+  if (cap.miss) { target.pvpLastHit = { by: attacker.id, at: world.now() }; return { amount: 0, shieldDamage: 0, block: false, guard: false, miss: true, ...(cap.immune ? { immune: true } : {}) }; }
   const hit = pvpDamage(rules, {
     attacker: { classIndex: attacker.profile.classIndex, level: attacker.profile.level, stats: attacker.stats, classDef:attacker.classDef,statuses:attacker.profile.buffs,_skills:attacker._skills },
     defender,
-    raw, kind, random: () => world.random(),
+    raw: cap.amount, kind, random: () => world.random(), cap,
   });
   sharePvpDamage(defender,hit);
   divideShareHit(world,attacker,target,hit);
@@ -232,12 +266,26 @@ export function pvpHit(world, attacker, target, raw, kind) {
 /** beforeDamage hook of the host skill engine: a skill hit on the duel opponent runs the PvP stages (shield first). */
 export function pvpSkillAdjust(world, attacker, target, result) {
   if(attackPreferenceRefusal(world,attacker,target)){result.amount=0;result.shieldDamage=0;result.miss=true;return result;}
+  // Per-skill PCDamageRate (combo CSV PCDamageRate / binary U16 @ SkillCombo+0x38 ->
+  // skill step r.pvpDamageRate via build-skills; skillDamage copies onto result).
+  // elitepvpers PvE thread + CSV column: PvP skill damage ~= amount * (PCDamageRate/100).
+  // Applied BEFORE abilityCap / fPCDamageRatio / share. rate<=0 leaves amount alone.
+  // Lane 05: audit/pvp-rate-census.json, EVIDENCE-SOURCES.md.
+  {
+    const rate = Number(result?.pvpDamageRate) || 0;
+    if (rate > 0 && Number(result.amount) > 0) {
+      result.amount = Math.max(0, Math.floor(Number(result.amount) * rate / 100));
+    }
+  }
   const rules = rulesOf(world);
   const defender=pvpDefender(target);
+  const skillKind = ['magic','range'].includes(result.kind) ? result.kind : 'melee';
+  const cap = pvpCap(world, attacker, target, Number(result.amount) || 0, skillKind);
+  if (cap.miss) { result.amount = 0; result.shieldDamage = 0; result.miss = true; result.crit = false; result.pvp = true; if (cap.immune) result.immune = true; return { amount: 0, shieldDamage: 0, block: false, guard: false, miss: true, ...(cap.immune ? { immune: true } : {}) }; }
   const hit = pvpDamage(rules, {
     attacker: { classIndex: attacker.profile.classIndex, level: attacker.profile.level, stats: attacker.stats,classDef:attacker.classDef,statuses:attacker.profile.buffs,_skills:attacker._skills },
-    defender,
-    raw: Number(result.amount) || 0, kind: ['magic','range'].includes(result.kind) ? result.kind : 'melee', random: () => world.random(), defenceApplied: true,
+    defender, cap,
+    raw: cap.amount, kind: ['magic','range'].includes(result.kind) ? result.kind : 'melee', random: () => world.random(), defenceApplied: true,
     element: result.element || null, elementShare: result.elementShare,
   });
   sharePvpDamage(defender,hit);
@@ -263,7 +311,7 @@ export async function tickPvp(world) {
     }
     if (gone) { await finish(world, duel, other(duel, gone), gone, 'left'); continue; }
     if (duel.phase === 'countdown') {
-      if (now >= duel.startAt) { duel.phase = 'fight'; duel.endsAt = now + rules.timeLimitSec * 1000; notify(world, duel, 'start', { endsAt: duel.endsAt, flag: duel.flag, radius: rules.areaRadius }); }
+      if (now >= duel.startAt) { duel.phase = 'fight'; duel.endsAt = null; /* no duel timer (older server reference) */ notify(world, duel, 'start', { endsAt: duel.endsAt, flag: duel.flag, radius: rules.areaRadius }); }
       continue;
     }
     if (duel.phase !== 'fight') continue;
@@ -271,11 +319,11 @@ export async function tickPvp(world) {
     if (down) { await finish(world, duel, other(duel, down), down, 'defeated'); continue; }
     let forfeit = null;
     for (const q of duel.players) {
-      if (dist(q, duel.flag) > rules.areaRadius) { if (!duel.outside.has(q.id)) { duel.outside.set(q.id, now); notify(world, duel, 'outside', { playerId: q.id, until: now + rules.outsideForfeitSec * 1000 }); } else if (now - duel.outside.get(q.id) >= rules.outsideForfeitSec * 1000) forfeit = q; }
+      if (!withinBox(q, duel.flag, rules.areaRadius)) {   // OnCheckRange 0x61f170 per-axis box
+       if (!duel.outside.has(q.id)) { duel.outside.set(q.id, now); notify(world, duel, 'outside', { playerId: q.id, until: now + rules.outsideForfeitSec * 1000 }); } else if (now - duel.outside.get(q.id) >= rules.outsideForfeitSec * 1000) forfeit = q; }
       else if (duel.outside.delete(q.id)) notify(world, duel, 'inside', { playerId: q.id });
     }
     if (forfeit) { await finish(world, duel, other(duel, forfeit), forfeit, 'area'); continue; }
-    if (now >= duel.endsAt) await finish(world, duel, null, null, 'time');
   }
 }
 

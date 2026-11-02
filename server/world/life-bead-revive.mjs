@@ -18,8 +18,8 @@ export function lifeBeadReviveAllowed(world,p){
  return !!p&&!!info&&['field','system'].includes(info.kind)&&!info.flags?.siege
   &&!p.instanceId&&!p.profile?.instance&&!p.profile?.dkReturn&&!world.data.requiresInstance?.(map)&&!isDkChannel(p.channel)
   &&!world.data.eventData?.modeOf(map)&&!world.data.customMaps?.has?.(map)&&!p.customMapPending
-  &&!p.arenaId&&!p.dkSquareId&&!p.colosseumId&&!p.partyPvpId&&!p.trainingCampId&&!p.duelId&&!p.pvpRestore
-  &&!p.raceRun&&!p.tradeId&&!p.charTradeId&&!p.pcShopOpen&&!p.smartWarp&&!p.mount&&!p.fishing
+  &&!p.arenaId&&!p.dkSquareId&&!p.colosseumId&&!p.partyPvpId&&!p.duelId&&!p.pvpRestore
+  &&!p.tradeId&&!p.charTradeId&&!p.pcShopOpen&&!p.smartWarp&&!p.mount&&!p.fishing
   &&!p.sceneTransition&&!p.progressCommitting&&!p.tradeCommitting;
 }
 

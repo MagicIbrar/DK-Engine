@@ -10,32 +10,65 @@ if($PSVersionTable.PSEdition -eq 'Desktop'){
 
 function New-DedicatedSetupWindow([string]$Engine){
  Add-Type -AssemblyName System.Windows.Forms;Add-Type -AssemblyName System.Drawing
- if(-not ('LauncherWindow' -as [type])){Add-Type -Path (Join-Path $Engine 'tools\LauncherVisuals.cs') -ReferencedAssemblies System.Windows.Forms,System.Drawing}
  [Windows.Forms.Application]::EnableVisualStyles()
- $form=New-Object LauncherWindow;[LauncherIdentity]::Apply($form,$Engine);$form.Text='DK Setup - Prepare your engine';$form.ClientSize=New-Object Drawing.Size(900,570);$form.StartPosition='CenterScreen';$form.FormBorderStyle='FixedSingle';$form.MaximizeBox=$false;$form.ControlBox=$false;$form.Font=New-Object Drawing.Font('Segoe UI',11);$form.ForeColor=[Drawing.Color]::FromArgb(235,229,217)
- foreach($asset in @(@('launcher-background-v1.png','background'),@('dk-engine-logo-v1.png','logo'))){
-  $path=Join-Path $Engine ('client-assets\'+$asset[0]);if(Test-Path -LiteralPath $path){$stream=[IO.File]::OpenRead($path);try{$original=[Drawing.Image]::FromStream($stream);try{$image=$original.Clone()}finally{$original.Dispose()}}finally{$stream.Dispose()}
-   if($asset[1] -eq 'background'){$form.Artwork=$image}else{$logo=New-Object Windows.Forms.PictureBox;$logo.Image=$image;$logo.SizeMode='Zoom';$logo.BackColor=[Drawing.Color]::Transparent;$logo.Bounds=New-Object Drawing.Rectangle(255,24,390,180);$form.Controls.Add($logo);$script:entryLogo=$logo}
-  }
+ # Command Center boot chrome — charcoal + teal, no castle / galaxy Setup artwork.
+ $bg=[Drawing.Color]::FromArgb(18,19,22);$surface=[Drawing.Color]::FromArgb(28,31,38);$line=[Drawing.Color]::FromArgb(48,54,64)
+ $text=[Drawing.Color]::FromArgb(232,236,241);$muted=[Drawing.Color]::FromArgb(154,163,178);$accent=[Drawing.Color]::FromArgb(97,216,190)
+ $form=New-Object Windows.Forms.Form
+ $form.Text='DK Command Center';$form.ClientSize=New-Object Drawing.Size(520,420);$form.StartPosition='CenterScreen'
+ $form.FormBorderStyle='FixedSingle';$form.MaximizeBox=$false;$form.MinimizeBox=$false;$form.ControlBox=$false
+ $form.BackColor=$bg;$form.ForeColor=$text;$form.Font=New-Object Drawing.Font('Segoe UI',11)
+ $card=New-Object Windows.Forms.Panel;$card.Bounds=New-Object Drawing.Rectangle(28,24,464,372);$card.BackColor=$surface;$card.BorderStyle='FixedSingle';$form.Controls.Add($card)
+ $logoPath=Join-Path $Engine 'tools\command-center\ui\img\engine-logo-outline.png'
+ if(-not (Test-Path -LiteralPath $logoPath)){$logoPath=Join-Path $Engine 'client-assets\dk-engine-logo-v1.png'}
+ if(Test-Path -LiteralPath $logoPath){
+  $stream=[IO.File]::OpenRead($logoPath);try{$original=[Drawing.Image]::FromStream($stream);try{$image=$original.Clone()}finally{$original.Dispose()}}finally{$stream.Dispose()}
+  $logo=New-Object Windows.Forms.PictureBox;$logo.Image=$image;$logo.SizeMode='Zoom';$logo.BackColor=[Drawing.Color]::Transparent;$logo.Bounds=New-Object Drawing.Rectangle(182,22,96,96);$card.Controls.Add($logo);$script:entryLogo=$logo
  }
- $heading=New-Object Windows.Forms.Label;$heading.Text='Prepare your dedicated engine';$heading.Font=New-Object Drawing.Font('Segoe UI',22,[Drawing.FontStyle]::Bold);$heading.ForeColor=[Drawing.Color]::FromArgb(214,177,115);$heading.BackColor=[Drawing.Color]::Transparent;$heading.Bounds=New-Object Drawing.Rectangle(48,214,804,48);$form.Controls.Add($heading)
- $script:entryPhase=New-Object Windows.Forms.Label;$script:entryPhase.Text='1 / 4  CHECK DEPENDENCIES';$script:entryPhase.BackColor=[Drawing.Color]::Transparent;$script:entryPhase.ForeColor=[Drawing.Color]::FromArgb(214,177,115);$script:entryPhase.Bounds=New-Object Drawing.Rectangle(50,280,800,28);$form.Controls.Add($script:entryPhase)
- $script:entryLabel=New-Object Windows.Forms.Label;$script:entryLabel.Text='Checking the components needed to open DK Client.';$script:entryLabel.BackColor=[Drawing.Color]::Transparent;$script:entryLabel.Bounds=New-Object Drawing.Rectangle(50,318,800,60);$form.Controls.Add($script:entryLabel)
- $script:entryProgress=New-Object GalaxyProgress;$script:entryProgress.Bounds=New-Object Drawing.Rectangle(48,384,804,92);$script:entryProgress.Running=$true;$script:entryProgress.DetailText='Checking dependencies';$form.Controls.Add($script:entryProgress)
- $note=New-Object Windows.Forms.Label;$note.Text='Original downloads and existing saves stay preserved. The galaxy launcher opens when ready.';$note.BackColor=[Drawing.Color]::Transparent;$note.ForeColor=[Drawing.Color]::FromArgb(190,198,213);$note.Font=New-Object Drawing.Font('Segoe UI',10);$note.Bounds=New-Object Drawing.Rectangle(50,503,800,42);$form.Controls.Add($note)
+ $title=New-Object Windows.Forms.Label;$title.Text='DK Command Center';$title.Font=New-Object Drawing.Font('Segoe UI Semibold',16);$title.ForeColor=$text;$title.BackColor=$surface;$title.TextAlign='MiddleCenter';$title.Bounds=New-Object Drawing.Rectangle(24,128,416,32);$card.Controls.Add($title)
+ $script:entryPhase=New-Object Windows.Forms.Label;$script:entryPhase.Text='1 / 4  START';$script:entryPhase.Font=New-Object Drawing.Font('Segoe UI Semibold',10);$script:entryPhase.ForeColor=$accent;$script:entryPhase.BackColor=$surface;$script:entryPhase.TextAlign='MiddleCenter';$script:entryPhase.Bounds=New-Object Drawing.Rectangle(24,172,416,24);$card.Controls.Add($script:entryPhase)
+ $script:entryLabel=New-Object Windows.Forms.Label;$script:entryLabel.Text='Starting the Command Center launcher shell.';$script:entryLabel.ForeColor=$muted;$script:entryLabel.BackColor=$surface;$script:entryLabel.TextAlign='MiddleCenter';$script:entryLabel.Bounds=New-Object Drawing.Rectangle(36,204,392,48);$card.Controls.Add($script:entryLabel)
+ $track=New-Object Windows.Forms.Panel;$track.Bounds=New-Object Drawing.Rectangle(48,268,368,12);$track.BackColor=$line;$card.Controls.Add($track)
+ $fill=New-Object Windows.Forms.Panel;$fill.Bounds=New-Object Drawing.Rectangle(0,0,28,12);$fill.BackColor=$accent;$track.Controls.Add($fill)
+ $script:entryDetail=New-Object Windows.Forms.Label;$script:entryDetail.Text='Preparing UI';$script:entryDetail.ForeColor=$muted;$script:entryDetail.BackColor=$surface;$script:entryDetail.TextAlign='MiddleCenter';$script:entryDetail.Font=New-Object Drawing.Font('Segoe UI',9);$script:entryDetail.Bounds=New-Object Drawing.Rectangle(24,292,416,22);$card.Controls.Add($script:entryDetail)
+ $note=New-Object Windows.Forms.Label;$note.Text='Your install and saves stay preserved. Command Center opens when this stage finishes.';$note.ForeColor=$muted;$note.BackColor=$surface;$note.Font=New-Object Drawing.Font('Segoe UI',9);$note.TextAlign='MiddleCenter';$note.Bounds=New-Object Drawing.Rectangle(36,328,392,36);$card.Controls.Add($note)
+ # Compatible Progress facade used by Update-DedicatedSetupProgress (Value / DetailText / Running).
+ $script:entryProgressTrack=$track;$script:entryProgressFill=$fill;$script:entryProgressMarquee=$true;$script:entryProgressValue=8
+ $script:entryProgress=New-Object psobject
+ Add-Member -InputObject $script:entryProgress -MemberType ScriptProperty -Name Value -Value { [int]$script:entryProgressValue } -SecondValue {
+  param($v)
+  $script:entryProgressValue=[Math]::Max(0,[Math]::Min(100,[int]$v));$script:entryProgressMarquee=$false
+  if($script:entryProgressFill -and $script:entryProgressTrack){$script:entryProgressFill.Width=[Math]::Max(4,[int]($script:entryProgressTrack.Width*$script:entryProgressValue/100))}
+ }
+ Add-Member -InputObject $script:entryProgress -MemberType ScriptProperty -Name DetailText -Value { if($script:entryDetail){$script:entryDetail.Text}else{''} } -SecondValue { param($t) if($script:entryDetail){$script:entryDetail.Text=[string]$t} }
+ Add-Member -InputObject $script:entryProgress -MemberType ScriptProperty -Name Running -Value { [bool]$script:entryProgressMarquee } -SecondValue {
+  param($r)
+  $script:entryProgressMarquee=[bool]$r
+  if(-not $r -and $script:entryProgressFill -and $script:entryProgressTrack){$script:entryProgressFill.Width=[Math]::Max(4,[int]($script:entryProgressTrack.Width*$script:entryProgressValue/100))}
+ }
+ if(-not $script:entryProgressTimer){
+  $script:entryProgressTimer=New-Object Windows.Forms.Timer;$script:entryProgressTimer.Interval=40
+  $script:entryProgressTimer.Add_Tick({
+   if(-not $script:entryProgressMarquee -or -not $script:entryProgressFill -or -not $script:entryProgressTrack){return}
+   $w=$script:entryProgressTrack.Width;$fw=[Math]::Max(48,[int]($w*0.28));$x=$script:entryProgressFill.Left+6;if($x -gt $w){$x=-$fw}
+   $script:entryProgressFill.Width=$fw;$script:entryProgressFill.Left=$x
+  });$script:entryProgressTimer.Start()
+ }
  return $form
 }
 function Update-DedicatedSetupProgress([string]$Message){
  if(-not $script:entryProgress){return}
  $script:entryLabel.Text=$Message.Substring(0,[Math]::Min(300,$Message.Length))
- if($Message -match 'Extracted ([\d,]+)/([\d,]+) files'){$done=[double]($Matches[1]-replace ',','');$total=[double]($Matches[2]-replace ',','');$script:entryPhase.Text='2 / 4  PREPARE GLOBAL FILES';$script:entryProgress.Value=[int](100*$done/[Math]::Max(1,$total));$script:entryProgress.DetailText=('{0:N0} / {1:N0} files' -f $done,$total)}
+ if($Message -match 'Extracted ([\d,]+)/([\d,]+) files'){$done=[double]($Matches[1]-replace ',','');$total=[double]($Matches[2]-replace ',','');$script:entryPhase.Text='2 / 4  PREPARE GAME DATA';$script:entryProgress.Value=[int](100*$done/[Math]::Max(1,$total));$script:entryProgress.DetailText=('{0:N0} / {1:N0} files' -f $done,$total)}
  elseif($Message -match 'Preparing |Prepared |builder'){$script:entryPhase.Text='2 / 4  BUILD GAME DATA';$script:entryProgress.Value=0;$script:entryProgress.DetailText='Building game indexes'}
  elseif($Message -match 'Global files (\w+): (\d+)% \(([^)]+)\)'){$script:entryPhase.Text='3 / 4  VALIDATE INSTALLATION';$script:entryProgress.Value=[int]$Matches[2];$script:entryProgress.DetailText=$Matches[3]}
- elseif($Message -match 'Looking for'){$script:entryPhase.Text='2 / 4  FIND GLOBAL DATA';$script:entryProgress.Value=0;$script:entryProgress.DetailText='Finding your Global download'}
- elseif($Message -match 'Opening the galaxy'){$script:entryPhase.Text='4 / 4  OPEN GALAXY LAUNCHER';$script:entryProgress.Value=100;$script:entryProgress.DetailText='Starting DK Client'}
+ elseif($Message -match 'Looking for'){$script:entryPhase.Text='2 / 4  FIND INSTALL DATA';$script:entryProgress.Value=0;$script:entryProgress.DetailText='Finding prepared assets'}
+ elseif($Message -match 'Opening the galaxy|Opening DK Command Center|Command Center'){$script:entryPhase.Text='4 / 4  OPEN COMMAND CENTER';$script:entryProgress.Value=100;$script:entryProgress.DetailText='Starting DK Command Center'}
+ elseif($Message -match 'Checking Node|WebView|dependencies|runtimes'){$script:entryPhase.Text='1 / 4  START';$script:entryProgress.DetailText='Checking runtimes'}
 }
 function Close-DedicatedSetupWindow{
- if($script:entryProgress){$script:entryProgress.Running=$false}
+ if($script:entryProgressTimer){try{$script:entryProgressTimer.Stop();$script:entryProgressTimer.Dispose()}catch{};$script:entryProgressTimer=$null}
+ if($script:entryProgress){try{$script:entryProgress.Running=$false}catch{}}
  if($script:entryForm){$art=$script:entryForm.Artwork;$script:entryForm.Dispose();if($art){$art.Dispose()}}
  if($script:entryLogo -and $script:entryLogo.Image){$script:entryLogo.Image.Dispose()}
 }
@@ -44,6 +77,16 @@ function ConvertTo-EntryArgument([string]$Value){
  $b=New-Object Text.StringBuilder;[void]$b.Append('"');$slashes=0
  foreach($c in $Value.ToCharArray()){if($c -eq '\'){$slashes++;continue};if($c -eq '"'){[void]$b.Append('\',2*$slashes+1)}else{[void]$b.Append('\',$slashes)};[void]$b.Append($c);$slashes=0}
  [void]$b.Append('\',2*$slashes);[void]$b.Append('"');return $b.ToString()
+}
+function Format-EntryFailure([string]$Message,[string]$LogPath){
+ # The child emits progress before its final error. Keep the end visible even
+ # when thousands of progress lines would otherwise fill the message box.
+ $lines=@($Message -split "`r?`n" | Where-Object { $_.Trim() })
+ $tail=($lines | Select-Object -Last 8) -join "`r`n"
+ if($tail.Length -gt 1800){$tail=$tail.Substring($tail.Length-1800);$tail="...`r`n"+$tail}
+ if(-not $tail){$tail='Setup stopped without reporting an error. See the setup log for details.'}
+ if($LogPath){$tail+="`r`n`r`nFull setup log: "+$LogPath}
+ return $tail
 }
 function Invoke-EntryProcess([string]$File,[string[]]$Arguments,[string]$Status){
  if($script:entryLabel){$script:entryLabel.Text=$Status;Update-DedicatedSetupProgress $Status;[Windows.Forms.Application]::DoEvents()}
@@ -68,7 +111,7 @@ function Invoke-EntryProcess([string]$File,[string[]]$Arguments,[string]$Status)
    }
    if($script:entryForm){[Windows.Forms.Application]::DoEvents()};Start-Sleep -Milliseconds 30
   }
-  $process.WaitForExit();if($process.ExitCode -ne 0){throw ($stderr.ToString()+$stdout.ToString()).Trim()};return $stdout.ToString().Trim()
+  $process.WaitForExit();if($process.ExitCode -ne 0){$failure=$stderr.ToString().Trim();if(-not $failure){$failure=$stdout.ToString().Trim()};if(-not $failure){$failure='Setup process exited with code '+$process.ExitCode+'.'};throw $failure};return $stdout.ToString().Trim()
  }finally{$process.Dispose()}
 }
 function Invoke-EntryBootstrap([string]$Engine){
@@ -133,5 +176,5 @@ function Start-DedicatedClient([string]$Engine,[string]$Destination,[string]$Dat
 if($MyInvocation.InvocationName -ne '.'){
  $script:entryForm=New-DedicatedSetupWindow ([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..')));$script:entryForm.Show()
  $run=Join-Path ([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))) 'run';[void][IO.Directory]::CreateDirectory($run);$script:entryLog=Join-Path $run ('setup-entry-'+[DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss')+'-'+[Guid]::NewGuid().ToString('N').Substring(0,8)+'.log')
- try{[void](Start-DedicatedClient -Engine ([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))) -Destination $InstallRoot -Data $GlobalData -Resume:$Resume -Setup:$Setup)}catch{[Windows.Forms.MessageBox]::Show($script:entryForm,($_.Exception.Message+"`r`n`r`nDetails: "+$script:entryLog),'DK Setup stopped','OK','Error')|Out-Null;exit 1}finally{Close-DedicatedSetupWindow}
+ try{[void](Start-DedicatedClient -Engine ([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))) -Destination $InstallRoot -Data $GlobalData -Resume:$Resume -Setup:$Setup)}catch{[Windows.Forms.MessageBox]::Show($script:entryForm,(Format-EntryFailure $_.Exception.Message $script:entryLog),'DK Command Center','OK','Error')|Out-Null;exit 1}finally{Close-DedicatedSetupWindow}
 }

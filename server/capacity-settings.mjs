@@ -63,9 +63,10 @@ export async function writeCapacitySettings(file, settings, { totalBytes = os.to
 }
 
 /** What this running server process really has (the dashboard's proof that the memory setting applied). */
+let cpuCount = null;   // STABILITY-PING: os.cpus() costs milliseconds on Windows and the count never changes; read it once
 export function runtimeMemory() {
   const heap = v8.getHeapStatistics(), usage = process.memoryUsage();
-  return { heapLimitMB: Math.round(heap.heap_size_limit / 1048576), heapUsedMB: Math.round(usage.heapUsed / 1048576), rssMB: Math.round(usage.rss / 1048576), totalMB: Math.floor(os.totalmem() / 1048576), cpus: os.cpus().length };
+  return { heapLimitMB: Math.round(heap.heap_size_limit / 1048576), heapUsedMB: Math.round(usage.heapUsed / 1048576), rssMB: Math.round(usage.rss / 1048576), totalMB: Math.floor(os.totalmem() / 1048576), cpus: cpuCount ??= os.cpus().length };
 }
 
 // LANE1-PERF: NPC backpressure budgets. Environment-only (NOT part of capacity.json

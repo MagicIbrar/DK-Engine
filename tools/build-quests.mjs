@@ -496,6 +496,12 @@ function main() {
     dialogStats.parsed++; dialogStats.badRows += d.bad;
     if (d.quest !== q) dialogStats.headerMismatch.push([q, d.quest, e.file]);
     dialogs.set(q, { file: `share/quest/${e.file}`, listed: true, header: d.quest, messages: d.messages, period: e.period, alt: [] });
+    // Lane 37: periodquestfilelist QuestIndex typos (e.g. 8489 -> file header 9489). Also attach the
+    // dialog tree under the file's own QuestIndex so the titled catalog row gets the tree. Evidence:
+    // share/quest/quest_09489_thanksgiving_huntingdummy.csv header QuestIndex=9489 while list says 8489.
+    if (d.quest != null && d.quest !== q && !dialogs.has(d.quest)) {
+      dialogs.set(d.quest, { file: `share/quest/${e.file}`, listed: true, header: d.quest, messages: d.messages, period: e.period, alt: [], repairedFromListed: q });
+    }
   }
   const listedFiles = new Set([...listed.values()].map((e) => e.file));
   for (const [lower] of onDisk) {
@@ -599,7 +605,12 @@ function main() {
     const itemsOut = [];
     for (let k = 1; k <= 10; k++) {
       const ids2 = splitIds(g(`Item_Index_${k}`)); if (!ids2.length) continue;
-      const it = { item: ids2.length === 1 ? ids2[0] : ids2, count: num(g(`Item_Count_${k}`)) || 1 };
+      // Scan fix A (SCAN-B I4): an explicit Item_Count 0 is Global data (only quest 5003, quest_rewardlist.csv:605, item 6008),
+      // not "1". The decompile only has the Quest_RewardList loader/provider (no count-0 rule), so the row grants nothing:
+      // it is kept as zeroCount for traceability and not handed out. An EMPTY cell still defaults to 1.
+      const rawCount = String(g(`Item_Count_${k}`) ?? '').trim();
+      if (rawCount !== '' && num(rawCount) === 0) { (o.zeroCountItems ||= []).push(ids2.length === 1 ? ids2[0] : ids2); continue; }
+      const it = { item: ids2.length === 1 ? ids2[0] : ids2, count: num(rawCount) || 1 };
       if (num(g(`Item_Socket_${k}`))) it.sockets = num(g(`Item_Socket_${k}`));
       if (num(g(`Item_Rate_${k}`))) it.chance = num(g(`Item_Rate_${k}`)) / 100000;
       for (const x of ids2) useRef('item', x, where);
@@ -985,6 +996,8 @@ function main() {
       if (objectives.length) q.kind = objectives.every((o) => o.kind === objectives[0].kind) ? objectives[0].kind : 'mixed';
       else q.kind = dlg ? 'dialog' : 'none';
     } else q.kind = dlg ? 'dialog' : 'none'; // no quest.csv row: dialog / string-only entry (NPC talk trees, event pages)
+    // Scan fix A (SCAN-B I5): no quest-table row, no dialog file, only a lines_eu title (5398, 15342): inert text-only stub.
+    if (q.src === 'text' && q.kind === 'none') q.textOnly = true;
     if (objectives.length) q.objectives = objectives;
     for (const o of objectives) { stats.objectives++; stats.objectivesByKind[o.kind] = (stats.objectivesByKind[o.kind] || 0) + 1; }
 

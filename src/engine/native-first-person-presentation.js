@@ -117,7 +117,7 @@ export function isOwnedWingObject(player,object){
  const group=player?.group;if(!group)return false;
  let wing=false;for(let node=object;node;node=node.parent){
   if(node===group)return wing;
-  wing ||= !!(node.userData?.mountsWing||node.userData?.wingMotion||node.userData?.model?.flags?.authoredWing);
+  wing ||= !!(node.userData?.mountsWing||node.userData?.wingMotion);
  }
  const uuid=object?.userData?.wingOwnerRoot;
  return !!uuid&&isOwnedWingObject(player,group.getObjectByProperty('uuid',uuid));

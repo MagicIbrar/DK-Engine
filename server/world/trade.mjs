@@ -4,6 +4,7 @@ import {sameScene} from './scene.mjs';
 import {AuthoritativeInventory} from './inventory.mjs';
 import {Container} from '../../src/systems/items/model.js';
 import {cursorTradeSaving} from './cursor-trade.mjs';
+import {canTradeOffer} from './item-flags.mjs';
 
 export const TRADE_SCHEMAS={trade:['token','type','operation','targetId','id','revision','items','dil']};
 const fail=(message,status=400)=>{throw Object.assign(new Error(message),{status});};
@@ -47,7 +48,7 @@ function offer(world,p,input){
   for(const row of input.items){
     if(!row||typeof row!=='object'||Array.isArray(row)||Object.keys(row).some(k=>!['uid','count'].includes(k))||typeof row.uid!=='string'||seen.has(row.uid)||!Number.isInteger(row.count)||row.count<1)fail('Send each item UID and quantity once.');
     seen.add(row.uid);const item=p.profile.inventory?.find(i=>i.uid===row.uid),def=item&&world.data.itemDB.def(item.itemIndex);
-    if(!def||item.bound||Number(def.trade)===0||item.expiresAt&&item.expiresAt<=world.now()||item.pet?.active||item.pet?.inv?.length)fail('That item cannot be traded.');
+    if(!canTradeOffer(def,item,world.now()))fail('That item cannot be traded.');
     if(row.count>(item.count||1))fail('That item quantity is unavailable.');
     const entry=structuredClone(item);entry.count=row.count;delete entry.page;delete entry.x;delete entry.y;
     if(!container.add(entry,{noStack:true}).ok)fail('The offer exceeds the original trade grid.');

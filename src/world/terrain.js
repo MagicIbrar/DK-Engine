@@ -15,6 +15,8 @@ import * as THREE from 'three';
 import { buildTileLookup, buildTileArrayData, sampleHeight, tileUV, CELL_HOLE } from '../formats/map.js';
 import { loadRGBA, loadTexture, maptileCandidates } from './texload.js';
 import { applyShade } from './shade.js';
+import { samplerFromMapRow, threeFilters } from '../engine/sampler-state.js';
+import { gfxSwitch } from './objects.js';
 
 export const TERRAIN_CHUNK = 32;   // cells per terrain chunk side (culling unit)
 export const DECAL_REGION = 64;    // cells per decal group side
@@ -190,7 +192,8 @@ export class Terrain {
   /**
    * @param {{map:object, game?:object, root:THREE.Object3D}} opts  map = parseMap() result
    */
-  constructor({ map, game = null, root }) {
+  constructor({ map, game = null, root, mapRow = null }) {
+    this.mapRow = mapRow;   // 2026-10-29 gfxA2 terrainMapSampler: share/maplist.csv row of this map
     this.map = map;
     this.game = game;
     this.width = map.width;
@@ -250,6 +253,19 @@ export class Terrain {
         generateMipmaps: true, minFilter: THREE.LinearMipmapLinearFilter, magFilter: THREE.LinearFilter,
         wrapS: THREE.ClampToEdgeWrapping, wrapT: THREE.ClampToEdgeWrapping, anisotropy: 4,
       });
+      // 2026-10-29 gfxA2 terrainMapSampler: the ground tiles sample with the map's own D3D sampler state (maplist.csv
+      // MipMapEnable / MipMapFilter / MaxFilter / MinFilter, the same row TextureCache already applies to every object texture)
+      // instead of the ENGINE-CHOSEN trilinear + anisotropy 4. Off: __dkGfxParity.terrainMapSampler=false / dk.gfx.terrainMapSampler=0.
+      if (this.mapRow && gfxSwitch('terrainMapSampler')) {
+        const st = samplerFromMapRow(this.mapRow);
+        if (st.source === 'maplist') {
+          const useMips = st.mip !== 0;
+          const f = threeFilters(st, useMips);
+          Object.assign(tileArray, { generateMipmaps: useMips, minFilter: f.minFilter, magFilter: f.magFilter });
+          if (f.anisotropy != null) tileArray.anisotropy = f.anisotropy;
+          this.samplerState = st;
+        }
+      }
       tileArray.needsUpdate = true;
       const lut = buildTileLookup(map);
       tileLUT = new THREE.DataTexture(lut.data, lut.width, lut.height, THREE.RGBAFormat, THREE.UnsignedByteType);

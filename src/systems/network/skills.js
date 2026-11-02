@@ -60,17 +60,33 @@ export function installSharedSkills(game, network) {
   // (the host queues a press made during a running skill, like the original engine), the local cast animation starts on the
   // press when the client's own checks pass (`predicted`), and it is dropped again if the host refuses or never announces it.
   const inflight=new Map(),refusalAt=new Map();let predicted=null;
+  const newSession=()=>{
+    try{if(globalThis.crypto?.randomUUID)return globalThis.crypto.randomUUID();}catch{}
+    try{
+    if(!globalThis.crypto?.getRandomValues)return null;
+    const b=globalThis.crypto.getRandomValues(new Uint8Array(16));b[6]=(b[6]&15)|64;b[8]=(b[8]&63)|128;
+    const h=[...b].map(x=>x.toString(16).padStart(2,'0')).join('');
+    return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
+    }catch{return null;}
+  };
+  let sessionId=newSession(),requestSerial=0,lastOwnCastSequence=-1;
+  const cooldownSequence=new Map();
+  const issuedRequests=new Map(),finishedPredictions=new Map(),confirmedRequests=new Map(),identityLimit=64,identityLifetimeMs=15000;
+  const remember=(map,key,value)=>{map.delete(key);map.set(key,value);while(map.size>identityLimit)map.delete(map.keys().next().value);};
+  const prune=()=>{const now=performance.now();for(const map of [issuedRequests,finishedPredictions,confirmedRequests])for(const [key,value]of map)if(value.until<=now)map.delete(key);};
+  const onSkillEnd=({actor,activeId}={})=>{if(actor!==game.player||!predicted?.requestId||activeId!==predicted.activeId)return;predicted.finished=true;remember(finishedPredictions,predicted.requestId,{skillId:predicted.skillId,until:performance.now()+identityLifetimeMs});};
   // ms the host's clock is ahead of what this client shows: one way over the link + one ~100 ms snapshot (ENGINE-CHOSEN).
   engine.castLeadMs=()=>(Number(network._linkRtt)||0)/2+CAST_SNAPSHOT_MS;
   const refuse=text=>{ // visible beside the character, not only as a chat line
     const now=performance.now();if(now-(refusalAt.get(text)??-1e9)<CAST_REFUSAL_REPEAT_MS)return;refusalAt.set(text,now);
     try{game.hud?.floater?.(game.player,String(text),'miss');}catch(error){console.warn('[skills] refusal text failed',error);}
   };
-  const rollback=()=>{
+  const rollback=(retainFinished=false)=>{
     const q=predicted;if(!q)return;predicted=null;
     if(engine.active&&engine.active.id===q.activeId)engine.cancel();
     // the clip's root curve already carried the body (engine._advanceRootMotion): the host never moved it, so take it back
-    engine.undoRootMotion?.(q.activeId);
+    const undone=engine.undoRootMotion?.(q.activeId);
+    if(q.requestId&&(!retainFinished||undone))finishedPredictions.delete(q.requestId);
     if(q.prior)engine.cooldowns.set(q.skillId,q.prior);else engine.cooldowns.delete(q.skillId);
   };
   // The cast event reports the cooldown as it stood when the host started the skill; by the time it arrives that much of it has
@@ -78,6 +94,8 @@ export function installSharedSkills(game, network) {
   // hotbar grey-out end when the host's cooldown ends (measured before: the client's ran 35 ms (median) to 100 ms longer).
   const applyCooldown=event=>{
     const ms=Number(event.cooldownMs);if(!(ms>0))return;
+    const seq=Number(event.sequence),id=Number(event.skillId);
+    if((event.castRequestId||network._castRequestIdCapability===true)&&Number.isSafeInteger(seq)&&seq>=0){if(seq<(cooldownSequence.get(id)??-1))return;cooldownSequence.delete(id);cooldownSequence.set(id,seq);while(cooldownSequence.size>identityLimit)cooldownSequence.delete(cooldownSequence.keys().next().value);}
     const clock=network._serverClock;let late=0;
     if(clock&&Number.isFinite(Number(event.at)))late=Math.min(1000,Math.max(0,clock.time+performance.now()-clock.at-Number(event.at)));
     const left=Math.max(0,ms-late)/1000;
@@ -98,7 +116,7 @@ export function installSharedSkills(game, network) {
   };
   // Start the cast animation now, with the same pure checks the original engine runs before it starts a cast. Everything
   // that decides the cast (cost, cooldown, range, line of sight, damage) stays on the host; nothing is spent or damaged here.
-  const startPredicted=(id,target,point)=>{
+  const startPredicted=(id,target,point,requestId)=>{
     const p=game.player;
     if(!p||p.dead||engine.active||predicted||(game.mounts?.isMounted?.()))return null;
     const skill=engine.skillDef(id),level=engine.skillLevel?.(id);
@@ -121,7 +139,7 @@ export function installSharedSkills(game, network) {
     }catch(error){engine.cancel();console.warn('[skills] predicted playback failed',id,error);return null;}
     const a=engine.active;if(!a)return null;
     a.predicted=true;engine._startCooldown?.(skill,L);
-    return predicted={skillId:id,activeId:a.id,at:performance.now(),ackAt:0,prior,skill,level};
+    return predicted={skillId:id,activeId:a.id,requestId,at:performance.now(),ackAt:0,prior,skill,level};
   };
   // One cast command. `via` wraps the send (movement settling for the walk-into-range path).
   const sendCast=(input,target,point,via)=>{
@@ -129,26 +147,36 @@ export function installSharedSkills(game, network) {
     if(target?.kind==='player'?network.fieldPk?.forcedFor?.(target):network.fieldPk?.armedNow?.())input={...input,forced:true};
     const id=input.skillId;
     if(inflight.size>=CAST_MAX_IN_FLIGHT)return false;
+    // CAST_REFUSAL_GUARD (D6): do not fire a cast the host will refuse. Mirror startPredicted's usability gate so a
+    // cooldown / silenced / resource-short press stays local (no chat spam of Global code 42 / invent English).
+    const pre=engine.usability?.(id);
+    if(pre&&!pre.ok&&!(pre.reason==='cooldown'&&engine.cooldownRemaining(id)*1000<=engine.castLeadMs()))return false;
+    const requestId=sessionId&&network._castRequestIdCapability===true?`${sessionId}:${++requestSerial}`:null;
+    if(requestId)input={...input,castRequestId:requestId};
+    if(requestId)remember(issuedRequests,requestId,{skillId:id,until:performance.now()+identityLifetimeMs});
     const epoch=generation,sentAt=performance.now(),wall=Date.now();
-    inflight.set(id,sentAt);
-    startPredicted(id,target,point);
+    const ticket={sentAt};inflight.set(id,ticket);
+    startPredicted(id,target,point,requestId);
+    const ownsPrediction=()=>!!predicted&&(requestId?predicted.requestId===requestId:predicted.skillId===id);
     const send=()=>disposed?false:network.action('cast',input);
     // the walk-into-range path must start settling the arrival stop in this very call (before this frame's network upkeep can flush it)
     let started;try{started=via?Promise.resolve(via(send)):Promise.resolve().then(send);}catch(error){started=Promise.reject(error);}
     void started.then(result=>{
       if(disposed||epoch!==generation)return;
-      if(result){if(predicted?.skillId===id)predicted.ackAt=performance.now();return;}
-      if(result===false){if(predicted?.skillId===id)rollback();return;} // the walk-into-range guard cancelled it: nothing was sent
+      if(result){if(ownsPrediction())predicted.ackAt=performance.now();return;}
+      if(result===false){if(ownsPrediction())rollback();else if(requestId)finishedPredictions.delete(requestId);return;} // the walk-into-range guard cancelled it: nothing was sent
       // refused or never delivered: take the early animation back and say why
       const err=network._lastCommandError;
-      if(predicted?.skillId===id)rollback();
+      if(ownsPrediction())rollback();else if(requestId)finishedPredictions.delete(requestId);
       refuse(err&&err.at>=wall-50&&err.message?err.message:'The skill could not be cast.');
-    }).catch(error=>console.warn('[skills] cast request failed',error)).finally(()=>{if(inflight.get(id)===sentAt)inflight.delete(id);});
+    }).catch(error=>console.warn('[skills] cast request failed',error)).finally(()=>{if(inflight.get(id)===ticket)inflight.delete(id);});
     return true;
   };
   const remote=new RemoteSkillPlayback(game),statusPlayback=new SharedStatusPlayback(game,network);
   const ground=new ApprovedGroundEffects(game,engine.data,engine.fx);
-  const clearCosmetics=()=>{rollback();generation++;if(game.controller?.order?.networkSkill)game.controller.stop();ground.clear();remote.clear();statusPlayback.clear();};
+  const clearCosmetics=()=>{rollback();inflight.clear();issuedRequests.clear();finishedPredictions.clear();confirmedRequests.clear();cooldownSequence.clear();lastOwnCastSequence=-1;if(sessionId&&requestSerial){sessionId=newSession();requestSerial=0;}generation++;if(game.controller?.order?.networkSkill)game.controller.stop();ground.clear();remote.clear();statusPlayback.clear();};
+  // SKILL-CLIP-COLD: a loaded class pack (or null while it starts loading) for idle clip warming (skills/clip-warmer.js)
+  network.remoteSkillPack=ci=>remote.loaded.get(ci)||(void remote.pack(ci).catch(()=>{}),null);
   network.remoteSkillBusy=actor=>remote.busy(actor); // Observers keep a NO_CANCEL skill body like the caster does
   // Fetch a visible player's class skill pack once, so its first cast starts on the observer when the event
   // arrives (measured live: +110-130 ms late on the first cast of a class without this, 0-15 ms after).
@@ -157,11 +185,11 @@ export function installSharedSkills(game, network) {
     const ci=Number(actor.save?.classIndex??actor.classDef?.index);
     if(actor.kind==='player'&&actor!==game.player&&Number.isInteger(ci)&&ci>=0&&ci<=14&&!preloaded.has(ci)){preloaded.add(ci);void remote.pack(ci).catch(error=>console.warn('[skills] remote skill pack preload failed',ci,error));}
   };
-  const remoteOff=[game.events?.on?.('map',clearCosmetics),game.events?.on?.('teleport',clearCosmetics),game.events?.on?.('network',({state}={})=>{if(['connecting','disconnected','expired'].includes(state))clearCosmetics();})];
+  const remoteOff=[game.events?.on?.('skill:end',onSkillEnd),game.events?.on?.('map',clearCosmetics),game.events?.on?.('teleport',clearCosmetics),game.events?.on?.('network',({state}={})=>{if(['connecting','disconnected','expired'].includes(state))clearCosmetics();})];
   const update=network.update?.bind(network);
   if(update)network.update=dt=>{
     if(!network.ready)clearCosmetics();else {remote.update(dt);ground.update(dt);}
-    if(predicted){const now=performance.now();if(predicted.ackAt?now-predicted.ackAt>CAST_ANNOUNCE_GRACE_MS:now-predicted.at>CAST_ANSWER_LIMIT_MS)rollback();}
+    prune();if(predicted){const now=performance.now();if(predicted.ackAt?now-predicted.ackAt>CAST_ANNOUNCE_GRACE_MS:now-predicted.at>CAST_ANSWER_LIMIT_MS)rollback(true);}
     const result=update(dt);
     if(network.ready&&(!network.self||Number(network.self.map)===Number(game.world?.info?.index)))statusPlayback.update();
     return result;
@@ -253,21 +281,39 @@ export function installSharedSkills(game, network) {
     if(event.type==='skillimpact'){void remote.impact(event,actor,network._serverClock);return;}
     if(event.type==='status'){statusPlayback.event(event,actor);return;}
     // The host parked this press behind the running skill: the early animation is taken back, the real one comes with its cast event.
-    if(event.type==='skillqueued'){if(actor===game.player&&predicted?.skillId===Number(event.skillId))rollback();return;}
+    if(event.type==='skillqueued'){if(actor===game.player){if(event.castRequestId)finishedPredictions.delete(event.castRequestId);if(predicted&&(event.castRequestId?event.castRequestId===predicted.requestId:predicted.skillId===Number(event.skillId)))rollback();}return;}
     // A queued press that could not start when the running skill ended.
-    if(event.type==='skillrefuse'){if(actor===game.player&&event.message){game.chat?.system?.(String(event.message),'err');refuse(event.message);}return;}
+    if(event.type==='skillrefuse'){if(actor===game.player){if(event.castRequestId)finishedPredictions.delete(event.castRequestId);if(event.message){game.chat?.system?.(String(event.message),'err');refuse(event.message);}}return;}
     if(event.type!=='cast')return;
     if(actor!==game.player){void remote.cast(event,actor,target);return;}
+    prune();const tag=typeof event.castRequestId==='string'?event.castRequestId:null;
+    if(tag&&confirmedRequests.get(tag)?.skillId===Number(event.skillId))return;
     const skill=engine.skillDef(event.skillId),level=Number(event.level)||1,L=skill&&engine.levelData(skill,level);
     if(!skill||!L)return;
+    const seq=Number(event.sequence),ordered=!!tag||network._castRequestIdCapability===true;
+    if(ordered&&Number.isSafeInteger(seq)&&seq>=0){
+      if(seq<lastOwnCastSequence){
+        if(tag&&predicted?.requestId===tag&&predicted.skillId===Number(event.skillId)){if(engine.active?.id===predicted.activeId)engine.active.predicted=false;predicted=null;}
+        if(tag&&finishedPredictions.get(tag)?.skillId===Number(event.skillId))finishedPredictions.delete(tag);
+        if(tag&&issuedRequests.get(tag)?.skillId===Number(event.skillId))remember(confirmedRequests,tag,{skillId:Number(event.skillId),until:performance.now()+identityLifetimeMs});
+        applyCooldown(event);
+        game.events?.emit?.('skill',{actor,skill,level,target,server:true,historical:true});
+        return;
+      }
+      lastOwnCastSequence=seq;
+    }
     // The animation already runs from the press: confirm it instead of restarting it (cooldown + the skill event only).
-    if(predicted&&predicted.skillId===Number(event.skillId)&&engine.active?.id===predicted.activeId){
-      engine.active.predicted=false;predicted=null;
+    const same=predicted&&predicted.skillId===Number(event.skillId)&&(tag?tag===predicted.requestId:true);
+    const finished=tag&&finishedPredictions.get(tag);
+    if((same&&engine.active?.id===predicted.activeId)||(finished&&finished.skillId===Number(event.skillId))){
+      if(same&&engine.active?.id===predicted.activeId)engine.active.predicted=false;
+      if(same)predicted=null;
+      if(tag){finishedPredictions.delete(tag);remember(confirmedRequests,tag,{skillId:Number(event.skillId),until:performance.now()+identityLifetimeMs});}
       applyCooldown(event);
       game.events?.emit?.('skill',{actor,skill,level,target,server:true});
       return;
     }
-    rollback(); // a different skill started: the early one is not the host's
+    rollback(true); // retain a naturally finished prediction for an out-of-order exact confirmation
     engine.cancel();
     // Approved playback bypasses useSkill's facing path. Aim only from the
     // canonical event target/point, not a newer cursor or unapproved input.
@@ -279,6 +325,7 @@ export function installSharedSkills(game, network) {
     try { engine._begin(skill,level,L,target,event.point,engine.equippedStyle(),{free:true}); }
     catch(error) { engine.cancel();console.warn('[skills] approved playback failed',event.skillId,error); }
     applyCooldown(event);
+    if(tag&&issuedRequests.get(tag)?.skillId===Number(event.skillId))remember(confirmedRequests,tag,{skillId:Number(event.skillId),until:performance.now()+identityLifetimeMs});
     game.events?.emit?.('skill',{actor,skill,level,target,server:true});
   };
   let baseline=null,desired=null,flushing=false;

@@ -3,7 +3,7 @@ import {DeadFrontRun} from '../../src/systems/events/deadfront.js';
 import {validateNpcEventAdmission} from './npc-event-admission.mjs';
 import {npcEventWindow} from './npc-event-parties.mjs';
 import {IceCastleRun} from '../../src/systems/events/icecastle.js';
-import {eventBrickFootprintCells} from '../../src/systems/events/bricks.js';
+import {eventBrickFootprintCells,isBreakable} from '../../src/systems/events/bricks.js';
 import {fill,plain} from '../../src/systems/events/text.js';
 import {AuthoritativeInventory} from './inventory.mjs';
 import {createInstance,exitInstance,stageInstanceMembers,requestInstanceClose} from './instances.mjs';
@@ -16,11 +16,14 @@ import {scaledReward} from './rates.mjs';
 import {isEventObject} from './event-object-combat.mjs';
 import {expeditionMembers} from './expedition.mjs';
 import {installPartyWar,joinableWar,joinWarTeam,removeTeam,lastHitter,partyWarSnapshot,teamOf} from './party-war.mjs';
-import {RACE_OPS,raceCommand,tickRace} from './race.mjs';
+// Lane 59 (d): Dead Front script ops on the host (Op1034 / Op1c20 / Op1c28 / Op101ae / level-up gifts)
+import {installDeadFrontHost} from './dead-front-host.mjs';
 import {selectTitle,tickTitles,titleSnapshot} from './titles.mjs';
 import {partyWarWindow,partyWarLobbyTimer} from '../../src/systems/events/partywar-clock.js';
 import {serverDate,serverTimestamp,SERVER_TIME} from '../../src/game/server-time.js';
-// EVENT-MODES: operations race-info / race-entry / race-leave (server/world/race.mjs) and titles / title (server/world/titles.mjs).
+import {tickFieldBoss} from './field-boss.mjs';
+// EVENT-MODES: operations titles / title (server/world/titles.mjs). Race removed (Lane 68): Global's client has no race feature;
+// old clients sending race-info / race-entry / race-leave get the normal unknown-operation refusal below.
 export const EVENT_SCHEMAS={event:['token','type','operation','map','npc','path','title']};
 const fail=(message,status=400)=>{throw Object.assign(Error(message),{status});};
 // Global client dialogs describe a four-person party minimum. The host accepts a solo entrant by user request,
@@ -78,7 +81,22 @@ export function partyWarLobbySnapshot(world,p,now=world.now()){
   const applied=window&&[...(world.eventApplications||[])].some(([key,rows])=>key.startsWith(`${mode}:`)&&key.endsWith(`:${window.cycle}`)&&rows.some(row=>row.applicant===applicantKey(world,p)));
   if(!here&&!applied)continue;
   const timer=partyWarLobbyTimer(mode,window,now);
-  if(timer)return {...timer,map:Number(p.map)};
+  if(timer)return {...timer,map:Number(p.map),...(applied&&timer.phase==='enter'?{selection:partyWarSelectionCue(world,p,mode,window,now)}:{})};
+ }
+ return null;
+}
+// Lane 59: the selection result at ChooseTime, partywar 100:105 "You have been selected to join ..." / 100:106 "You were
+// not selected ..." (@<effectui>2045/2046, both partywar tables), told once to each applicant in the first minute of
+// the entry window (the same 60 s host-cue window as partyWarAnnouncements). Selected = within the field's entry
+// capacity, the same rule the enter command applies; the record cap (Global 100:3) keeps every applicant within it.
+function partyWarSelectionCue(world,p,mode,window,now){
+ if(!window||!Number.isFinite(window.enter)||now<window.enter||now-window.enter>=60000)return null;
+ const applicant=applicantKey(world,p);
+ for(const[key,rows]of world.eventApplications||[]){
+  if(!key.startsWith(`${mode}:`)||!key.endsWith(`:${window.cycle}`))continue;
+  const index=rows.findIndex(row=>row.applicant===applicant);if(index<0)continue;
+  const map=Number(key.split(':')[1]),field=world.data.eventData?.field(mode,map),capacity=Math.min(EVENT_MAX_PARTIES,Number(field?.maxParties)||EVENT_MAX_PARTIES);
+  return {mode,cycle:window.cycle,at:window.enter,cate:100,code:index<capacity?105:106};
  }
  return null;
 }
@@ -100,6 +118,16 @@ export async function gmPartyWarControl(world,content,state){
  const enter=state==='open'?register+Math.max(0,Number(cfg.ChooseTime)-Number(cfg.RecordTime))*1000:now;
  const end=enter+Math.max(0,Number(cfg.WaitTime))*1000;
  if(!Number.isFinite(closed)||!Number.isFinite(enter)||!Number.isFinite(end)||end<=enter)fail('The original Party War clock is unavailable.',503);
+ // Dead Front 16a (b6e6e66 / MATH-VERIFY 16a): Global OnDeadFrontStart refuses when any field IsBattleStart.
+ // Engine mirror: refuse GM start/open while a live instance of this mode is mid-battle.
+ for(const instance of world.instances?.values()||[]){
+  if(instance.kind===mode&&instance.run&&!instance.run.ended&&!instance.closeRequested)
+   fail(`${name}: a live battle is already running. End it before starting another.`);
+ }
+ // 16a bShowEnterDelay (2d7a963): refuse another GM start/open while a prior override's enter/registration window is still open (now < prior.end).
+ if(prior&&Number.isFinite(prior.end)&&now<prior.end)
+  fail(`${name}: entry/registration is still open until ${new Date(prior.end).toISOString()}. End it first, or wait.`);
+ // 16c_GM_FULL_CYCLE_BLOCKED: Global full notice→register→~30min battle cycle vs instant test start remains ENGINE-CHOSEN / needs owner.
  const cycle=prior?.cycle??now;
  overrides.set(mode,{cycle,register,closed,enter,end,gm:true});
  return `${name}: ${state==='open'?'applications open':'entry open'} at the original officers until ${serverDate(state==='open'?closed:end).toISOString().slice(11,19)} ${SERVER_TIME.name}; level and ticket rules still apply.`;
@@ -116,7 +144,7 @@ export function eventChannel(world,instance,p,text,ms,opts={}){
  if(!valid()){failed();return Promise.resolve(false);}
  let channel,timer;
  return new Promise(resolve=>{
-  let done=false;channel={end:endAt,p,start,valid,descriptor:{type:'event:channel',map,instanceId:instance.id,actorId:p.id,channelId,channelKind:'event',text:String(text),durationMs,startedAt,endAt,phase},resolve(ok){if(done)return;done=true;clearInterval(timer);instance.channels=instance.channels.filter(c=>c!==channel);resolve(!!ok&&world.now()>=endAt&&valid());}};
+  let done=false;channel={end:endAt,p,start,valid,descriptor:{type:'event:channel',map,instanceId:instance.id,actorId:p.id,channelId,channelKind:'event',text:String(text),durationMs,startedAt,endAt,phase,depot:opts.depot?{id:opts.depot.id,rank:opts.depot.rank}:null},resolve(ok){if(done)return;done=true;clearInterval(timer);instance.channels=instance.channels.filter(c=>c!==channel);resolve(!!ok&&world.now()>=endAt&&valid());}};
   (instance.channels||=[]).push(channel);send({type:'event:channel',text:String(text),durationMs,startedAt,endAt,phase});
   timer=setInterval(()=>{if(!valid())channel.resolve(false);},50);timer.unref?.();
  }).then(ok=>{const completed=!!ok&&valid();send({type:'event:channel-end',completed});if(!completed)failed();return completed;});
@@ -124,7 +152,10 @@ export function eventChannel(world,instance,p,text,ms,opts={}){
 class HostBricks {
  constructor(world,instance,data){this.world=world;this.instance=instance;this.data=data;this.placements=new Map((data.map(instance.map)?.bricks||[]).map(([uid,brick,x,z,dir,isCreate])=>[uid,{uid,brick,x,z,dir,isCreate}]));this.byUid=new Map();this.counts=new Map();this.base=new Uint8Array(instance.scene.collision?.cells||0);}
  rows(){return [...this.placements.values()];}
- async spawn(uid){const pl=this.placements.get(uid),def=pl&&this.data.brick(pl.brick);if(!def)return null;let current=this.byUid.get(uid);if(current&&(!current.removed||isEventObject(current)))return current;const cells=eventBrickFootprintCells(this.instance.map,pl,def).filter(([x,z])=>x>=0&&z>=0&&x<this.instance.scene.width&&z<this.instance.scene.height).map(([x,z])=>z*this.instance.scene.width+x);current={...pl,removed:false,dead:false,cells,play:()=>{}};if(this.instance.kind==='iceCastle'&&[36818,36819].includes(pl.brick)&&def.targeting&&def.isAttackable){
+ async spawn(uid){const pl=this.placements.get(uid),def=pl&&this.data.brick(pl.brick);if(!def)return null;let current=this.byUid.get(uid);if(current&&(!current.removed||isEventObject(current)))return current;const cells=eventBrickFootprintCells(this.instance.map,pl,def).filter(([x,z])=>x>=0&&z>=0&&x<this.instance.scene.width&&z<this.instance.scene.height).map(([x,z])=>z*this.instance.scene.width+x);current={...pl,removed:false,dead:false,cells,play:()=>{}};
+ // Lane 59: Dead Front breakable bricks (the armory wood fences; brick.csv resists below 100, isBreakable) are event objects.
+ const dfObject=this.instance.kind==='deadFront'&&isBreakable(def);if((this.instance.kind==='iceCastle'&&[36818,36819].includes(pl.brick)||dfObject)&&def.targeting&&def.isAttackable){
+  if(dfObject)current.deadFrontObject=true;
   Object.assign(current,{eventObject:true,isBrick:true,brickIndex:pl.brick,id:`event-brick:${this.instance.id}:${uid}`,instanceId:this.instance.id,map:this.instance.map,name:def.name,brickDef:def,hp:def.maxHP,maxHp:def.maxHP,respawnAt:Infinity,respawnSec:Infinity,targetId:null,objectFootprint:cells.map(i=>({i,x:i%this.instance.scene.width,z:Math.floor(i/this.instance.scene.width)})),def:{name:def.name,level:def.level,hp:def.maxHP,exp:def.exp,def:[0,0],guard:[0,0],resist:[],speed:[0,0],role:'object',antiStatusRate:def.raw?.AntiStatusRate,antiKnockBack:Number(def.raw?.AntiKnockBackRate)>=100}});
   this.instance.scene.monsters.set(current.id,current);
  }this.byUid.set(uid,current);for(const i of cells){this.counts.set(i,(this.counts.get(i)||0)+1);this.instance.scene.collision.cells[i]=1;}return current;}
@@ -132,8 +163,10 @@ class HostBricks {
  spawnInitial(){return this.spawnAll(this.rows().filter(p=>Number(p.isCreate)===1).map(p=>p.uid));}
  get(uid){return this.byUid.get(uid);}
  standing(uid){const b=this.get(uid);return !!b&&!b.removed;}
- remove(uid,animation='open'){const b=this.get(uid);if(!b||b.removed)return;b.removed=true;b.animation=animation;if(isEventObject(b)){b.dead=true;b.hp=0;}for(const i of b.cells){const n=Math.max(0,(this.counts.get(i)||1)-1);this.counts.set(i,n);this.instance.scene.collision.cells[i]=n?1:this.base[i];}}
+ remove(uid,animation='open'){const b=this.get(uid);if(!b||b.removed)return;b.removed=true;b.animation=animation;if(isEventObject(b)){b.dead=true;b.hp=0;}if(b.passable)return;for(const i of b.cells){const n=Math.max(0,(this.counts.get(i)||1)-1);this.counts.set(i,n);this.instance.scene.collision.cells[i]=n?1:this.base[i];}}
  removeAll(ids,animation){for(const id of ids)this.remove(id,animation);}
+ // Lane 59: script BrickOpenRedCell / BrickCloseRedCell (older server reference): visible brick, walkable or blocked cells.
+ setPassable(uid,on){const b=this.get(uid);if(!b||b.removed||!!b.passable===!!on)return false;b.passable=!!on;for(const i of b.cells){const n=Math.max(0,(this.counts.get(i)||0)+(on?-1:1));this.counts.set(i,n);this.instance.scene.collision.cells[i]=n?1:this.base[i];}return true;}
  update(){}dispose(){for(const id of this.byUid.keys())this.remove(id);}
 }
 class HostWaves {
@@ -166,6 +199,7 @@ async function prepareRun(world,instance,leader){
  const ui={partyInfo(){},timer(){},result(){},tower(){},closeAll(){},channel:(text,ms,opts)=>eventChannel(world,instance,acting,text,ms,opts)};
  const sys={game,data,ui,msg:{say:(e,opts={})=>{
   if(!e)return;const nativeEntry={...e,text:e.text?fill(e.text,opts.vars,opts.args):''},text=plain(nativeEntry.text);
+   if(opts.source)nativeEntry.source={file:opts.source.file??null,cate:opts.source.cate??null,code:opts.source.code??null,args:Array.isArray(opts.args)?[...opts.args]:[]};
   // Empty-text native countdown, BGM and result directives are still real stage events.
   for(const sound of e.sound||[])if(Number(sound.a)===0&&Number.isSafeInteger(Number(sound.id)))instance.nativeBgm=Number(sound.id);
   if(text.trim()||e.effectUi?.length||e.sound?.length||e.effectSound?.length)emit(world,instance,{type:'event:message',text,nativeEntry,phase:instance.run?.phase,chat:opts.chat!==false,notice:opts.notice!==false,...(instance.sayTo?{recipients:[...instance.sayTo]}:{})});
@@ -175,9 +209,8 @@ async function prepareRun(world,instance,leader){
  const run=instance.kind==='deadFront'?new DeadFrontRun(sys,instance.map,{entry:'officer'}):new IceCastleRun(sys,instance.map,{entry:'officer'});run.waves.dispose();run.bricks=new HostBricks(world,instance,data);run.waves=new HostWaves(world,instance);
  run.rewards=()=>{
   if(instance.rewarded)return;
-  // The shared host replaces PartyWarRun.rewards; reveal Dead Front treasure
-  // only after its PvP winner has been placed in the native winner room.
-  if(instance.kind==='deadFront'&&run.won)run._treasure();
+  // The shared host replaces PartyWarRun.rewards. Lane 59: the Dead Front treasure boxes come from the script close
+  // step (deadfront.js _closeStep, older server reference spots), not from here.
   // PARTY-WAR: with two or more teams each member is paid by its team's place (server/world/party-war.mjs)
   const war=(instance.startingTeamCount??instance.teams?.length??0)>1;
   // Publisher July 25, 2024: initially single-party runs earn no PvP score
@@ -235,7 +268,7 @@ async function prepareRun(world,instance,leader){
   finally{p.sceneTransition=transition;instance.serviceSave=false;}
  };
  }
- instance.run=run;instance.dialogs=dialogs;instance.actAs=p=>{acting=p;};instance.actor=()=>acting;instance.game=game;installPartyWar(world,instance,run);await run.start();instance.eventTickAt=world.now();return run;
+ instance.run=run;instance.dialogs=dialogs;instance.actAs=p=>{acting=p;};instance.actor=()=>acting;instance.game=game;installPartyWar(world,instance,run);installDeadFrontHost(world,instance,run);await run.start();instance.eventTickAt=world.now();return run;
 }
 export function eventEntryMembers(world,p){
  // An expedition enters as one group in corp order; only its leader may choose the instance.
@@ -243,20 +276,23 @@ export function eventEntryMembers(world,p){
  if(expedition){if(expedition.leader!==p.id)fail('The expedition leader must choose the instance.');if(expedition.members.some(q=>q.offline))fail('All expedition members must be connected.');return expedition.members;}
  const party=p.partyId&&world.parties?.get(p.partyId);if(party&&party.leader!==p.id)fail('The party leader must choose the instance.');const result=party?party.members.map(id=>[...world.players.values()].find(q=>q.id===id&&!q.leaving)): [p];if(result.some(q=>!q))fail('All party members must be connected.');return result;}
 export async function eventCommand(world,p,input){
- if(RACE_OPS.has(input.operation))return raceCommand(world,p,input);
  if(input.operation==='titles')return {titles:titleSnapshot(p)};
  if(input.operation==='title'){const title=selectTitle(world,p,input.title);await world.persist(p);return {title,titles:titleSnapshot(p)};}
  if(input.operation==='record'){
   // Native job 37/98 RECORD_PARTY_WAR: a solo player or party leader applies during registration.
   const data=world.data.eventData;if(!data)fail('Event tables are unavailable.',503);const mode=data.modeOf(input.map);if(!['deadFront','iceCastle'].includes(mode))fail('Choose a supported cooperative event.');const officer=data.officerByNpc.get(input.npc);if(!officer||officer.mode!==mode||officer.map!==input.map)fail('Choose the original event officer.');
   const win=eventWindow(world,mode);if(win?.phase!=='register')fail('It is not the application period.');
+  // Global PartywarRecordHandler result 6 = 100:6 "You need to form a party in order to apply." (stringtable_partywar)
+  if(!(p.partyId&&world.parties?.get(p.partyId)))fail('You need to form a party in order to apply.');
   const members=eventEntryMembers(world,p),applicant=applicantKey(world,p);
   const placement=nearbyNpc(world,p,{npcIndex:input.npc,radius:8});
   if(!placement||isCustomScene(world,p.map)&&!offersOriginalJob(world,placement,mode==='deadFront'?37:98,input.map))fail('Walk to the event officer.');
   const field=data.field(mode,input.map),[lo,hi]=field.entryLevel||field.level||[1,250],itemCode=Number(field?.itemCode)||0;
   for(const member of members){if(member.dead||!sameScene(member,p))fail('All party members must be in the entrance area.');if(member.profile.level<lo||member.profile.level>hi)fail('Every party member must meet the original entry level.');if(itemCode>0&&new AuthoritativeInventory(member.profile,world.data.itemDB).count(itemCode)<1)fail('Each party member needs the original admission ticket.');}
   const apps=(world.eventApplications||=new Map());for(const[k,list]of apps)if(k.endsWith(':'+win.cycle)&&list.some(a=>a.applicant===applicant))fail('You have already applied.');
-  const key=`${mode}:${input.map}:${win.cycle}`,list=apps.get(key)||[];list.push({applicant,leader:p.id,at:world.now()});apps.set(key,list);
+  // Global field.csv RecordEnableCount caps the applications of a field; PartywarRecordHandler result 3 is 100:3
+  // "Maximum # of party reached. You cannot apply.", so more than RecordEnableCount (at most 4) applicants never exist.
+  const key=`${mode}:${input.map}:${win.cycle}`,list=apps.get(key)||[];if(list.length>=Math.min(EVENT_MAX_PARTIES,Number(field?.maxParties)||EVENT_MAX_PARTIES))fail('Maximum # of party reached. You cannot apply.');list.push({applicant,leader:p.id,at:world.now()});apps.set(key,list);
   for(const[k,l]of apps)if(Number(k.split(':').pop())<win.cycle-86400000)apps.delete(k);
   return {applied:true,position:list.length};
  }
@@ -264,7 +300,7 @@ export async function eventCommand(world,p,input){
   const data=world.data.eventData;if(!data)fail('Event tables are unavailable.',503);const mode=data.modeOf(input.map);if(!['deadFront','iceCastle'].includes(mode))fail('Choose a supported cooperative event.');const officer=data.officerByNpc.get(input.npc);if(!officer||officer.mode!==mode||officer.map!==input.map)fail('Choose the original event officer.');
   const participants=eventEntryMembers(world,p),field=data.field(mode,input.map),tier=data.tierOf(mode,input.map)?.tier,itemCode=Number(field?.itemCode)||0;
   const npcOnly=participants.every(member=>member.npcPlayer===true),npcWarId=validateNpcEventAdmission(world,participants,{mode,map:input.map,leader:p});
-  {// Entry window ChooseTime..ChooseTime+WaitTime; at most EVENT_MAX_PARTIES applicants per field. Selection order among >4 applicants is ENGINE-CHOSEN (application order): no Global algorithm recovered.
+  {// Entry window ChooseTime..ChooseTime+WaitTime; at most min(EVENT_MAX_PARTIES, RecordEnableCount) applicants per field: the record command refuses more (Global 100:3), so every applicant is selected.
    const win=eventWindow(world,mode),list=(win&&world.eventApplications?.get(`${mode}:${input.map}:${win.cycle}`))||[],capacity=Math.min(EVENT_MAX_PARTIES,Number(field?.maxParties)||EVENT_MAX_PARTIES);
    if(win?.phase!=='enter')fail('Entry opens only after the application period and selection.');if(!(win.gm&&list.length===0)&&!list.slice(0,capacity).some(a=>a.applicant===applicantKey(world,p)))fail('You were not selected for this event.');}
   const placement=nearbyNpc(world,p,{npcIndex:input.npc,radius:8});
@@ -296,7 +332,7 @@ export async function eventCommand(world,p,input){
   await picked;page=instance.dialogs.get(p.id)||{text:'',options:[]};}
  if(p.dirty)await world.persist(p);return {dialog:{npc:input.npc,text:page.text||'',options:(page.options||[]).map(o=>({label:o.label||'Continue'}))}};}finally{release();}
 }
-export function tickEvents(world,dt){tickTitles(world);void tickRace(world).catch(error=>console.warn('[race] tick failed',error?.message||error));for(const instance of world.instances?.values()||[]){
+export function tickEvents(world,dt){tickTitles(world);void tickFieldBoss(world).catch(error=>console.warn('[fieldboss] tick failed',error?.message||error));for(const instance of world.instances?.values()||[]){
  retryInstanceProgress(world,instance);
  if(instance.admitting||instance.progressSave||instance.floorTransition||instance.serviceSave)continue;
  const run=instance.run;
@@ -316,5 +352,5 @@ export function tickEvents(world,dt){tickTitles(world);void tickRace(world).catc
  instance.eventTickAt=eventNow;
  run.update(dt,clockDt);
 }}
-export function eventSnapshot(world,p){const i=world.instances?.get(p.instanceId),r=i?.run;return r&&i.kind!=='dungeon'?{id:i.id,map:i.map,kind:i.kind,phase:r.phase,nativeBgm:i.nativeBgm??null,remainingMs:Math.max(0,Math.round(r.phaseT*1000)),score:i.teams?.length>1?teamOf(i,p)?.score??0:r.score,won:i.teams?.length>1?(i.rewarded?teamOf(i,p)?.place===1:null):r.won,war:partyWarSnapshot(world,p,i),towerHp:r.towerHp??null,cooperative:true,channels:(i.channels||[]).filter(c=>c.p===p&&c.valid?.()).map(c=>c.descriptor),result:i.rewarded?(i.resultFor?.(p)||i.result):null,saveError:i.saveError||null,bricks:[...r.bricks.byUid.values()].map(b=>({uid:b.uid,brick:b.brick,x:b.x,z:b.z,dir:b.dir,id:isEventObject(b)?b.id:null,hp:isEventObject(b)?b.hp:null,maxHp:isEventObject(b)?b.maxHp:null,breakable:isEventObject(b),dead:!!b.dead,removed:b.removed,animation:b.animation||null}))}:null;}
+export function eventSnapshot(world,p){const i=world.instances?.get(p.instanceId),r=i?.run;return r&&i.kind!=='dungeon'?{id:i.id,map:i.map,kind:i.kind,phase:r.phase,nativeBgm:i.nativeBgm??null,remainingMs:Math.max(0,Math.round(r.phaseT*1000)),score:i.teams?.length>1?teamOf(i,p)?.score??0:r.score,won:i.teams?.length>1?(i.rewarded?teamOf(i,p)?.place===1:null):r.won,war:partyWarSnapshot(world,p,i),towerHp:r.towerHp??null,cooperative:true,channels:(i.channels||[]).filter(c=>c.p===p&&c.valid?.()).map(c=>c.descriptor),result:i.rewarded?(i.resultFor?.(p)||i.result):null,saveError:i.saveError||null,bricks:[...r.bricks.byUid.values()].map(b=>({uid:b.uid,brick:b.brick,x:b.x,z:b.z,dir:b.dir,id:isEventObject(b)?b.id:null,hp:isEventObject(b)?b.hp:null,maxHp:isEventObject(b)?b.maxHp:null,breakable:isEventObject(b),dead:!!b.dead,removed:b.removed,passable:!!b.passable,animation:b.animation||null}))}:null;}
 

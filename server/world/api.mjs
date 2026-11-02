@@ -1,7 +1,8 @@
-import {createAdminGuildReadiness} from '../admin-guild-readiness.mjs';
+﻿import {createAdminGuildReadiness} from '../admin-guild-readiness.mjs';
 import {loginChannelCatalog} from './channels.mjs';
 import zlib from 'node:zlib';
 import {atomicStoreDiagnostic} from '../accounts/atomic-store.mjs';
+import {isStaffBracketAccount} from '../accounts/staff-brackets.mjs';
 import {performance} from 'node:perf_hooks';
 import {streamPressure} from './stream-pressure.mjs';
 import {reserveHumanNpcSlot,canonicalNpc,npcSlotTarget} from './npc-human-slots.mjs';
@@ -33,6 +34,7 @@ import {createNpcSimulationDirectory} from './npc-simulation-directory.mjs';
 import {npcBackgroundProfileEligible} from './npc-background-population.mjs';
 import {bindAdminGuildHost} from '../admin-guild-host.mjs';
 import {createAdminGuildJob} from '../admin-guild-job.mjs';
+import {startPresenceFeed} from '../pipeline/presence-feed.mjs';   // NET-REALM: Link+Beacon presence feed
 import {createNpcBackpressure} from './npc-backpressure.mjs';import {readNpcBackpressureSettings} from '../capacity-settings.mjs';
 
 /** Whether this direct (not relayed) request accepts a gzip body (Accept-Encoding gzip with a non-zero q). */
@@ -55,14 +57,27 @@ export function reply(req, res, status, value, sent = () => {}) {
     resolve();
   }));
 }
+/** NET-REALM: reply() for a body that is already JSON text (coalesced /state replies); same headers, same gzip rule. */
+export function replyText(req, res, status, text, sent = () => {}) {
+  const headers = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' };
+  if (text.length < 1024 || !acceptsGzip(req)) { const bytes = typeof text === 'string' ? Buffer.from(text) : text; res.writeHead(status, headers); res.end(bytes); sent(bytes.length); return Promise.resolve(); }
+  return new Promise(resolve => zlib.gzip(text, { level: 1 }, (error, body) => {
+    if (!res.headersSent) {
+      if (error) { res.writeHead(status, headers); res.end(text); sent(Buffer.byteLength(text)); }
+      else { res.writeHead(status, { ...headers, 'Content-Encoding': 'gzip', Vary: 'Accept-Encoding', 'Content-Length': body.length }); res.end(body); sent(body.length); }
+    }
+    resolve();
+  }));
+}
 /** The event stream's writer: gzip (flushed per event) when the browser accepts it and the request is direct, else the response itself. */
 export function streamEncoder(req, res, sent = () => {}) {
-  if (!acceptsGzip(req)) return { encoding: null, write: text => { res.write(text); sent(Buffer.byteLength(text)); }, pending: () => 0, close() {} };
+  // NETX (DK_NETX_SHARED_ROWS): a frame may arrive as an array of Buffers - written corked (one writev), same payload bytes
+  if (!acceptsGzip(req)) return { encoding: null, write: text => { if (Array.isArray(text)) { let n = 0; res.cork(); for (const b of text) { res.write(b); n += b.length; } res.uncork(); sent(n); return; } const bytes = typeof text === 'string' ? Buffer.from(text) : text; res.write(bytes); sent(bytes.length); }, pending: () => 0, close() {} };
   const zip = zlib.createGzip({ level: 1, flush: zlib.constants.Z_SYNC_FLUSH });
   zip.on('error', () => res.destroy());
   zip.on('data', chunk => sent(chunk.length));
   zip.pipe(res);
-  return { encoding: 'gzip', write: text => zip.write(text), pending: () => zip.writableLength, close() { zip.unpipe(res); zip.destroy(); } };
+  return { encoding: 'gzip', write: text => zip.write(Array.isArray(text) ? Buffer.concat(text) : text), pending: () => zip.writableLength, close() { zip.unpipe(res); zip.destroy(); } };
 }
 function json(res, status, value) { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(value)); }
 // ENGINE-CHOSEN admission delivery deadline matches the ordinary15s HTTP request budget.
@@ -119,8 +134,14 @@ export function createWorldApi({ resolveUser, getProfile, saveProfile, saveProfi
   const commands = new Map(),receipts=new CommandReceipts();
   let worldInitialized=false,humanAdmissions=0,adminGuildSetup;
   const ownerGuildReadiness=createAdminGuildReadiness();
-  const admissionReadiness=user=>{const base=preparationStatus();return user.id==='admin'&&adminGuildAccounts?ownerGuildReadiness.read(base,adminGuildJob.snapshot()):base;};
-  const adminGuildJob=createAdminGuildJob({shouldYield:()=>stopping||humanAdmissions>0,retryMs:3000,prepare:async yielding=>{
+  const admissionReadiness=user=>{const base=preparationStatus();return isStaffBracketAccount(user.id)&&adminGuildAccounts?ownerGuildReadiness.read(base,adminGuildJob.snapshot()):base;};
+  // STAFF_SETUP_UNSEEN: the ADMIN/GM/DEV guild setup logs staff showcase characters in as ordinary
+  // sessions to walk to the native guild NPC. Never do that while any real (non-NPC, non-setup) player
+  // is in the world, so setup actors are never visible to players. Resumes when the world is empty
+  // (leave/admission re-request). 'players-online' is not a readiness soft-wait reason, so owner Play
+  // is never delayed by it. GM tools are unchanged.
+  const realPlayerOnline=()=>{for(const p of world?.players?.values?.()||[])if(p&&!p.leaving&&!p.staffSetup&&!/^npc_[a-f0-9]{32}$/.test(String(p.account)))return true;return false;};
+  const adminGuildJob=createAdminGuildJob({shouldYield:()=>stopping||humanAdmissions>0||(realPlayerOnline()?'players-online':false),retryMs:3000,prepare:async yielding=>{
     if(!adminGuildAccounts)return {complete:false,reason:'private-roster-unavailable'};
     if(!worldInitialized)return {complete:false,reason:'world-not-ready'};
     if(yielding())return {complete:false,reason:'human-admission-or-host-stopping'};
@@ -309,10 +330,22 @@ export function createWorldApi({ resolveUser, getProfile, saveProfile, saveProfi
   // stream is answered with a receipt only: the client applies snapshots only from replies that carry them
   // (src/systems/network/client.js action), and its movement acks come from the stream (movement-sync.js). At full rate, for
   // every other command, for polling / relay clients and for stop (client.js stop reads self) nothing changes.
-  function lightMoveReply(command, result, account) {
-    if (command?.type !== 'move' || budget.divisor === 1 || !result || typeof result !== 'object' || result.error) return result;
+  // REALM-PERF: with MOVE_RECEIPT_PLAYERS or more players in the world the same receipt is used at full stream rate too (stream = 1 tick =
+  // 100 ms, the report rate), and the snapshot is then not built at all (core.mjs receiptOnly): at 200 players every report rebuilt all
+  // 200 public rows (~40 % of Realm's CPU, measured). Below the threshold, and for polling / relay clients, nothing changes.
+  const MOVE_RECEIPT_PLAYERS = Number(process.env.DK_MOVE_RECEIPT_PLAYERS) > 0 ? Number(process.env.DK_MOVE_RECEIPT_PLAYERS) : 50;   // ENGINE-CHOSEN
+  function moveReceiptEligible(account) {
+    if (budget.divisor === 1 && !((world?.players?.size || 0) >= MOVE_RECEIPT_PLAYERS)) return false;
     const player = world?.players.get(account);
-    if (!player || player.transport === 'polling' || ![...streams].some(s => s.account === account && s.token === player.token && !s.res.writableEnded)) return result;
+    return !!player && player.transport !== 'polling' && [...streams].some(s => s.account === account && s.token === player.token && !s.res.writableEnded);
+  }
+  async function moveReceiptAction(shared, player, account, command) {
+    if (command?.type !== 'move' || !player || !moveReceiptEligible(account)) return shared.action(account, command);
+    player._moveReceiptReply = true; try { return await shared.action(account, command); } finally { player._moveReceiptReply = false; }
+  }
+  function lightMoveReply(command, result, account) {
+    if (command?.type !== 'move' || !result || typeof result !== 'object' || result.error) return result;
+    if (!(result.receipt === true && !result.self) && !moveReceiptEligible(account)) return result;
     return { ok: true, receipt: true, sequence: result.sequence, serverTime: result.serverTime, ...(result.superseded ? { superseded: true } : {}), ...(result.replayed ? { replayed: true } : {}) };
   }
   // An exception thrown inside this timer used to end the whole server process for every player (found by
@@ -325,14 +358,79 @@ export function createWorldApi({ resolveUser, getProfile, saveProfile, saveProfi
   // most one slice instead of the whole tick + broadcast (44-60 ms with 100 players / 10,000 monsters, measured -
   // that wait was the ping's p95). Slices are timed, not counted: fixed 16-stream slices added event-loop turns to every reply
   // (dungeon ping p50 4 -> 12 ms). Each slice is its own snapshot scope (row caches); a new tick waits until the broadcast ended.
-  const BROADCAST_SLICE_MS = 8;
+  const BROADCAST_SLICE_MS = Number(process.env.DK_NETX_BCAST_SLICE_MS) > 0 ? Number(process.env.DK_NETX_BCAST_SLICE_MS) : 8;   // NETX: DK_NETX_BCAST_SLICE_MS (unset = 8, unchanged)
   // lane-perf: SSE row deltas (unchanged players/monsters rows sent as their id; DK_ROWS_DELTA=1 enables).
-  const ROWS_DELTA = process.env.DK_ROWS_DELTA === '1';   // default OFF until an idle-box CPU check shows no regression   // ENGINE-CHOSEN
+  const ROWS_DELTA = process.env.DK_ROWS_DELTA === '1';   // OFF unless set; dedicated-config sets DK_ROWS_DELTA=1 under sqlserver (SQL-SERVER-SPEED / ping-flat net burst)   // ENGINE-CHOSEN
   let broadcasting = false;
+  startPresenceFeed(world);   // NET-REALM: Link+Beacon presence -> Beacon worker (ServerOn only, null otherwise; DK_BEACON=0 disables)
+  // NET-REALM (DK_STATE_COALESCE, default on; =0 restores the per-request build): GET /state requests that arrive in the same
+  // event-loop turn are answered from ONE synchronous snapshot scope (withSnapshotBroadcast), the same safety model as the SSE
+  // broadcast: nothing else runs between them, so every public player row and monster row is built and serialized once for
+  // the batch instead of once per request (200 players polling at 2 Hz rebuilt 200 rows per request: ~35 % of Realm CPU).
+  // Bytes are those of JSON.stringify(snapshot(p)) (core.mjs snapshotText); the stream's event cursor is not moved (cursor:false).
+  const STATE_COALESCE = process.env.DK_STATE_COALESCE !== '0';   // ENGINE-CHOSEN
+  let stateBatch = null;
+  const stateStats = { batches: 0, replies: 0, fallbacks: 0 };
+  function coalescedStateText(shared, p) {
+    return new Promise((resolve, reject) => {
+      if (!stateBatch) { stateBatch = []; setImmediate(flushStateBatch); }
+      stateBatch.push({ shared, p, resolve, reject });
+    });
+  }
+  // A batch runs in slices of about STATE_SLICE_MS (each its own scope, like the broadcast) so a burst of polls cannot hold
+  // the event loop: the rest continues on the next turn.
+  const STATE_SLICE_MS = Number(process.env.DK_STATE_SLICE_MS) > 0 ? Number(process.env.DK_STATE_SLICE_MS) : 4;   // ENGINE-CHOSEN
+  function flushStateBatch() { const batch = stateBatch || []; stateBatch = null; stateSlice(batch, 0); }
+  function stateSlice(batch, from) {
+    const deadline = performance.now() + STATE_SLICE_MS; let i = from;
+    while (i < batch.length) {
+      const shared = batch[i].shared;
+      if (stopping || typeof shared?.snapshotText !== 'function' || typeof shared.withSnapshotBroadcast !== 'function') { stateStats.fallbacks++; batch[i++].reject(null); continue; }
+      stateStats.batches++;
+      try {
+        shared.withSnapshotBroadcast(() => { for (const first = i; i < batch.length && batch[i].shared === shared && (i === first || performance.now() < deadline); i++) {
+          const b = batch[i];
+          // left or rejoined meanwhile: the caller leases again and gets the ordinary answer / error
+          if (shared.players.get(b.p.account) !== b.p || b.p.leaving) { stateStats.fallbacks++; b.reject(null); continue; }
+          try { b.resolve(shared.snapshotText(b.p, null, { cursor: false, asBuffer: SSE_BUFFERS })); stateStats.replies++; } catch (error) { b.reject(error); }
+        }});
+      } catch (error) { batch[i++]?.reject(error); }
+      if (i < batch.length && performance.now() >= deadline) { setImmediate(() => stateSlice(batch, i)); return; }
+    }
+  }
+  // NET-REALM (DK_SUPERSEDED_RECEIPT, default on; =0 = old): an out-of-order (superseded) or replayed movement report of a
+  // receipt-eligible stream client built a FULL snapshot that lightMoveReply then threw away for {ok,receipt}. It is now the
+  // receipt-only snapshot (same side effects: forced displacement, melee contacts); the bytes the client gets are unchanged.
+  const SUPERSEDED_RECEIPT = process.env.DK_SUPERSEDED_RECEIPT !== '0';   // ENGINE-CHOSEN
+  // NET-REALM (DK_SSE_BUFFERS, default on; =0 = old string path): each snapshot is assembled as one Buffer from row buffers
+  // encoded once per broadcast scope and shared by every viewer (core.mjs _snapshotBufferOut); byte-identical output.
+  const SSE_BUFFERS = process.env.DK_SSE_BUFFERS !== '0';   // ENGINE-CHOSEN
+  // >>> NETX (docs/overnight-43.19/NET-EVERY-ANGLE.md) - every flag OFF by default
+  const NETX_PARTS = process.env.DK_NETX_SHARED_ROWS === '1';   // SSE frames as shared parts (core.mjs _netxSharedOut)
+  const NETX_FIELD_DELTA = process.env.DK_NETX_FIELD_DELTA === '1';   // per-field row patches for streams opened with rd=2
+  // DK_NETX_MOVE_GATE=<n>: movement reports run n per check-phase turn instead of all inside the poll phase they arrived in, so a
+  // burst of reports (every client's 100 ms tick) cannot hold a ping / state reply behind it. FIFO, so per-account order is kept.
+  const NETX_MOVE_GATE = Number(process.env.DK_NETX_MOVE_GATE) > 0 ? Math.floor(Number(process.env.DK_NETX_MOVE_GATE)) : 0;
+  let netxGateQ = [], netxGateArmed = false;
+  const netxMoveGate = () => new Promise(resolve => { netxGateQ.push(resolve); if (!netxGateArmed) { netxGateArmed = true; setImmediate(netxGatePump); } });
+  function netxGatePump() { const q = netxGateQ, n = Math.min(NETX_MOVE_GATE, q.length); for (let k = 0; k < n; k++) q[k](); netxGateQ = q.slice(n); if (netxGateQ.length) setImmediate(netxGatePump); else netxGateArmed = false; }
+  // <<< NETX
+  // NET-REALM: with DK_ROWS_DELTA=1, every ROWS_KEYFRAME-th frame of a stream is a keyframe (every row in full), so a client
+  // that ever drifted re-syncs without a reconnect. DK_ROWS_KEYFRAME (frames, default 50 = 5 s at 10 Hz; 0 = never).
+  const ROWS_KEYFRAME = process.env.DK_ROWS_KEYFRAME === undefined ? 50 : Math.max(0, Number(process.env.DK_ROWS_KEYFRAME) || 0);   // ENGINE-CHOSEN
+  function streamRowCache(stream) {
+    const cache = stream.rowCache ??= { key: `${stream.slot}`, rows: { players: new Map(), monsters: new Map() }, patch: stream.rd2 === true };   // NETX patch: DK_NETX_FIELD_DELTA + rd=2
+    stream.rowFrames = (stream.rowFrames || 0) + 1;
+    if (ROWS_KEYFRAME > 0 && stream.rowFrames % ROWS_KEYFRAME === 0) { cache.rows.players = new Map(); cache.rows.monsters = new Map(); }
+    return cache;
+  }
+  // STABILITY-PING soak metrics only (DK_SOAK_METRICS set by tools/soak): [world.tick ms, tick+broadcast busy ms, wall ms] per tick
+  const TICK_STATS = process.env.DK_SOAK_METRICS ? (globalThis.__dkTickStats ||= []) : null;
   const timer = setInterval(() => {
     if (!world||!worldInitialized||stopping||broadcasting) return;
     const began = performance.now(); tickCount++;
     try { world.tick(); } catch (error) { fault('tick', error); }
+    const tickWork = TICK_STATS ? performance.now() - began : 0;
     if(npcDirector&&npcPlayers())backpressure().sample(); // LANE1-PERF backpressure hook
     if(npcDirector&&!populationPreparing&&!npcPreloading)void npcDirector.tick();
     let busy = performance.now() - began;
@@ -343,7 +441,7 @@ export function createWorldApi({ resolveUser, getProfile, saveProfile, saveProfi
       try { next = broadcastSlice(list, next, at + BROADCAST_SLICE_MS); } catch (error) { fault('broadcast', error); next = list.length; }
       busy += performance.now() - at;
       if (next < list.length) setImmediate(slice);
-      else { broadcasting = false; budget.work(busy); budget.update(); }
+      else { broadcasting = false; budget.work(busy); budget.update(); if (TICK_STATS && TICK_STATS.length < 30000) TICK_STATS.push(tickWork, busy, performance.now() - began); }
     };
     setImmediate(slice);
   }, tickMs);
@@ -362,7 +460,7 @@ export function createWorldApi({ resolveUser, getProfile, saveProfile, saveProfi
       if(pressure==='wait')continue;
       if (!budget.due(tickCount, stream.slot)) continue;   // a slower snapshot rate while over the upload / work budget
       let text;
-      try { text = `event: snapshot\ndata: ${world.snapshotText ? world.snapshotText(player, ROWS_DELTA ? (stream.rowCache ??= { key: `${stream.slot}`, rows: { players: new Map(), monsters: new Map() } }) : null) : JSON.stringify(world.snapshot(player))}\n\n`; } catch (error) { fault('snapshot', error); stream.res.end(); streams.delete(stream); continue; }
+      try { text = (SSE_BUFFERS && world.snapshotText) ? world.snapshotText(player, ROWS_DELTA ? streamRowCache(stream) : null, { asBuffer: true, prefix: 'event: snapshot\ndata: ', suffix: '\n\n', parts: NETX_PARTS }) : `event: snapshot\ndata: ${world.snapshotText ? world.snapshotText(player, ROWS_DELTA ? streamRowCache(stream) : null) : JSON.stringify(world.snapshot(player))}\n\n`; } catch (error) { fault('snapshot', error); stream.res.end(); streams.delete(stream); continue; }
       stream.out.write(text);
     }});
     return i;
@@ -468,6 +566,16 @@ export function createWorldApi({ resolveUser, getProfile, saveProfile, saveProfi
       try {
         const origin = req.headers.origin;
         let originValid=true;if(origin){try{originValid=new URL(origin).host===req.headers.host;}catch{originValid=false;}}if(!originValid||req.headers['sec-fetch-site']==='cross-site')throw new WorldError(403,'Cross-origin world access is not allowed.');
+        if(pathname==='/api/world/health'){
+          // SQL-SERVER-SPEED: unauthenticated local probe (tick/AOI/SQL scale + move-lag contract).
+          if(req.method!=='GET')throw new WorldError(405,'World health requires GET.');
+          const mem=runtimeMemory();
+          json(res,200,{ok:true,tickMs,maxPlayers,viewCells:100,rowsDelta:ROWS_DELTA,sqlPool:Number(process.env.DEKARON_SQL_POOL||1)||1,storage:process.env.DEKARON_DEDICATED_STORAGE||'json',sqlInstance:process.env.DEKARON_SQL_INSTANCE||null,players:world?.players?.size??0,stream:budget.state(),memoryMB:mem?.heapUsedMB??null,moveLag:{serverOwnsMotion:true,inventedClientPrediction:false,sendIntervalMs:100,maxInflight:3,perStepSql:false,poseDirtySeparate:typeof world?.poseChanged==='function',pingFlat:'poseChanged-no-sql'}});
+          return true;
+        }
+        if(pathname==='/api/world/ping'){ // PING: answers before auth/world work; network round trip only
+          res.writeHead(204,{'Cache-Control':'no-store',...(process.env.DEKARON_PING_PORT_ACTIVE?{'X-Dekaron-Ping-Port':process.env.DEKARON_PING_PORT_ACTIVE}:{})});res.end();return true;
+        }
         const user = await resolveUser(req);
         if (!user?.id) throw new WorldError(401, 'Log in before joining the shared world.');
         if(pathname==='/api/world/ready'){
@@ -489,7 +597,7 @@ export function createWorldApi({ resolveUser, getProfile, saveProfile, saveProfi
           if(joinIntent.cursorVersion!==undefined&&joinIntent.cursorVersion!==1)throw new WorldError(400,'Unsupported inventory cursor protocol.');
           if(Object.hasOwn(joinIntent,'channel')&&!Number.isInteger(joinIntent.channel))throw new WorldError(400,'Choose a field channel listed by this server.');
           if(typeof joinIntent.characterId!=='string'||!/^[a-zA-Z0-9_-]{1,100}$/.test(joinIntent.characterId))throw new WorldError(400,'Choose a server character.');
-          if(user.id==='admin'&&adminGuildAccounts){const readiness=admissionReadiness(user);if(!readiness.ready)throw Object.assign(new WorldError(503,readiness.error||'Preparing the owner guild before world admission. Retry readiness shortly.'),{code:'WORLD_BUSY'});}
+          if(isStaffBracketAccount(user.id)&&adminGuildAccounts){const readiness=admissionReadiness(user);if(!readiness.ready)throw Object.assign(new WorldError(503,readiness.error||'Preparing the owner guild before world admission. Retry readiness shortly.'),{code:'WORLD_BUSY'});}
           requireAdmission();humanAdmissions++;admitting=true;
         }
         if(joinIntent)requireAdmission();
@@ -517,7 +625,12 @@ export function createWorldApi({ resolveUser, getProfile, saveProfile, saveProfi
         }else if (req.method === 'GET' && ['/api/world/events', '/api/world/state'].includes(pathname)) {
           const query = new URL(req.url, 'http://localhost'), token = query.searchParams.get('token');
           const p = shared.lease(user.id, token);
-          if (pathname.endsWith('/state')) await reply(req, res, 200, shared.snapshot(p), sent);
+          if (pathname.endsWith('/state')) {
+            let text = null;
+            if (STATE_COALESCE) { try { text = await coalescedStateText(shared, p); } catch (error) { if (error) throw error; } }
+            if (text !== null) await replyText(req, res, 200, text, sent);
+            else await reply(req, res, 200, shared.snapshot(STATE_COALESCE ? shared.lease(user.id, token) : p), sent);
+          }
           else {
             for (const other of streams) if (other.account === user.id) { other.res.end(); streams.delete(other); }
             req.socket?.setNoDelay?.(true); // MOVE-NO-RUBBERBAND: every 100ms snapshot leaves immediately (no Nagle)
@@ -528,7 +641,7 @@ export function createWorldApi({ resolveUser, getProfile, saveProfile, saveProfi
             const out = streamEncoder(req, res, sent);
             res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive', 'X-Accel-Buffering': 'no', ...(out.encoding ? { 'Content-Encoding': out.encoding, Vary: 'Accept-Encoding' } : {}) });
             out.write(`event: snapshot\ndata: ${JSON.stringify(shared.snapshot(p))}\n\n`);
-            const stream = { req, res, out, account: user.id, token, checking: false, slot: streamSlot++ }; streams.add(stream);
+            const stream = { req, res, out, account: user.id, token, checking: false, slot: streamSlot++, rd2: NETX_FIELD_DELTA && query.searchParams.get('rd') === '2' }; streams.add(stream);
             res.on('close', () => { streams.delete(stream); out.close(); });
           }
         } else if (req.method === 'POST') {
@@ -639,6 +752,7 @@ export function createWorldApi({ resolveUser, getProfile, saveProfile, saveProfi
             const shopKeys=shopPlayer?pcshopAccounts(shared,shopPlayer,command):null;
             const cursorKeys=command.type==='cursor'?[...new Set([...(tradeKeys||[]),...(charTradeKeys||[])])].sort():null;
             const schedule=transferKeys?fn=>serializeMany(transferKeys,fn):cursorKeys?fn=>serializeMany(cursorKeys,fn):tradeKeys?fn=>serializeMany(tradeKeys,fn):charTradeKeys?fn=>serializeMany(charTradeKeys,fn):shopKeys?fn=>serializeMany(shopKeys,fn):entryAccounts?fn=>serializeMany(entryAccounts,fn):fn=>serialize(selected?.account||user.id,fn);
+            if (NETX_MOVE_GATE > 0 && command?.type === 'move') await netxMoveGate();   // NETX DK_NETX_MOVE_GATE
             const result = await schedule(async () => {
               const current = await resolveUser(req);
               if (!current || current.id !== user.id) throw new WorldError(401, 'Your account session expired.');
@@ -648,10 +762,10 @@ export function createWorldApi({ resolveUser, getProfile, saveProfile, saveProfi
               if(shopKeys&&pcshopAccounts(shared,shopPlayer,command).some(key=>!shopKeys.includes(key)))throw new WorldError(400,'No such shop exists.');
               if(entryParticipants){const currentMembers=eventEntryMembers(shared,entryPlayer);if(currentMembers.length!==entryParticipants.length||currentMembers.some(p=>!entryParticipants.includes(p)||shared.players.get(p.account)!==p))throw new WorldError(409,'Party membership changed. Choose entry again.');}
               const player=shared.lease(current.id,command.token),alsoActor=selected&&selected!==player;if(alsoActor)player.commandActive=(player.commandActive||0)+1;
-              try{return await receipts.execute({player,headers:req.headers,pathname,command,now:shared.now(),snapshot:()=>shared.snapshot(player),dispatch:async()=>{if(pathname.endsWith('/gm')&&!current.capabilities?.includes('gm:commands'))throw new WorldError(403,'This account does not have GM permission.');if(pathname.endsWith('/gm')&&shared.originalMapEdits?.active&&!originalEditReadOnlyGM(command))throw Object.assign(new WorldError(409,'Finish the shared original brush session before other GM mutations.'),{code:'WORLD_BUSY'});if(pathname.endsWith('/gm')&&!originalEditReadOnlyGM(command)&&[player,selected].filter(Boolean).some(p=>p.sceneTransition||p.progressCommitting))throw Object.assign(new WorldError(409,'Wait for the current map or reward save to finish.'),{code:'WORLD_BUSY'});
+              try{return await receipts.execute({player,headers:req.headers,pathname,command,now:shared.now(),snapshot:()=>(SUPERSEDED_RECEIPT&&command?.type==='move'&&moveReceiptEligible(current.id))?shared.snapshot(player,{receiptOnly:true}):shared.snapshot(player),dispatch:async()=>{if(pathname.endsWith('/gm')&&!current.capabilities?.includes('gm:commands'))throw new WorldError(403,'This account does not have GM permission.');if(pathname.endsWith('/gm')&&shared.originalMapEdits?.active&&!originalEditReadOnlyGM(command))throw Object.assign(new WorldError(409,'Finish the shared original brush session before other GM mutations.'),{code:'WORLD_BUSY'});if(pathname.endsWith('/gm')&&!originalEditReadOnlyGM(command)&&[player,selected].filter(Boolean).some(p=>p.sceneTransition||p.progressCommitting))throw Object.assign(new WorldError(409,'Wait for the current map or reward save to finish.'),{code:'WORLD_BUSY'});
                 const mapChanging=pathname.endsWith('/action')&&['travel','npctravel','revive','event','dungeon','channel'].includes(command.type),beforeScene=mapChanging?[player.map,player.instanceId||null,player.channel||0]:null;
                 if(mapChanging&&npcInterest===true&&npcPlayers()===true)shared.npcHumanJoining=(shared.npcHumanJoining||0)+1;
-                try{const result=await (pathname.endsWith('/gm')?runGM(shared,current,command,null,{req,revalidate:()=>resolveUser(req)}):shared.action(current.id,command));
+                try{const result=await (pathname.endsWith('/gm')?runGM(shared,current,command,null,{req,revalidate:()=>resolveUser(req)}):moveReceiptAction(shared,player,current.id,command));
                   if(mapChanging&&npcInterest===true&&npcPlayers()===true&&npcDirector&&shared.players.get(player.account)===player&&(player.map!==beforeScene[0]||(player.instanceId||null)!==beforeScene[1]||(player.channel||0)!==beforeScene[2])){
                     await npcDirector.primeScene(player);
                     return {...result,self:shared.publicPlayer(player,true),state:shared.snapshot(player)};

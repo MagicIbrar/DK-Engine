@@ -597,13 +597,14 @@ export class QuestEngine {
     // Recovered quest 35 rounds 3-5: its own message 1002 limits additional issuance to Holy Water of Almighty users.
     if (R.requireHolyWater && !activePremiums(this.game.save?.premium, this.now).some(p => holyWaterFields(p.fields))) { this.message(1002, q); return { ok: false, code: 1002 }; }
     // requirements of the reward: items to take, DIL to take, space for the items
-    for (const t of R.take || []) {
-      const ids = Array.isArray(t.item) ? t.item : [t.item];
-      const need = Math.max(1, num(t.count) || 1);
-      // a ticket quest's own 1001 names the missing Super Passes (its 1003 is the issue notice)
-      const short = ticket && /super ?pass/i.test(this.db.str(q.id, 1001, { common: false }) || '') ? 1001 : 1003;
-      if (!ids.some(i => this.inv.count(i) >= need) && !(ids.reduce((a, i) => a + this.inv.count(i), 0) >= need)) { this.message(short, q); return { ok: false, code: short }; }
-    }
+    // a ticket quest's own 1001 names the missing Super Passes (its 1003 is the issue notice)
+    const short = ticket && /super ?pass/i.test(this.db.str(q.id, 1001, { common: false }) || '') ? 1001 : 1003;
+    const covers = list => (list || []).every(t => { const ids = Array.isArray(t.item) ? t.item : [t.item], need = Math.max(1, num(t.count) || 1); return ids.reduce((a, i) => a + this.inv.count(i), 0) >= need; });
+    // takeAny: an authored OR-cost ("Super Pass x2 or Infinite Battle1 ticket x1"); each group is an AND list.
+    // ENGINE-CHOSEN: the dialog has one menu per round, so the first group (authored order) the bag covers is taken.
+    let takeList = R.take || [];
+    if (Array.isArray(R.takeAny) && R.takeAny.length) { takeList = R.takeAny.find(covers); if (!takeList) { this.message(short, q); return { ok: false, code: short }; } }
+    else if (!covers(takeList)) { this.message(short, q); return { ok: false, code: short }; }
     if (R.takeDil && this.inv.dil < num(R.takeDil)) { this.message(1000, q); return { ok: false, code: 1000 }; }
     const give = [], skipped=[];
     for (const it of R.items || []) {
@@ -618,7 +619,7 @@ export class QuestEngine {
     // collect-objective items are handed in unless the reward says otherwise (they are quest items)
     // grant
     let exp = num(R.exp);
-    const take=(R.take||[]).map(t=>({...t,count:Math.max(1,num(t.count)||1)}));
+    const take=takeList.map(t=>({...t,count:Math.max(1,num(t.count)||1)}));
     if (R.expBonus?.item && this.inv.count(R.expBonus.item) > 0 && exp > 0) {
       exp += Math.round(exp * num(R.expBonus.rate));
       if (R.expBonus.consume) take.push({item:R.expBonus.item,count:1});

@@ -15,8 +15,6 @@
 // and password, or its verified website session (accounts.js). Messages go to pan_message / lbl_message (stringtable_system.txt
 // <cate> 100: "Logging into the server." ...).
 // Decision: pan_15 / pan_18 (the Korean 15+/18+ rating marks) are hidden as in the EU client.
-import { mountLogoParticles } from './logo-particles.js';
-import { loadRGBA } from '../../world/texload.js';
 import { rowFovDeg } from './stage.js';
 import { cloneTemplate, rich } from './ui.js';
 
@@ -128,8 +126,7 @@ export class LoginScreen {
         const sync = () => { badge.dataset.animate = String(visible && !document.hidden); };
         const observer = new IntersectionObserver(entries => { visible = entries.some(e => e.isIntersecting); sync(); });
         observer.observe(badge); document.addEventListener('visibilitychange', sync); sync();
-        const stopParticles = mountLogoParticles(badge, { loadRGBA });
-        this._disposeBadge = () => { stopParticles(); observer.disconnect(); document.removeEventListener('visibilitychange', sync); badge.remove(); };
+        this._disposeBadge = () => { observer.disconnect(); document.removeEventListener('visibilitychange', sync); badge.remove(); };
       }
     }
     // only the game's name, centred (the label is `align center` at `center bottom`)
@@ -156,6 +153,8 @@ export class LoginScreen {
     // ---- login panel
     this.idEdit = win.find('edt_account');
     this.pwEdit = win.find('edt_password');
+    // Global ui_loginwnd: edt_account maxlength 20, edt_password maxlength 16.
+    // Engine/website account policy (site/signup.html): ID 3-32, password 6-128 — intentional extension.
     if (this.idEdit?.input) { this.idEdit.input.maxLength = 32; this.idEdit.input.autocomplete = 'username'; }
     if (this.pwEdit?.input) { this.pwEdit.input.maxLength = 128; this.pwEdit.input.autocomplete = 'current-password'; }
     this.idEdit?.setValue(this.fe.accounts.lastId());
@@ -175,6 +174,8 @@ export class LoginScreen {
     c('btn_pantheon').onClick(() => this._toServers());
     c('btn_quit').onClick(() => this._quit());
     c('btn_vk').onClick(() => this._toggleVK());
+    // Global login click path / FUN_00a4f030: btn_OK dismisses pan_message2 (+ pan_message).
+    c('btn_OK').onClick(() => this._dismissLoginMessage());
 
     // ---- virtual keyboard (hidden until btn_vk)
     this._layoutVK();
@@ -193,6 +194,7 @@ export class LoginScreen {
     // session - no ID / password. Without a live session it falls back to the ID / PW panel like every other client.
     if (LAUNCHER_GATE() && !this.fe.requireCredentials) {
       this.sessionAccount = await this.fe.accounts.restore({ configure: false }).catch(() => null);
+      // Launcher gate: restore session but do NOT auto-click Server Login / 2nd password — owner signs in himself.
       if (this.sessionAccount) return;
     }
     // The launcher/browser URL already selects a host. Start directly at working credential fields.
@@ -240,6 +242,14 @@ export class LoginScreen {
   /** The edit the keys type into: the last focused one of the login panel (the password by default). */
   _vkTarget() { return this.lastEdit || this.pwEdit; }
 
+  /** Global btn_OK / FUN_00a4f030(0): hide pan_message + pan_message2. */
+  _dismissLoginMessage() {
+    clearTimeout(this._msgT);
+    this._msgT = null;
+    this.win?.control('pan_message')?.hide();
+    this.win?.control('pan_message2')?.hide();
+  }
+
   _toggleVK() {
     const on = !this.vk.isOpen;
     if (on) { this._layoutVK(); this.fe.uim.openWindow(this.vk); } else this.fe.uim.closeWindow(this.vk);
@@ -247,7 +257,8 @@ export class LoginScreen {
   }
 
   // ---------------------------------------------------------------------------------------- messages
-  _message(text, ms = 3200) {
+  // Global FUN_00a4f560 empty ID/PW path: *(this+0x20)=2000 ms toast then hide pan_message.
+  _message(text, ms = 2000) {
     const pan = this.win.control('pan_message');
     this.win.control('lbl_message').setRichText(text);
     pan.show();

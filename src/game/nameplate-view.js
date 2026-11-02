@@ -1,9 +1,17 @@
 // Three user-facing V views; hover reveals details without changing the saved mode.
+// The tag is cosmetic and is never an authority source. Only the host/session can authorize it.
+export function authorizedStaffTag(name,account,authorized) {
+ if(authorized!==true)return null;
+ const match=/^\[(ADMIN|GM|DEV)\]/i.exec(String(name||'').trim());
+ if(match)return match[1].toUpperCase();
+ const fallback=String(account||'').trim().toUpperCase();
+ return ['ADMIN','GM','DEV'].includes(fallback)?fallback:'GM';
+}
 export function playerNameplateName(name,info={}) {
- const text=String(name||'');
- if(info?.staffTag!=='ADMIN')return text;
- const bare=text.replace(/^(?:\[ADMIN\]\s*)+/i,'').replace(/^Admin(?=[A-Z])/,'');
- return '[ADMIN] '+(bare||text);
+ const text=String(name||''),tag=['ADMIN','GM','DEV'].includes(info?.staffTag)?info.staffTag:null;
+ let bare=text.replace(/^ *(?:\[(?:ADMIN|GM|DEV)\]\s*)+/i,'');
+ if(tag==='ADMIN')bare=bare.replace(/^Admin(?=[A-Z])/,'');
+ return tag?'['+tag+']'+(bare?' '+bare:''):bare;
 }
 export function nameplateView(options) {
  if(options?.get?.('charName')===false)return 2;

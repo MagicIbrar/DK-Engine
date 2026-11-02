@@ -23,6 +23,7 @@ import {assertNieteService} from './niete-services.mjs';
 import {isAncientStone,ancientStoneUse} from './dead-island-run.mjs';
 import {applyCursorOperation} from '../../src/systems/items/cursor-custody.js';
 import {cursorTradeTransaction,guardCursorTrade} from './cursor-trade.mjs';
+import {canDropToGround,canEnterSharedStorage,purgeExpiredInventory,bindsOnPickup} from './item-flags.mjs';
 import {grantGroundItem} from './loot.mjs';
 
 export const ITEM_ACTION_SCHEMAS = {
@@ -36,14 +37,14 @@ export const ITEM_ACTION_SCHEMAS = {
 };
 const fail=message=>{throw Object.assign(new Error(message),{status:400});};
 const ITEM_USE_FALLBACKS={
-  50:'You cannot use this item in this location.',51:'This item cannot be used now.',
-  53:'This item is cooling down. Try again shortly.',54:'Dead characters cannot use items.',
-  56:'You do not meet this item’s level or class requirements.',59:'This item’s benefit is already active or fully unlocked.',
+  50:'You cannot use this item while in this location.',51:'You cannot use this item for now.',
+  53:'You cannot use this item yet.',54:'Dead characters cannot use items.',
+  56:'You do not meet the requirement to use this item (level, class, etc.).',59:'No overlapping use.',
   94:'You cannot use a Return Scroll on this map.',99:'This item’s effect is unavailable.',
 };
 function itemUseMessage(messages,cate,code){
   const original=messages?.get?.(`${cate}:${code}`);
-  return String(original||'').replace(/<[^>]+>/g,'').trim()||(Number(cate)===40&&ITEM_USE_FALLBACKS[code])||'This item cannot be used now.';
+  return String(original||'').replace(/<[^>]+>/g,'').trim()||(Number(cate)===40&&ITEM_USE_FALLBACKS[code])||'You cannot use this item for now.'; // Global 40:51
 }
 // LANE-22: both off-hand slots of one preset must stay a native pairing with that preset's own main weapon
 // (Equipment.check combination/class/level rules; stats=null, never a new requirement).
@@ -71,6 +72,7 @@ export async function loadWorldItemData(gamedataRoot,dataRoot) {
 export function deriveEquipment(profile,db,classDef,progressionData,now=Date.now(),mounts=null,passivePools=null) {
   profile.equip||=emptyEquip();
   for(const [uid,item]of Object.entries(profile.equip.items)){if(item.expiresAt&&item.expiresAt<=now){delete profile.equip.items[uid];for(const preset of profile.equip.presets)for(const [slot,id]of Object.entries(preset))if(id===uid)delete preset[slot];}}
+  purgeExpiredInventory(profile,db,now);
   profile.buffs=(profile.buffs||[]).filter(buff=>!buff.expiresAt||buff.expiresAt>now);
   const sys={db,game:{save:profile,data:progressionData,settings:{},mounts:mounts||{isMounted:()=>false,extraOptions:()=>[]}}};sys.equip=new Equipment(sys);
   const itemStats=computeItemStats(sys);profile.equipment=sys.equip.view(itemStats);
@@ -98,25 +100,25 @@ export function dispatchItemAction(world,p,input) {
   return serializeLife(p,()=>input.type==='cursor'?cursorTradeTransaction(world,p,input,()=>applyItemAction(world,p,input)):applyItemAction(world,p,input));
 }
 async function applyItemAction(world,p,input) {
-  if(p.dead)fail('You cannot use inventory while dead.');
+  if(p.dead)fail('Dead characters cannot use items.'); // Global 40:54
   if(!world.data.itemDB)fail('The item catalog is unavailable.');
   const c=context(world,p),db=c.sys.db,preset=input.preset==null?(c.profile.equip?.active||0):whole(input.preset,0,PRESETS-1);
   let cooldowns,usedItemIndex=null,afterCommit=null;
   if(input.type==='cursor') {
     if(p.cursorVersion!==1)fail('Reconnect with the updated client to use item pickup.');
     if(input.operation==='discard'){
-      if(Number(mapFor(world,p)?.row?.ItemDrop??1)===0)fail('This map does not allow ground drops.');
+      if(Number(mapFor(world,p)?.row?.ItemDrop??1)===0)fail('You cannot discard items or dil while in this map.');
       const held=c.profile.itemCursor?.item,def=db.def(held?.itemIndex);
-      if(held&&!held.bound&&Number(def?.trade)!==0){const dropped=structuredClone(held);afterCommit=()=>grantGroundItem(world,p,dropped);}
+      if(held&&canDropToGround(def,held)){const dropped=structuredClone(held);afterCommit=()=>grantGroundItem(world,p,dropped);}
     }
     applyCursorOperation(c.profile,db,input,{stats:c.player.stats,now:world.now(),access:(name,operation,item,origin)=>{
       if(!['stash','shared'].includes(name))return;
       if(!nearbyNpc(world,p,{role:'STORAGE'})&&!premiumRemoteStorage(world,p.profile))fail('Walk near a storage NPC before using storage.');
       if(name==='shared'&&!c.profile.accountFeatures?.sharedStash)fail('Unlock account-shared storage first.');
       if(operation==='place'){
-        if(name==='shared'&&origin?.container!=='shared'&&(item.bound||Number(db.def(item.itemIndex)?.trade)===0))fail('Bound or non-tradable items cannot enter account-shared storage.');
+        if(name==='shared'&&origin?.container!=='shared'&&!canEnterSharedStorage(db.def(item.itemIndex),item))fail('You cannot store items in the selected location.');
         if(name==='shared'&&origin?.container!=='shared'&&(item.pet?.active||item.pet?.inv?.length))fail('Dismiss the pet and empty its inventory first.');
-        if(origin?.container!==name){const fee=Number(db.equipment.formula?.stStorageCostPerUnit)||10;if(c.inventory.dil<fee)fail('Not enough DIL for storage.');c.inventory.addDil(-fee);}
+        if(origin?.container!==name){const fee=Number(db.equipment.formula?.stStorageCostPerUnit)||10;if(c.inventory.dil<fee)fail('You do not have enough dil to pay the storage fee.');c.inventory.addDil(-fee);}
       }
     }});
   } else if(input.type==='itemuse') {
@@ -167,7 +169,7 @@ async function applyItemAction(world,p,input) {
     const slot=input.slot==null?c.sys.equip.autoSlot(db.def(entry.itemIndex),preset):whole(input.slot,0,114);
     const checked=c.sys.equip.check(entry,slot,c.player.stats,preset);if(!checked.ok)fail('This equipment does not meet the slot, class, level, or stat requirements.');
     c.inventory.bag.take(entry);delete entry.page;delete entry.x;delete entry.y;
-    if(db.def(entry.itemIndex).belong===1)entry.bound=true;
+    if(bindsOnPickup(db.def(entry.itemIndex)))entry.bound=true;
     const result=c.sys.equip.place(entry,slot,preset);if(!result.ok)fail('This equipment slot is locked.');
     for(const old of result.displaced)if(!c.inventory.bag.add(old).ok)fail('Your inventory has no space for the replaced equipment.');
   } else if(input.type==='unequip') {
@@ -184,11 +186,11 @@ async function applyItemAction(world,p,input) {
       const removed=c.sys.equip.remove(slot,preset);
       if(!removed?.inst)fail('This item is still registered in another equipment preset.');
       if(!placeRequested(bag,removed.inst,at)||!bag.add(replacement,{noStack:true}).ok)fail('The requested inventory position is unavailable.');
-      for(const item of removed.extra)if(!bag.add(item,{noStack:true}).ok)fail('Your inventory is full.');
+      for(const item of removed.extra)if(!bag.add(item,{noStack:true}).ok)fail('You do not have enough Inventory space.');
     }else{
       const removed=c.sys.equip.remove(slot,preset);
       if(removed.inst&&!placeRequested(bag,removed.inst,at))fail('The requested inventory position is unavailable.');
-      for(const item of removed.extra)if(!bag.add(item).ok)fail('Your inventory is full.');
+      for(const item of removed.extra)if(!bag.add(item).ok)fail('You do not have enough Inventory space.');
     }
   } else if(input.type==='equipswap') {
     const slot=whole(input.slot,0,114),targetSlot=whole(input.targetSlot,0,114),row=c.sys.equip.preset(preset),uid=row[slot],item=c.sys.equip.data.items[uid];
@@ -236,13 +238,15 @@ async function applyItemAction(world,p,input) {
     } else if(input.type==='bank') {
       whole(input.amount,1,10000000000);if(!['deposit','withdraw'].includes(input.direction))fail('Invalid bank operation.');
       const bank=shared?c.profile.accountFeatures:c.profile,key=shared?'sharedDil':'stashDil',from=input.direction==='deposit'?c.profile:bank,to=input.direction==='deposit'?bank:c.profile,fromKey=input.direction==='deposit'?'dil':key,toKey=input.direction==='deposit'?key:'dil';
-      if((from[fromKey]||0)<input.amount||(to[toKey]||0)+input.amount>10000000000)fail('Insufficient currency or full balance.');from[fromKey]=(from[fromKey]||0)-input.amount;to[toKey]=(to[toKey]||0)+input.amount;
+      const dep=input.direction==='deposit';if((from[fromKey]||0)<input.amount)fail(dep?'You do not have enough dil to deposit.':'Failed to withdraw dil.'); // Global 190:13 / 190:10
+      if((to[toKey]||0)+input.amount>10000000000)fail(dep?'This amount of dil exceeds the maximum deposit limit.':'You cannot possess more than 10 Billion DIL which include DIL to be withdrawn from Storage.'); // Global 190:14 / 190:11
+      from[fromKey]=(from[fromKey]||0)-input.amount;to[toKey]=(to[toKey]||0)+input.amount;
     } else if(input.type==='sortitems') {if(!['stash','shared'].includes(input.container))fail('Unsupported container.');if(input.page!=null)whole(input.page,0,stash.unlocked-1);stash.sort(input.page??null);}
     else {
     const from=input.direction==='deposit'?c.inventory.bag:stash,to=input.direction==='deposit'?stash:c.inventory.bag,entry=from.list.find(item=>item.uid===input.uid);
-    if(input.direction==='deposit'){const fee=Number(db.equipment.formula?.stStorageCostPerUnit)||10;if(c.inventory.dil<fee)fail('Not enough DIL for storage.');c.inventory.addDil(-fee);}
+    if(input.direction==='deposit'){const fee=Number(db.equipment.formula?.stStorageCostPerUnit)||10;if(c.inventory.dil<fee)fail('You do not have enough dil to pay the storage fee.');c.inventory.addDil(-fee);}
     if(!entry)fail('The requested item is not in that container.');
-    if(shared&&input.direction==='deposit'&&(entry.bound||Number(db.def(entry.itemIndex)?.trade)===0))fail('Bound or non-tradable items cannot enter account-shared storage.');
+    if(shared&&input.direction==='deposit'&&!canEnterSharedStorage(db.def(entry.itemIndex),entry))fail('You cannot store items in the selected location.');
     // A pet item carries its own inventory; every other owner-changing path (trade, mail, char trade, shops, GM transfer)
     // refuses it while occupied, so bound/non-tradable items cannot reach another character inside it.
     if(shared&&input.direction==='deposit'&&(entry.pet?.active||entry.pet?.inv?.length))fail('Dismiss the pet and empty its inventory first.');
@@ -268,3 +272,4 @@ export function expireItemEffects(world,p) {
   if(!(p.profile.buffs||[]).some(buff=>buff.expiresAt&&buff.expiresAt<=now)&&!Object.values(p.profile.equip?.items||{}).some(item=>item.expiresAt&&item.expiresAt<=now))return;
   p.stats=world.data.stats(p.profile,p,world.now());p.maxHp=p.stats.maxHp;p.hp=Math.min(p.hp,p.maxHp);p.mp=Math.min(p.mp,p.stats.maxMp||0);world.changed(p);
 }
+

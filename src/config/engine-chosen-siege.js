@@ -1,14 +1,15 @@
 // SIEGE (Zenoa Castle siege war, map 23): the values the Global data does not define. Every entry is
 // ENGINE-CHOSEN (not in Global data). The original numbers (fee, levels, gate / stone HP, WARTIME, REVIVALTICK, REIGNOCCUPYTIME,
 // REIGNMAXDISTANCE, tax ratios, locations) are read from the data by src/game/siege-rules.js and are NOT repeated here.
+// Schedule zone is NATIVE: stringtable_siege.txt 100:10 / 100:11 states Sunday 7:00-8:00 PM Central European Time (UTC+1);
+// src/game/server-time.js is the shared offset also used by Siege Renew and guild maintenance.
+import { SERVER_TIME, SERVER_TIME_OFFSET_MINUTES } from '../game/server-time.js';
 export const SIEGE_CHOSEN = Object.freeze({
-  /** ENGINE-CHOSEN (not in Global data): the classic config has no start time. The battle uses the only start in the data
-   *  (siege_renew/config.csv START_WEEK 0 / START_HOUR 19 = Sunday 19:00) in UTC, for WARTIME seconds. */
-  ZONE: 'UTC',
-  /** ENGINE-CHOSEN (not in Global data): UTC offset of the start time, in minutes. */
-  ZONE_OFFSET_MIN: 0,
-  /** ENGINE-CHOSEN (not in Global data): the hours the defending guild master may announce (Lorenzo SIEGE_STARTTIME, 700:30 / 40)
-   *  for the coming Sunday; once per week (700:37), never during a battle (700:29). */
+  /** NATIVE (stringtable_siege.txt 100:10 / 100:11 + server-time.js): classic config has no start clock of its own, so the battle
+   *  uses siege_renew/config.csv START_WEEK 0 / START_HOUR 19 (= Sunday 19:00) at Central European Time (UTC+1), for WARTIME seconds. */
+  ZONE: SERVER_TIME.name,
+  /** NATIVE (server-time.js): minutes east of UTC for START_HOUR (CET / UTC+1 = 60). Same source as Siege Renew's schedule zone. */
+  ZONE_OFFSET_MIN: SERVER_TIME_OFFSET_MINUTES,
   ANNOUNCE_HOURS: Object.freeze([12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]),
   /** ENGINE-CHOSEN (not in Global data): the seal list holds three guilds (500:206 shows GUILD_0..GUILD_2). Registration at Bastian
    *  (SIEGE_ENTRY) is the Seal Ritual too: a registered guild is confirmed at once (700:1 + 700:13). */

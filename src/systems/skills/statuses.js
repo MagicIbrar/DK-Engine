@@ -14,9 +14,16 @@
 //   - ticks every second: HP_DECREASE_ADD (value/100 HP), HP_DECREASERATE_MUL (% max HP), MP_DECREASE_ADD
 //     (value/100 MP), MP_DECREASERATE_MUL (% max MP); for non-players also HP/MP_RECOVERY_ADD (value/200 per s, as
 //     progression does for the player) and SHIELD_RECOVERY_ADD
+//     JUDGMENT (lane70c 2026-10-29): the 1 s tick and the /100 and /200 divisors are not stated by any Global file, the
+//     Global decompiles (option names are not even present as strings there) or the server-ref data; kept as the most
+//     credible reading because removing them would leave every DoT / regen status without any effect.
 //   - control flags: ACTION_SLEEP / ACTION_PURGE / ADD_ACTION_* imply no move + no attack; SUFFER_DAMAGE_DELETE_STATUS_RATIO
 //     = % chance a hit removes the status (sleep breaks); ACTION_INVISIBLE hides the unit from monster AI
-//   - start effect (one shot) on apply, keep effect looping while it lasts, end effect on removal (modeleffect 19)
+//   - modeleffect 19 start (code4 1) on apply, keep (code4 2) while it lasts, end (code4 3) on removal. Each row is
+//     played with its OWN eff_loop flag (GLOBAL DATA modeleffect.csv + GLOBAL DECOMPILE 32-bit FUN_00813050: the row's
+//     loop byte is handed to the effect handler with the effect id/scene/time): eff_loop 0 = persistent until the
+//     status ends, 1 = one shot for eff_time (the 0/1 meaning is the data reading: 430 of 431 end rows are 1, 356 of
+//     400 keep rows are 0, and the 31 start rows with 0 are the authored "_Keep" / guardian-stone auras). lane70c.
 //   - mapMoveDelete statuses end on map change; cleanse/dispel remove by status group (statusgroup.csv)
 import { SHARE_OPTION, sharePercent, isDeferredSelfBuff } from './damage-share.js';
 
@@ -156,6 +163,7 @@ export class StatusSystem {
     const maxStack = num(def.maxStack);
     let stacks = 1;
     if (i >= 0 && maxStack > 0) stacks = Math.min(maxStack, num(list[i].stacks || 1) + (opts.stacks || 1));
+    // JUDGMENT (lane70c): stacked statuses scale every option value by the stack count; no Global file states it.
     const mul = stacks;
     const options = (def.options || []).map(o => ({ code: o.code, value: num(o.value) * mul }));
     for (const c of IMPLIES_LOCK) {
@@ -188,7 +196,8 @@ export class StatusSystem {
     if (old) { this._stopEffects(old, false); list[i] = entry; } else list.push(entry);
     if(family.startsWith('b'))this.remove(actor,s=>s!==entry&&same(s),'duplicate');
     // DAMAGE_MP_ADD on a debuff ("Shock / Mana Decrease", Mana shock): the application takes `value` MP off the target once.
-    // ENGINE-CHOSEN reading of the status text (the single buff row that carries the code is not an MP drain and is skipped).
+    // JUDGMENT (lane70c; was ENGINE-CHOSEN): reading of the status text, no Global file states the formula (the single
+    // buff row that carries the code is not an MP drain and is skipped).
     const mpDrain = entry.buff ? 0 : options.filter(o => o.code === 'DAMAGE_MP_ADD').reduce((sum, o) => sum + num(o.value), 0);
     if (mpDrain > 0 && Number.isFinite(Number(actor.mp))) actor.mp = Math.max(0, num(actor.mp) - mpDrain);
     if (!opts.noEffects) this._startEffects(actor, entry, def, !old);
@@ -347,21 +356,28 @@ export class StatusSystem {
     const fx = this.fx;
     const e = def.effects || this.data.modelEffects?.status?.[def.iconIndex] || null;
     if (!fx || !e || actor.disposed) { if (!e) entry.keepWanted = false; return; }
-    if (fresh && e.start) fx.play(actor, e.start, { loop: false });
-    if (e.keep) {
-      const h = fx.play(actor, e.keep, { loop: true });
-      if (h) this.handles.set(entry, { keep: h, actor });
-      else entry.keepWanted = false;
-    } else entry.keepWanted = false;
+    // lane70c: every row plays with its own Global eff_loop (0 = persistent, 1 = one shot), see the header. A
+    // persistent start row is part of the lasting look, so it is restarted with the keep row (restore / back in view);
+    // a one-shot start only plays on a fresh application.
+    const persists = ref => !!ref && Number(ref.loop) === 0;
+    const h = { actor };
+    if (e.start && (fresh || persists(e.start))) { const s = fx.play(actor, e.start, { loop: persists(e.start) }); if (s && persists(e.start)) h.start = s; }
+    if (e.keep) { const k = fx.play(actor, e.keep, { loop: persists(e.keep) }); if (k) h.keep = k; }
+    if (!persists(e.start) && !persists(e.keep)) entry.keepWanted = false;
+    if (h.start || h.keep) this.handles.set(entry, h);
+    else entry.keepWanted = false;
   }
 
   _stopEffects(entry, playEnd, actor) {
     const h = this.handles.get(entry);
     if (h?.keep) h.keep.stop(true);
+    if (h?.start) h.start.stop(true);
     this.handles.delete(entry);
     if (playEnd && this.fx && actor && !actor.disposed) {
       const def = this.data.status(entry.statusIndex);
       const e = def?.effects || this.data.modelEffects?.status?.[entry.iconIndex];
+      // JUDGMENT (lane70c): the end row always plays once - nothing could stop a persistent end row after the status is
+      // gone (the only end row with eff_loop 0 is 7419, the auto-hunt finish).
       if (e?.end) this.fx.play(actor, e.end, { loop: false });
     }
   }

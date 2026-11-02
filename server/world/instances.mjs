@@ -1,3 +1,4 @@
+import {applyRespawnVitals} from '../../src/game/progression.js';
 import {randomUUID} from 'node:crypto';
 import {cancelFishing} from './fishing.mjs';
 import {sceneKey,mapFor} from './scene.mjs';
@@ -58,9 +59,22 @@ export async function exitInstance(world,p,{persist=true}={}){
  const instance=world.instances?.get(p.instanceId),exit=instance?.exit||p.profile.instance?.exit||world.data.start;
  const scene=await world.map(exit.map,null,p.channel??0),point=scene.nearest(exit.x,exit.z);if(!point)throw Object.assign(Error('No safe instance exit is available.'),{status:503});
  const before={profile:structuredClone(p.profile),revision:p.revision},transition=p.sceneTransition;
- const previousMap=p.map,previousInstance=p.instanceId,candidate={...p,profile:structuredClone(p.profile),stats:{...p.stats},instanceId:null,map:exit.map,x:point.x,z:point.z,path:[],mount:null,pet:null};delete candidate.profile.instance;world.changed(candidate);
+ const previousMap=p.map,previousInstance=p.instanceId,candidate={...p,profile:structuredClone(p.profile),stats:{...p.stats},instanceId:null,map:exit.map,x:point.x,z:point.z,path:[],mount:null,pet:null};delete candidate.profile.instance;
+ // dungeonlist KickRespawn -> dungeons.json exit.respawnOnKick (client evidence): revive when leaving that dungeon dead.
+ const dungeonRow=instance?.kind==='dungeon'&&instance.dungeonId!=null?world.data.dungeonData?.dg?.dungeons?.[String(instance.dungeonId)]:null;
+ const kickRespawn=!!Number(dungeonRow?.exit?.respawnOnKick);
+ if(kickRespawn&&(candidate.dead||p.dead)){
+  // KickRespawn is ordinary dungeon exit revive → byRespawn* (not PvP byRevive*).
+  candidate.dead=false;
+  candidate.maxHp=candidate.maxHp||p.maxHp||1;
+  applyRespawnVitals(candidate,world.data);
+  candidate.maxShield=Math.max(0,Number(candidate.stats?.maxShield)||0);candidate.shield=candidate.maxShield;delete candidate.respawnReadyAt;
+ }
+ world.changed(candidate);
  p.sceneTransition=true;
- try{if(persist)await world.persist(candidate);const notices=publishSceneCandidate(world,p,candidate,before);for(const[map,event]of notices)world.emit(map,event);if(persist)await persistInterveningProgress(world,[p]);}
+ try{if(persist)await world.persist(candidate);const notices=publishSceneCandidate(world,p,candidate,before);for(const[map,event]of notices)world.emit(map,event);
+  if(kickRespawn){p.dead=false;p.hp=candidate.hp;p.mp=candidate.mp;p.maxShield=candidate.maxShield;p.shield=candidate.shield;delete p.respawnReadyAt;world.emit(p.map,{type:'revive',actorId:p.id});}
+  if(persist)await persistInterveningProgress(world,[p]);}
  finally{p.sceneTransition=transition;}
  cancelFishing(world,p);world.emit(previousMap,{type:'leave',actorId:p.id,instanceId:previousInstance});instance?.members.delete(p.id);world.emit(p.map,{type:'join',actorId:p.id});disposeEmptyInstances(world);
 }

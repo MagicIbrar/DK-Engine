@@ -10,7 +10,7 @@ export function tournamentData(modes){
   const donation=(t.donation||[]).map(r=>({type:String(r.Type).startsWith('P')?'P':'B',name:String(r.Type),item:Number(r.ItemIndex),
     amounts:Array.from({length:Number(r.DonationCount)||0},(_,i)=>Number(r[`Donation${i}`])).filter(v=>v>0)}));
   const bracket=(t.bracket||[]).map(r=>({match:Number(r.MATCH),order:Number(r.ORDER),nextMatch:Number(r.NEXTMATCH),nextOrder:Number(r.NEXTORDER),nextSeed:Number(r.NEXTSEED)}));
-  return {listIndex,defaultMatch:n(t.config.DEFAULT_MATCH)||16,defaultOrder:n(t.config.DEFAULT_ORDER)||1,waitingSec:n(t.config.WAITING_TIME)||180,
+  return {listIndex,defaultMatch:n(t.config.DEFAULT_MATCH)||16,defaultOrder:n(t.config.DEFAULT_ORDER)||1,waitingSec:(n(t.config.WAITING_TIME)||0)*60,waitingMin:n(t.config.WAITING_TIME)||0,
     arena:{map:Number(arena.map),members:Number(arena.members)||7,teamA:arena.teamA,teamB:arena.teamB,observer:arena.observer},donation,bracket,
     coins:Object.fromEntries(donation.map(d=>[d.type,d.item]))};
 }
@@ -38,14 +38,12 @@ export function roundOutcome({alive,kills},reason){
   if(reason==='annihilation'){if(alive[0]>0&&alive[1]===0)return 0;if(alive[1]>0&&alive[0]===0)return 1;return -1;}
   return kills[0]>kills[1]?0:kills[1]>kills[0]?1:-1;
 }
-/** After a round: winner index when the match is decided, null to play on. */
-export function matchOutcome({wins,rounds,kills,firstKills},roundsToWin=C.roundsToWin){
-  if(wins[0]>=roundsToWin)return 0;if(wins[1]>=roundsToWin)return 1;
-  if(rounds<roundsToWin*2-1)return null;
-  if(wins[0]!==wins[1])return wins[0]>wins[1]?0:1;
-  if(kills[0]!==kills[1])return kills[0]>kills[1]?0:1;
-  if(firstKills[0]!==firstKills[1])return firstKills[0]>firstKills[1]?0:1;
-  return 0; // the lower (left) seed
+/** Match points of each side from the round results (-1 = draw): ONLINE no=589 win 2 / draw 1 / loss 0. */
+export function matchPoints(results,pts=C.roundPoints){const p=[0,0];for(const w of results){if(w<0){p[0]+=pts.draw;p[1]+=pts.draw;}else{p[w]+=pts.win;p[1-w]+=pts.loss;}}return p;}
+/** After a round: winner index when the match is decided, null to play on (ONLINE no=589: first to 4 points; 3:3 = rematch). */
+export function matchOutcome({points},pointsToWin=C.pointsToWin){
+  if(points[0]>=pointsToWin&&points[0]>points[1])return 0;if(points[1]>=pointsToWin&&points[1]>points[0])return 1;
+  return null;
 }
 /** Final score label used by the betting window ('2:0' ...), left first. */
 export const scoreLabel=wins=>`${wins[0]}:${wins[1]}`;

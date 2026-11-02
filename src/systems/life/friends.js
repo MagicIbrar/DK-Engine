@@ -7,7 +7,7 @@
 // respects the recipient's canonical Block friend requests setting (online or offline).
 // "Send Message" opens the bottom chat whisper input.
 // No server-side friend cap exists to read, so
-// MAX_FRIENDS below is Global's per-PC cap of 30 (global-re/SERVER-RE.md §6, Segment<30>).
+// MAX_FRIENDS is the live Global screenshot cap 200 (TODO X9 / C28; ref/gLOBAL/200 FRIENDS.png). SERVER-RE Segment<30> is a different segment; blacklist stays 30.
 // MESSENGER-CHAT: in shared play src/systems/network/messenger.js sets the hooks online(name) (presence from the host's
 // connected list), chat(name) ("Talk" 1006:5 opens the 1:1 chat window), partyInvite(name) and onDecline(on); the
 // checkbox row pan_noMsg is the original "Decline messages" (1006:47) switch. Without the hooks (single player) every
@@ -15,7 +15,7 @@
 import { str, msg, account, saveAccount, friendRosterKey, friendRosterReady } from './common.js';
 import { listCharacters } from '../../game/save.js';
 
-const MAX_FRIENDS = 30;   // Global per-PC Segment<30, Coupler<String<25>, IFriend*>> (global-re/SERVER-RE.md §6)
+const MAX_FRIENDS = 200;   // SCREENSHOT-SOURCED Global friends UI 0/200 (X9); SERVER-RE 30 is not this list
 const key = (n) => String(n || '').trim().toLowerCase();
 
 export class Friends {

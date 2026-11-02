@@ -2,6 +2,7 @@
 import { paintIcon, socketMarkerLayout } from '../../../ui/uiwin/controls.js';
 import { socketGems } from '../authored-effects-data.js';
 import { canStack } from '../model.js';
+import { isBoundInst } from '../flags.js';
 
 /** Socket glow of a weapon instance's icon, in the icon's own reference px, or null: {key, gems:[{x, y, size, attribute}]}.
  * One gem per FILLED socket at the centre of the marker paintIcon() draws for it (same socketMarkerLayout inputs as
@@ -186,10 +187,13 @@ export function slotIcon(sys, ctrl, inst) {
 }
 
 /** Drag payload for an instance. */
+/** Global's held (sticky) item icon is 32 px per footprint cell whatever window it came from (CCursorControl).
+ * The legacy cell argument is still accepted from callers but no longer sizes the held icon. */
+export const HELD_ICON_CELL = 32;
 export function itemPayload(sys, inst, from, extra = {}, cell = [37, 36]) {
   const def = sys.db.def(inst.itemIndex);
   const w = Math.max(1, def?.w || 1), h = Math.max(1, def?.h || 1);
-  const size = [w * cell[0], h * cell[1]];
+  const size = [w * HELD_ICON_CELL, h * HELD_ICON_CELL]; void cell;
   const glow = socketIconGlow(sys, inst, size);
   const spin = sys.icons.spinNow(inst.itemIndex, size[0], size[1], null, glow);
   const icon = spin || sys.icons.now(inst.itemIndex, size[0], size[1], null, glow) || sys.icons.cached?.(inst.itemIndex) || null;
@@ -231,14 +235,43 @@ export function cursorPayload(sys) {
   payload.onDropOutside=()=>cursorDiscardAsk(sys);
   return payload;
 }
+/** Global plays soundscript code 12 / class 0 (sound.json item.get['0']) whenever an item becomes attached to the cursor. */
+export function cursorAttachSound(sys){const a=sys?.game?.audio,list=a?.S?.item?.get?.['0'];if(!list||typeof a.playOne!=='function')return false;try{a.playOne(list,{});return true;}catch{return false;}}
 export function cursorActionResult(sys,result){
-  const finish=ok=>{if(!ok)return false;const heldItem=cursorPayload(sys);return heldItem?{heldItem}:true;};
+  const finish=ok=>{if(!ok)return false;const heldItem=cursorPayload(sys);if(heldItem)cursorAttachSound(sys);return heldItem?{heldItem}:true;};
   return result?.then?Promise.resolve(result).then(finish):finish(result);
+}
+/** Setting a held item down plays Global soundscript 11 with the item's Quality column (def +0x12) as sub-code
+ *  (32-bit main callers 01316a20, 01318330, 0131f7f0, 0131fca0, 013f4b50, 01473e80, 014f4c50): bag, equip,
+ *  costume bag, storage, warehouse and pet bag. sound.json item.equip[quality]. Belt/cash: no Global caller, no sound. */
+export const CURSOR_PLACE_SOUND=new Set(['bag','equip','costume','stash','shared','pet']);
+export function cursorPlaceSound(sys,container,def){
+  if(!CURSOR_PLACE_SOUND.has(container)||!def)return false;
+  const a=sys?.game?.audio,list=a?.S?.item?.equip?.[String(def.quality)];
+  if(!list||typeof a.playOne!=='function')return false;
+  try{a.playOne(list,{});return true;}catch{return false;}
+}
+/** Windows that put Global's inventory in a non-Normal Inven::State (Shop, Storage, Trade, CharacterTrade, Mail and
+ *  the NPC item services). Every such state's world-release handler (vtable +0x30) is empty: the item stays held. */
+export const INVEN_STATE_WINDOWS=['shop','storage','sharedtrade','chartrade','mail','exchange','exchangestore','upgrade','addsocket','removestone','optionupgrade','itemchange','incuse','brand','stonegamble','munzang','vehicle_cycle','accupgrade','helmetrank','talisman','pet_shapechange'];
+export function inventoryStateBusy(sys){
+  const ui=sys?.game?.uiwin;if(typeof ui?.isOpen!=='function')return false;
+  return INVEN_STATE_WINDOWS.some(name=>{try{return !!ui.isOpen(name);}catch{return false;}});
+}
+/** Global world-release gate, in Global order: CGameUser 008931d0 (state, costume bag 260:72) ->
+ *  Inven::State::Normal 01518f70 (map ItemDrop 0 -> 40:9) -> drop result 01315df0 (4: binding -> 40:81). */
+export function groundDropRefusal(sys,inst){
+  const game=sys.game;
+  if(inventoryStateBusy(sys))return {silent:true};
+  if(game.uiwin?.isOpen?.('costumebag'))return {cate:260,code:72};
+  if(Number(game.world?.info?.row?.ItemDrop??1)===0)return {cate:40,code:9};
+  if(isBoundInst(inst))return {cate:40,code:81};
+  return null;
 }
 export async function cursorDiscardAsk(sys){
   const game=sys.game,state=game.save.itemCursor,item=state?.item;if(!item)return false;
-  const revision=state.revision,uid=item.uid,character=game.save.id,token=game.network?.token,def=sys.db.def(item.itemIndex);
-  if(Number(game.world?.info?.row?.ItemDrop??1)===0||def?.type===0&&def.code===4){sys.msg?.(null,null,'This item cannot be dropped here.');return false;}
+  const revision=state.revision,uid=item.uid,character=game.save.id,token=game.network?.token;
+  const refusal=groundDropRefusal(sys,item);if(refusal){if(!refusal.silent)sys.msg?.(refusal.cate,refusal.code);return false;}
   // Use the original confirmation window; retain its explicit skip-confirm preference.
   const {confirmDiscard}=await import('./dialogs.js');
   if(!await confirmDiscard(sys,item))return false;

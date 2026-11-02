@@ -20,6 +20,7 @@
 // Visuals: `effect` on the flying anchor / area point (area lifetime = effect.timeMs), `contactEffect` on each unit
 // hit, `piercingEffect` on pierced units, `warningEffect` on the ground before the first pulse.
 const DEFAULT_SPEED = 25;
+const SINGLE_HIT_FAMILIES = new Set(['damage', 'damage_special']);
 
 export class RemoteSystem {
   constructor(engine) {
@@ -109,14 +110,25 @@ export class RemoteSystem {
         r.dir = { x: dx / d, z: dz / d };
       }
       const step = r.speed * dt;
+      const prev = { x: r.pos.x, z: r.pos.z };
       r.pos.x += r.dir.x * step; r.pos.z += r.dir.z * step;
       r.travel += step;
       const ty = tgt ? (tgt.y || 0) + (tgt.height || 1.5) * (tgt.scale || 1) * 0.55 : r.pos.y;
       r.pos.y += (ty - r.pos.y) * Math.min(1, dt * 6);
       Object.assign(r.anchor, { x: r.pos.x, y: r.pos.y, z: r.pos.z, yaw: Math.atan2(-r.dir.x, -r.dir.z) });
       // contact
-      const hitList = e.unitsNear(r.pos, r.size, r.ctx.caster, 'enemy').filter(u => !r.hits.has(u));
-      if (tgt && !r.hits.has(tgt) && Math.hypot(tgt.x - r.pos.x, tgt.z - r.pos.z) <= r.size + (tgt.radius || 0.5) && !hitList.includes(tgt)) hitList.unshift(tgt);
+      // SKILLDMG 2026-10-29 (swept contact): contact is tested along the whole segment flown this tick, not only at its end.
+      // The host ticks at up to 0.2 s (core.mjs), so a 40-50 m/s remote (remote.csv MoveSpeed, e.g. 30 Multiple shot, 57 Flame
+      // Burning, 501 Chain bust) moved 4-10 m per tick against a ~3 m contact window: it jumped over a target 1.5-2.5 m away,
+      // homed back, jumped over it again and expired without a hit (0 damage). Same size / radius thresholds as before.
+      const sx = r.pos.x - prev.x, sz = r.pos.z - prev.z, sl2 = sx * sx + sz * sz;
+      const along = u => (sl2 > 0 ? Math.max(0, Math.min(1, ((u.x - prev.x) * sx + (u.z - prev.z) * sz) / sl2)) : 1);
+      const segDist = u => { const k = along(u); return Math.hypot(u.x - (prev.x + sx * k), u.z - (prev.z + sz * k)); };
+      const mid = { x: (prev.x + r.pos.x) / 2, z: (prev.z + r.pos.z) / 2 };
+      const hitList = e.unitsNear(mid, r.size + step / 2, r.ctx.caster, 'enemy')
+        .filter(u => !r.hits.has(u) && segDist(u) <= r.size + (u.radius || 0.5) * 0.5)
+        .sort((a, b) => along(a) - along(b));
+      if (tgt && !r.hits.has(tgt) && segDist(tgt) <= r.size + (tgt.radius || 0.5) && !hitList.includes(tgt)) hitList.unshift(tgt);
       for (const u of hitList) {
         const first = r.hits.size === 0;
         if (!first) {
@@ -148,7 +160,11 @@ export class RemoteSystem {
       r.pulses--;
       r.nextPulse += r.cycle > 0 ? r.cycle : 1e9;
       // self-target skills (Protection sanctuary, Shield field ...) pulse around extra.center instead of the caster's current spot
-      e.applyImpact(r.ctx, r.impact, null, { x: r.center.x, z: r.center.z }, { contactEffect: r.rm.contactEffect, center: r.center });
+      // SKILLDMG 2026-10-29: a delayed / ground remote launched AT a unit whose impact is single-target (no radius, e.g.
+      // Gravity pain 2404 -> remote 3054 launch 8, impact 1000114 LightningFar@Single) strikes that unit; with unit=null
+      // the engine's enemiesAt(center, 0) returned nobody and the skill dealt 0 damage.
+      const u = !(Number(r.impact.radius) > 0) && SINGLE_HIT_FAMILIES.has(r.impact.family) && r.target && !r.target.disposed && !r.target.dead ? r.target : null;
+      e.applyImpact(r.ctx, r.impact, u, { x: r.center.x, z: r.center.z }, { contactEffect: r.rm.contactEffect, center: r.center });
     }
     if (r.pulses <= 0 && r.t >= r.life) r.done = true;
     if (r.t > r.life + 0.1) r.done = true;
@@ -161,7 +177,7 @@ export class RemoteSystem {
 }
 
 const HOIST = ['radius', 'addDamage', 'statusIndex', 'chance', 'statusDurationMs', 'durationMs', 'damageClass', 'element',
-  'elementPct', 'damagePct', 'target', 'hitEffect', 'aggro', 'statusIndex2', 'chance2', 'dotStatusIndex', 'amount', 'perSpr'];
+  'elementPct', 'damagePct', 'target', 'hitEffect', 'aggro', 'statusIndex2', 'chance2', 'dotStatusIndex', 'amount', 'perSpr', 'pvpDamageRate'];
 function pickHoisted(res) {
   const o = {};
   for (const k of HOIST) if (res[k] !== undefined) o[k] = res[k];

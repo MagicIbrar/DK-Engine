@@ -37,13 +37,36 @@ export class QuestTracker {
 
   _create(win) {
     this.win = win;
+    // Global questassist paints only through pan_body; keep root unclipped and park the row template off-screen
+    // so its 168x60 ghost never composites as a wrong overlay on top of the chrome.
     win.root.setClip(false);
     this.tpl = win.control('pan_object');
+    if (this.tpl) {
+      this.tpl.setVisible?.(false);
+      this.tpl.setEnabled?.(false);
+      this.tpl.setRect?.(-4000, -4000, 0, 0);
+    }
+    win.control('pan_body')?.setClip?.(false);
+    // Script defaults btn_up/btn_down to visible=true - hide until render decides scrolling is needed.
+    win.control('btn_up')?.setVisible?.(false);
+    win.control('btn_down')?.setVisible?.(false);
     win.control('btn_minimize').onClick(() => this.setMinimized(true));
     win.control('btn_redo').onClick(() => this.setMinimized(false));
     win.control('btn_up').onClick(() => { this.top = Math.max(0, this.top - 1); this.render(); });
     win.control('btn_down').onClick(() => { this.top += 1; this.render(); });
     this.minimized = (() => { try { return localStorage.getItem(LS_MIN) === '1'; } catch { return false; } })();
+    const tag = win.control('lbl_tagtitle'); if (tag) { if (tag.setColor) tag.setColor('#FFFF00'); else if (tag.el) tag.el.style.color = '#FFFF00'; }
+  }
+
+  /** Sync window / root box to pan_body height (script locks place() at 186x120). */
+  _syncWindowHeight(win, height) {
+    const h = Math.max(120, height | 0);
+    if (win.box) { win.box.w = 186; win.box.h = h; }
+    if (win.el?.style) { win.el.style.width = '186px'; win.el.style.height = `${h}px`; }
+    if (win.root) {
+      win.root._rectOverride = [0, 0, 186, h];
+      win.root.layout({ x: 0, y: 0, w: 186, h });
+    }
   }
 
   /** "[Lv.N]" tag of the original recommended quest level, shared with the quest window. */
@@ -85,15 +108,16 @@ export class QuestTracker {
     for (const r of this.rows) r.remove?.();
     this.rows = [];
     if (this.minimized) return;
+    if (!this.tpl || !this.tpl.cloneAs) return;
     // build the blocks
     const blocks = ids.map(id => {
       const q = db.quest(id);
       const ready = eng.isComplete(id);
-      const lines = [`<color=${ready ? 'ff8000' : 'fcb602'}>${this._lv(q)} ${plainText(q.title || q.name || String(id), eng.names)}</color>`];
+      const lines = [`<color=${ready ? 'ff8000' : 'ffff00'}>${plainText(q.title || q.name || String(id), eng.names)}</color>`];
       if (ready) lines.push(`<color=ff8000>${this.game.uiwin.strings.get({ group: 'NORMAL', cate: 100, code: 143 }) || ''}</color>`);
       else for (const o of q.objectives || []) {
         const done = eng.objectiveDone(q, o);
-        lines.push(`<color=${done ? '8a8a8a' : 'ffffff'}>- ${plainText(eng.objectiveText(q, o), eng.names)}</color>`);
+        lines.push(`<color=${done ? '8a8a8a' : 'ffffff'}>${plainText(eng.objectiveText(q, o), eng.names)}</color>`);
       }
       return { id, lines, h: lines.reduce((n,line)=>n+fitLines(line),0) * LINE + 4 };
     });
@@ -106,8 +130,11 @@ export class QuestTracker {
       shown.push({ ...b, y });
       y += b.h;
     }
-    const height = Math.max(83, y + BOTTOM_PAD);
+    // Global pan_body script rect is 186x120; grow with content, never leave the window locked at 120 while body spills.
+    const height = Math.max(120, y + BOTTOM_PAD);
+    this._syncWindowHeight(win, height);
     body.setRect(0, 0, 186, height);
+    this.tpl?.setVisible?.(false);
     shown.forEach((b, i) => {
       const row = this.tpl.cloneAs(`_${i}`, { x: 0, y: b.y, visible: true });
       row.setRect(0, b.y, 168, b.h);
@@ -123,7 +150,14 @@ export class QuestTracker {
       this.rows.push(row);
     });
     const more = blocks.length > shown.length || this.top > 0;
-    win.control('btn_up').setVisible(more).setEnabled(this.top > 0);
-    win.control('btn_down').setVisible(more).setEnabled(this.top + shown.length < blocks.length);
+    const up = win.control('btn_up');
+    const down = win.control('btn_down');
+    if (more) {
+      up?.setRect?.(169, 33, 13, 13);
+      down?.setRect?.(169, Math.max(47, height - 23), 13, 13);
+    }
+    up?.setVisible(more).setEnabled(this.top > 0);
+    down?.setVisible(more).setEnabled(this.top + shown.length < blocks.length);
   }
 }
+

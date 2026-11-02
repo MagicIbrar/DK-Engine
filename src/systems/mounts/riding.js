@@ -179,10 +179,13 @@ export class Riding {
     const row = this.data.row(table, action, index, style);
     const e = { done: false, clip: null, row };
     const model = who === 'v' ? rig.model : this.player?.model;
-    e.promise = row && model ? Promise.resolve(who === 'r'
-      ? clipEntry(this.game.models, model, normKey(row.anim), row.timeLength).promise
-      : this.game.models.loadClip(normKey(row.anim), model, { duration: row.timeLength })).catch(() => null)
-      .then(c => { e.clip = c || null; e.done = true; return e; }) : Promise.resolve((e.done = true, e));
+    e.promise = row && model ? this.game.models.loadClipWithStatus(normKey(row.anim), model, { duration: row.timeLength })
+      .then(c => { e.clip = c || null; e.done = true; return e; })
+      .catch(err => {
+        // Evict outer mount/rider entry on transient so a later play can retry.
+        if (err?.transient) cache.delete(k);
+        e.clip = null; e.done = true; return e;
+      }) : Promise.resolve((e.done = true, e));
     cache.set(k, e);
     return e;
   }

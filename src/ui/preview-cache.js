@@ -10,6 +10,9 @@ export const PREVIEW_ALIAS_LIMIT = 512;
 export class PreviewCache extends Map {
   constructor({ limit = PREVIEW_CACHE_LIMIT, bytes = PREVIEW_CACHE_BYTES, aliases = PREVIEW_ALIAS_LIMIT, schedule = (callback, delay) => globalThis.setTimeout(callback, delay), cancel = timer => globalThis.clearTimeout(timer), revoke = url => URL.revokeObjectURL(url) } = {}) {
     super(); this.generation = 0; this.limit = limit; this.byteLimit = bytes; this.aliasLimit = aliases;
+    // ICON-PRELOAD (2026-10-30): keep(record) -> true exempts a record from LRU eviction (Icons: icons of items the
+    // player owns, so a closed inventory / storage / equipment window never reopens with evicted, empty icons).
+    this.keep = null;
     this.resources = new Set(); this.clock = 0; this.timer = null; this.observer = null;
     this.schedule = schedule; this.cancel = cancel; this.revoke = revoke;
   }
@@ -46,6 +49,30 @@ export class PreviewCache extends Map {
     }
     descriptors.set(icon, record); return icon;
   }
+  /** Remember which item index this canonical icon was baked for (keep() / invalidateItems() use it). */
+  tag(icon, itemIndex) {
+    const record = resolveRecord(icon);
+    if (record) (record.items ||= new Set()).add(Number(itemIndex));
+    return icon;
+  }
+  _kept(record) {
+    if (!this.keep || !record.items?.size) return false;
+    try { return !!this.keep(record); } catch { return false; }
+  }
+  /** Drop only the icons of these item indices (their records and item aliases); every other icon stays live. */
+  invalidateItems(indices) {
+    const wanted = new Set([...indices].map(Number));
+    if (!wanted.size) return 0;
+    let evicted = 0;
+    for (const record of [...this.resources]) {
+      if (record.items && [...record.items].some(i => wanted.has(i))) { this.evict(record); evicted++; }
+    }
+    for (const key of [...this.keys()]) {
+      const m = /^(?:s\|)?(\d+)\|/.exec(key);
+      if (m && wanted.has(Number(m[1]))) super.delete(key);
+    }
+    return evicted;
+  }
   deferTrim() {
     if (this.timer !== null) return;
     // Promise consumers get the whole current task to attach/paint their owner.
@@ -78,7 +105,7 @@ export class PreviewCache extends Map {
   }
   trim() {
     for (const record of this.resources) this.prunePins(record);
-    const inactive = [...this.resources].filter(r => !r.pins.size).sort((a, b) => a.used - b.used);
+    const inactive = [...this.resources].filter(r => !r.pins.size && !this._kept(r)).sort((a, b) => a.used - b.used);
     let bytes = inactive.reduce((n, r) => n + r.bytes, 0), count = inactive.length;
     for (const record of inactive) {
       if (count <= this.limit && bytes <= this.byteLimit) break;
@@ -95,7 +122,7 @@ export class PreviewCache extends Map {
   }
   stats() {
     const records = [...this.resources], pinned = records.filter(r => r.pins.size), inactive = records.filter(r => !r.pins.size);
-    return { resources: records.length, inactive: inactive.length, inactiveDecodedBytes: inactive.reduce((n, r) => n + r.bytes, 0), pinned: pinned.length, pinnedDecodedBytes: pinned.reduce((n, r) => n + r.bytes, 0), urls: records.reduce((n, r) => n + r.urls.size, 0), readyAliases: [...this.values()].filter(v => !v?.then).length, rebuildableAliases: [...this].filter(([key, value]) => !value?.then && (/^(s\|)?\d+\|/.test(key) || !resolveRecord(value))).length, pendingAliases: [...this.values()].filter(v => v?.then).length, trimPending: this.timer !== null };
+    return { resources: records.length, kept: inactive.filter(r => this._kept(r)).length, keptDecodedBytes: inactive.filter(r => this._kept(r)).reduce((n, r) => n + r.bytes, 0), inactive: inactive.length, inactiveDecodedBytes: inactive.reduce((n, r) => n + r.bytes, 0), pinned: pinned.length, pinnedDecodedBytes: pinned.reduce((n, r) => n + r.bytes, 0), urls: records.reduce((n, r) => n + r.urls.size, 0), readyAliases: [...this.values()].filter(v => !v?.then).length, rebuildableAliases: [...this].filter(([key, value]) => !value?.then && (/^(s\|)?\d+\|/.test(key) || !resolveRecord(value))).length, pendingAliases: [...this.values()].filter(v => v?.then).length, trimPending: this.timer !== null };
   }
   clear() {
     this.generation++;

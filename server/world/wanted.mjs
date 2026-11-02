@@ -19,7 +19,7 @@ export function chaoticValue(world,p){
   const now=world.now();
   const previous=onlineAt.get(p);observe(world,p,now);
   if(previous==null){g.chaoticAt=now;return num(g.chaotic);}
-  const rate=chaoticDecayPerSec(world.data?.mapRow?.(previous.map),FIELD_PK.decayPerSec);
+  const rate=chaoticDecayPerSec(world.data?.mapRow?.(previous.map),0);
   g.chaotic=Math.max(0,num(g.chaotic)-rate*Math.max(0,now-previous.at)/1000);g.chaoticAt=now;
   return g.chaotic;
 }
@@ -58,4 +58,65 @@ export function addChaos(world,killer){
   st.chaoticAt=now;
   observe(world,killer,now);
   return {before,after:wantedLevel(world,killer)};
+}
+
+/** Global NormalDeadPC 0x5df1b0 / Decrease.cpp 0x845d60: when a chaotic character dies,
+ * chaotic -= pkcount.csv col4 for the current kills-in-last-hour count, floored at 0.
+ * MATH-VERIFY row 14. build-life maps col4 as `level` (and optionally `decrease`). */
+export function chaoticDeath(world,p){
+  const beforeWanted=wantedLevel(world,p);
+  const current=chaoticValue(world,p);
+  if(!(current>0))return {before:beforeWanted,after:beforeWanted,decreased:0};
+  const st=stateOf(p),now=world.now(),table=world.data?.pkData?.pkcount||[];
+  const n=(st.pkWindow||[]).filter(t=>now-t<3600e3).length;
+  const row=table.find(r=>n>=r.start&&n<=r.end)||table[table.length-1];
+  const amount=row?num(row.decrease??row.level):0;
+  st.chaotic=Math.max(0,num(st.chaotic)-amount);
+  st.chaoticAt=now;
+  observe(world,p,now);
+  return {before:beforeWanted,after:wantedLevel(world,p),decreased:amount};
+}
+
+/** Field Safe Time (NonPK): formula.ini dwNonPKTime (30000) + stringtable_pc 1003:10
+ * "cannot attack or be attacked for 30 seconds." Granted to a field-PK death victim on revive
+ * (field-pk marks pkSafePending; field-respawn calls noteSafeTime). Mode controllers (siege/arena/urban) call grantModeSafeTime on player revive. Runtime host state, kept per
+ * character across reconnect like battle status. Mode-specific durations (siege/arena/urban) are
+ * available on world.data.pvpRules when those controllers grant Safe Time. */
+export function noteSafeTime(world,p,durationMs,at=world.now()){
+  const ms=Number(durationMs); if(!p||!(ms>0))return null;
+  const until=at+ms; p.pkSafeUntil=until;
+  if(p.characterId!=null){ const kept=world.pkSafeByCharacter||=new Map(); kept.set(String(p.characterId),until);
+    if(kept.size>4096){ const now=world.now(); for(const [key,value] of kept) if(!(value>now)) kept.delete(key); }
+  }
+  return until;
+}
+export function pkSafeUntilOf(world,p){
+  if(!p)return null;
+  // Map is authoritative across reconnect/clear (same pattern as battle status keep + explicit clear).
+  if(p.characterId!=null&&world.pkSafeByCharacter){
+    const kept=world.pkSafeByCharacter.get(String(p.characterId));
+    if(Number.isFinite(kept)){ if(!(Number(p.pkSafeUntil)>=kept))p.pkSafeUntil=kept; return kept; }
+    delete p.pkSafeUntil; return null;
+  }
+  return Number.isFinite(p.pkSafeUntil)?p.pkSafeUntil:null;
+}
+export function pkSafeTimeActive(world,p){
+  if(!p||p.duelId)return false;
+  const until=pkSafeUntilOf(world,p); if(until==null)return false;
+  return world.now()<until;
+}
+/** Mode NonPK after revive (formula.ini dwSeige/Arena/UrbanWarfareNonPKTime).
+ * Client notice uses stringtable_pc 1003:11 (no hard-coded 30s — that text is field-only 1003:10).
+ * Duel is exempt at isPvpTarget; field-pk pkRefusal already blocks Safe Time pairs. */
+export function grantModeSafeTime(world,p,kind='field'){
+  const rules=world.data?.pvpRules||{};
+  const ms=Number(kind==='siege'?rules.siegeNonPkTimeMs:kind==='arena'?rules.arenaNonPkTimeMs:kind==='urban'?rules.urbanWarfareNonPkTimeMs:rules.nonPkTimeMs)||0;
+  if(!(ms>0)||!p)return false;
+  noteSafeTime(world,p,ms);
+  world.emit(p.map,{type:'pk',reason:'safetime-mode',actorId:p.id,targetId:p.id,recipients:[p.id]});
+  return true;
+}
+export function clearSafeTime(world,p){
+  if(!p)return; delete p.pkSafeUntil; delete p.pkSafePending;
+  if(p.characterId!=null)world.pkSafeByCharacter?.delete?.(String(p.characterId));
 }

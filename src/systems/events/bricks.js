@@ -213,6 +213,16 @@ export class BrickSet {
   }
   removeAll(uids, how = 'die') { for (const u of uids) this.remove(u, how); }
 
+  /** Lane 59: the script's BrickOpenRedCell / BrickCloseRedCell (older server reference): the brick stays visible, its
+   *  cells become walkable (on) or blocked again (off). Inferred from the op names; no clip is played. */
+  setPassable(uid, on) {
+    const b = this.byUid.get(uid);
+    if (!b || b.removed) return false;
+    b.passable = !!on;
+    if (on) b.unblock(); else b.block(this.game.world?.collision);
+    return true;
+  }
+
   /** A breakable brick died in combat: free its cells. */
   onDeath(actor) {
     if (!(actor instanceof Brick)) return null;

@@ -1,9 +1,13 @@
 // Private, single-server accounts and character snapshots. No game assets leave this server.
 import {createEntityJournal,diffStores} from './entity-journal.mjs';
-import {normalizeCharacterName, normalizeStaffCharacterName, characterNameKey, normalizeCharacterNameColor} from '../../src/game/character-name.js';
+import {createVaultJournal,vaultEnabled} from '../pipeline/services/vault.mjs'; // VAULT: opt-in persistence writer (DK_VAULT=1)
+import {normalizeCharacterName, normalizeStaffCharacterName, stripStaffNameTag, characterNameKey, normalizeCharacterNameColor} from '../../src/game/character-name.js';
+import {isStaffBracketAccount,normalizeStaffBracket,staffBracket} from './staff-brackets.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { accountPermissions, permissionFile, setAccountRole } from './permissions.mjs';
+import { applyStaffCharacterCreate, normalizeStaffShowcasesInStore } from './owner-roster.mjs';
+import { loadWorldData } from '../world/data.mjs';
 import { localDemoInfo } from './bootstrap.mjs';
 import { ownerLocalRequest } from './owner-auth.mjs';
 import { characterRef } from './character-ref.mjs';
@@ -20,6 +24,7 @@ import {defaultRoots} from '../world/prepared-roots.mjs';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, scrypt as scryptCallback, timingSafeEqual, createHash, randomUUID } from 'node:crypto';
 import { promisify, isDeepStrictEqual } from 'node:util';
+import { CHAR_TRADE_ENGINE_CHOSEN } from '../../src/config/engine-chosen-char-trade.js';
 
 const scrypt = promisify(scryptCallback);
 // 2nd password limits: Global stringtable_loginmsg cate 30 (120 "between 4 & 12 digits", 112 "%d/%d", 116 "more than 5 times").
@@ -32,7 +37,7 @@ const SESSION_MS = 7 * 24 * 60 * 60 * 1000;
 // remain one-use, hashed in memory, account-bound and tied to the chosen host.
 const LAUNCH_TICKET_MS = 180000;
 const MAX_BYTES = 8 * 1024 * 1024;
-// ENGINE-CHOSEN: a saved account lasts 30 days per token, at most 5 tokens (devices) per account; each use is replaced by a fresh token.
+// Evidenced (older server-ref legacy DK Engine server/accounts/api.mjs): REMEMBER_MS=30d, MAX_REMEMBER=5, token sha256 hex64; slice(-MAX_REMEMBER). Global client auth stack not shipped; do not touch sign-in credential flows.
 const REMEMBER_MS = 30 * 24 * 60 * 60 * 1000, MAX_REMEMBER = 5, REMEMBER_TOKEN = /^[a-f0-9]{64}$/;
 const hash = value => createHash('sha256').update(value).digest('hex');
 class HttpError extends Error { constructor(status, message) { super(message); this.status = status; } }
@@ -52,8 +57,12 @@ async function body(req, limit = MAX_BYTES) {
     return value;
   } catch { throw new HttpError(400, 'Expected a JSON object.'); }
 }
+// MIGRATION-4.1.x: 4.1.0-4.1.3 allowed up to 100 characters per account; 4.2.0 slots are 18 (receiverMaxCharacters).
+// Accounts that already hold more keep them (grandfathered, never trimmed) but cannot grow; new accounts get 18.
+const LEGACY_MAX_CHARACTERS = 100;
+export const accountCharacterLimit = (existing = 0) => Math.max(CHAR_TRADE_ENGINE_CHOSEN.receiverMaxCharacters, Math.min(LEGACY_MAX_CHARACTERS, Number(existing) || 0));
 function validateCharacters(value) {
-  if (!Array.isArray(value) || value.length > 100) throw new HttpError(400, 'Expected at most 100 characters.');
+  if (!Array.isArray(value) || value.length > LEGACY_MAX_CHARACTERS) throw new HttpError(400, `Expected at most ${CHAR_TRADE_ENGINE_CHOSEN.receiverMaxCharacters} characters.`);
   const ids = new Set();
   for (const ch of value) {
     if (!ch || typeof ch !== 'object' || typeof ch.id !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(ch.id)
@@ -86,6 +95,17 @@ function storedNpcProfile(profile,old=profile){
 }
 /** The untouched 'admin' that server start reserves on a fresh local install (bootstrap.mjs initializeLocalDemo): the
  *  local-demo marker, no characters, never changed (revision 0). */
+/** ROLE-AUTOLOGIN: 4.1.0-4.1.2 reserved only 'admin' at signup, so a player could register 'dev' and that record survives an
+ *  update. An existing staff-bracket record belongs to the owner launcher only when it carries the bracket marker, is a bracket no
+ *  player could ever register (admin is reserved everywhere; 'gm' is shorter than the 3-character ID minimum), is still empty, or
+ *  holds server characters the owner roster / staff create stamped for this account. Anything else is a player's account. */
+function ownerBracketRecord(row, id) {
+  if (!row || typeof row !== 'object') return false;
+  if (row.staffBracket === id || id === 'admin' || id === 'gm') return true;
+  const characters = Array.isArray(row.characters) ? row.characters : [];
+  if (!characters.length && !Number(row.revision)) return true;
+  return characters.some(c => c?.authority === 'server' && c.ownerProvision?.account === id);
+}
 function freshOwnerPlaceholder(store) {
   const admin = store?.users?.admin;
   return !!admin && store.localDemo?.id === 'admin' && Array.isArray(admin.characters) && !admin.characters.length && !Number(admin.revision);
@@ -107,16 +127,19 @@ export function createAccountsApi({ initialOwnerCharacters = null, file = proces
   function rememberRate(req){const time=Date.now(),key=req.relay?.clientKey||req.socket.remoteAddress||'local';for(const[k,v]of rememberAttempts)if(v.until<=time)rememberAttempts.delete(k);if(!rememberAttempts.has(key)&&rememberAttempts.size>=5000)throw new HttpError(429,'Try again later.');const rate=rememberAttempts.get(key)||{count:0,until:time+60000};rememberAttempts.set(key,rate);if(++rate.count>30)throw new HttpError(429,'Too many saved-login attempts. Try again in a minute.');}
   const sessionQueues = new Map(), sessionActivity = new Map();
   function assertLoginAvailable(db,id,allowedSource=null) {
-    if(isAccountOnline(id)) throw new HttpError(409, "This account is already connected to this server. Sign out of its other client first.");
+    // KICK_STALE_LOGIN (Global parity): a correct new login replaces this account's older session and disconnects its
+    // old or dead client instead of refusing. Returns true when an older session/client must be kicked.
+    let kick=!!isAccountOnline(id);
     for(const key of sessionKeysOf(db,id)) {const value=db.sessions[key];
       // Owner cookies are valid only in the process that authenticated them.
       // An unusable persisted owner session must not block a fresh private launch.
-      if(id==='admin'&&!ownerSessions.has(key))continue;
+      if(isStaffBracketAccount(id)&&!ownerSessions.has(key))continue;
       if(value.id===id && key!==allowedSource && value.expires>Date.now() && Date.now()-(sessionActivity.get(key) ?? value.lastActive ?? 0)<60000)
-        throw new HttpError(409, "This account is already signed in on this server. Sign out first, or wait one minute after closing the client.");
+        kick=true;
     }
+    return kick;
   }
-  function withAccountSession(id,fn){const task=(sessionQueues.get(id)||Promise.resolve()).catch(()=>{}).then(fn);sessionQueues.set(id,task);task.finally(()=>{if(sessionQueues.get(id)===task)sessionQueues.delete(id);}).catch(()=>{});return task;}
+  function withAccountSession(id,fn){const task=Promise.resolve((sessionQueues.get(id)||Promise.resolve()).catch(()=>{}).then(fn));sessionQueues.set(id,task);Promise.resolve(task).finally(()=>{if(sessionQueues.get(id)===task)sessionQueues.delete(id);}).catch(()=>{});return task;}
   async function load() {
     if (state) return state;
     if (!loading) loading = (async () => {
@@ -141,6 +164,8 @@ export function createAccountsApi({ initialOwnerCharacters = null, file = proces
         state=merged.state;
         if(merged.dirty)await writeAtomicStore(file,journal?{...state,journalSeq:journal.seq}:state);
       }
+      // STAFF-STANCE: fix illegal staff showcase weapon tabs in memory (persisted with the next normal save; version-gated).
+      if(process.env.DEKARON_STAFF_STANCE!=='0'){try{const r=await normalizeStaffShowcasesInStore(state,{gamedataRoot});if(r.changed||r.error||r.errors?.length)console.log('[accounts] staff stance',JSON.stringify(r));}catch(e){console.warn('[accounts] staff stance skipped',e?.message||e);}}
       return state;
     })().catch(err => { loading = null; state = null; throw err; });
     return loading;
@@ -152,7 +177,7 @@ export function createAccountsApi({ initialOwnerCharacters = null, file = proces
   // more bot saves. Any human/session/other transaction runs alone, immediately,
   // exactly as before. sqlite stores keep one write per transaction.
   // PERSIST-PERF: per-entity journal + background checkpoint (default on for the JSON store; DEKARON_ACCOUNT_JOURNAL=0 = old full rewrite)
-  const journal=!sqlFile&&process.env.DEKARON_ACCOUNT_JOURNAL!=='0'?createEntityJournal({file,checkpointMs:Number(process.env.DEKARON_CHECKPOINT_MS)||30000,
+  const journal=!sqlFile&&process.env.DEKARON_ACCOUNT_JOURNAL!=='0'?(vaultEnabled()&&storeIo===undefined?createVaultJournal:createEntityJournal)({file,checkpointMs:Number(process.env.DEKARON_CHECKPOINT_MS)||30000,
     checkpointBytes:Number(process.env.DEKARON_CHECKPOINT_BYTES)||64*1024*1024,writeCheckpoint:value=>writeAtomicStore(file,value,{io:storeIo,accountNpcProfiles:true})}):null;
   const sqlGroupCommit=!!engineSqlStore?.commitOwn&&process.env.DEKARON_SQL_GROUP_COMMIT!=='0';
   const pendingCommits=[];let committing=false,coalesceWake=null,coalesceTimer=null,flushRequested=0;
@@ -198,7 +223,7 @@ export function createAccountsApi({ initialOwnerCharacters = null, file = proces
         if(rec)await journal.append(rec);
       } else if (journal) {
         // full-clone transactions (rare admin/rename paths): a synchronous checkpoint replaces the journal
-        await journal.checkpoint(current,journal.seq);
+        await journal.checkpoint(current,journal.seq,{replace:true}); // VAULT: 3rd arg read only by createVaultJournal
       } else await writeAtomicStore(file,current,{io:storeIo,accountNpcProfiles:true,accountNpcRecordFragment:fragments.lookup});
     }
     catch(error){for(const b of built){b.r.undo?.();b.t.reject(error);}return;}
@@ -273,7 +298,7 @@ export function createAccountsApi({ initialOwnerCharacters = null, file = proces
   async function sessionUser(req) {
     const db = await load(), session = db.sessions[hash(token(req))];
     if (!session || session.expires <= Date.now() || !Object.hasOwn(db.users, session.id)) return null;
-    if(session.id==='admin'&&(!ownerLocalRequest(req)||!ownerSessions.has(hash(token(req)))))return null;
+    if(isStaffBracketAccount(session.id)&&(!ownerLocalRequest(req)||!ownerSessions.has(hash(token(req)))))return null;
     sessionActivity.set(hash(token(req)),Date.now());
     return db.users[session.id];
   }
@@ -281,16 +306,17 @@ export function createAccountsApi({ initialOwnerCharacters = null, file = proces
     const owner=await sessionUser(req);
     if(!owner)return null;
     // 2nd password (Global ui_secondpwwnd, server-checked like Global 30:114/30:117): the record never leaves this module;
-    // world join reads only these two flags. The owner launcher account (no sign-in password) and NPC accounts are exempt.
+    // world join reads only these two flags. NPC accounts stay exempt; the owner/admin launcher account is NOT exempt (D1).
     const {secondPw,...rest}=owner,session=(await load()).sessions[hash(token(req))];
     return {...rest,secondPwRequired:secondPwApplies(owner.id),secondPwVerified:!!session?.secondPw,...await accountPermissions(permissionsFile,owner.id)};
   }
-  const secondPwApplies=id=>id!=='admin'&&!NPC_ACCOUNT_ID.test(id);
+  const secondPwApplies=id=>!NPC_ACCOUNT_ID.test(id);
   const secondPwAttempts=new Map();
   function secondPwRate(id){const now=Date.now();for(const[k,v]of secondPwAttempts)if(v.until<=now)secondPwAttempts.delete(k);const r=secondPwAttempts.get(id)||{count:0,until:now+60000};secondPwAttempts.set(id,r);return ++r.count<=SECONDPW_RATE;}
   async function secondPwDigest(pin,salt){return (await scrypt(pin,salt,64)).toString('hex');}
   async function secondPwMatches(rec,pin){if(!validSecondPw(pin)||!/^[a-f0-9]{128}$/.test(String(rec?.digest)))return false;const a=Buffer.from(await secondPwDigest(pin,rec.salt),'hex');return timingSafeEqual(a,Buffer.from(rec.digest,'hex'));}
-  async function markSecondPwSession(req,id){const key=hash(token(req));await transact(db=>{const s=db.sessions[key];if(s&&s.id===id)s.secondPw=true;});}
+  // STABILITY-PING: session/one-account changes no longer structuredClone + checkpoint the whole store (~250 ms main-thread stall each, measured).
+  async function markSecondPwSession(req,id){const key=hash(token(req));await transactSessions((db,ops)=>{const s=ops.get(key);if(s&&s.id===id)ops.set(key,{...s,secondPw:true});});}
   function cookie(req, value, maxAge) {
     return `${cookieName}=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}${req.socket.encrypted || req.relay?.secure || secureCookies ? '; Secure' : ''}`;
   }
@@ -299,8 +325,8 @@ export function createAccountsApi({ initialOwnerCharacters = null, file = proces
     const secret = randomBytes(32).toString('hex');
     let removed=[];
     const replaced=await transactSessions((db,ops) => {
-      assertLoginAvailable(db,id,allowedSource);
-      let replaced=false;
+      const kick=assertLoginAvailable(db,id,allowedSource);
+      let replaced=kick;
       // only THIS account's sessions are replaced here; expired sessions of other accounts are swept in the background
       for (const key of ops.keysOf(id)) {const value=ops.get(key);if(value.expires>Date.now())replaced=true;ops.delete(key);removed.push(key);}
       ops.set(hash(secret), { id, expires: Date.now() + SESSION_MS, lastActive: Date.now() });
@@ -331,7 +357,7 @@ export function createAccountsApi({ initialOwnerCharacters = null, file = proces
       if(current.id!=='admin'||!current.capabilities?.includes('gm:commands'))throw new HttpError(403,'Only the installation owner can unlock a 2nd password.');
       const data=await body(req,512);const id=String(data.account||'').trim().toLowerCase();
       if(Object.keys(data).some(k=>k!=='account')||!/^[a-z0-9_-]{3,32}$/.test(id)||id==='__proto__')throw new HttpError(400,'Name one account to unlock.');
-      const r=await transact(db=>{const u=Object.hasOwn(db.users,id)?db.users[id]:null;if(!u)throw new HttpError(404,'That registered account does not exist.');if(!u.secondPw)return 113;u.secondPw={...u.secondPw,wrong:0,locked:false};return 106;});
+      const r=await transactUser(id,db=>{const u=Object.hasOwn(db.users,id)?db.users[id]:null;if(!u)throw new HttpError(404,'That registered account does not exist.');if(!u.secondPw)return 113;u.secondPw={...u.secondPw,wrong:0,locked:false};return 106;});
       return json(res,200,{ok:r===106,code:r,account:id});
     }
     // Exempt accounts (owner launcher, NPC) answer the status read with required:false so the client skips the window; every
@@ -347,11 +373,11 @@ export function createAccountsApi({ initialOwnerCharacters = null, file = proces
     return withAccountSession(current.id,async()=>{
       // Check, count and lock inside one transaction so parallel guesses cannot exceed 5.
       const check=async(pin)=>{const r=rec();if(!r)return {code:113};if(r.locked)return {code:116};
-        if(await secondPwMatches(r,pin)){await transact(db=>{const u=db.users[current.id];if(u?.secondPw)u.secondPw={...u.secondPw,wrong:0};});return {code:106};}
-        const wrong=await transact(db=>{const u=db.users[current.id];if(!u?.secondPw)return 0;const w=Math.min(SECONDPW_MAX_WRONG,(u.secondPw.wrong||0)+1);u.secondPw={...u.secondPw,wrong:w,locked:w>=SECONDPW_MAX_WRONG};return w;});
+        if(await secondPwMatches(r,pin)){await transactUser(current.id,db=>{const u=db.users[current.id];if(u?.secondPw)u.secondPw={...u.secondPw,wrong:0};});return {code:106};}
+        const wrong=await transactUser(current.id,db=>{const u=db.users[current.id];if(!u?.secondPw)return 0;const w=Math.min(SECONDPW_MAX_WRONG,(u.secondPw.wrong||0)+1);u.secondPw={...u.secondPw,wrong:w,locked:w>=SECONDPW_MAX_WRONG};return w;});
         return wrong>=SECONDPW_MAX_WRONG?{code:116}:{code:112,wrong};};
       const store=async(pin,code)=>{const salt=randomBytes(16).toString('hex'),digest=await secondPwDigest(pin,salt);
-        try{await transact(db=>{const u=db.users[current.id];if(!u)throw new HttpError(401,'Log in first.');if(code===119&&u.secondPw)throw Object.assign(new Error('set'),{already:true});u.secondPw={salt,digest,wrong:0,locked:false,updated:Date.now()};});}
+        try{await transactUser(current.id,db=>{const u=db.users[current.id];if(!u)throw new HttpError(401,'Log in first.');if(code===119&&u.secondPw)throw Object.assign(new Error('set'),{already:true});u.secondPw={salt,digest,wrong:0,locked:false,updated:Date.now()};});}
         catch(e){if(e.already)return 115;if(e.status)throw e;return code;}
         await markSecondPwSession(req,current.id);return 106;};
       if(op==='set'){if(rec())return reply(200,115);if(!validSecondPw(data.pin))return reply(200,120);if(data.pin!==data.again)return reply(200,121);return reply(200,await store(data.pin,119));}
@@ -399,7 +425,7 @@ export function createAccountsApi({ initialOwnerCharacters = null, file = proces
       });
     },
     migrateNpcNames:createNpcNameMigration({transact}),
-    ...createSocialAccountHooks({load,transact,saveNpcProfile:(db,{accountId,characterId,profile,expected,preserveLastPlayed=false})=>{
+    ...createSocialAccountHooks({load,transact,transactProfiles,saveNpcProfile:(db,{accountId,characterId,profile,expected,preserveLastPlayed=false})=>{
       validateNpcProfile(accountId,profile);
       const old=Object.hasOwn(db.npcProfiles||{},accountId)&&db.npcProfiles[accountId];
       if(!old||old.id!==characterId||profile.id!==characterId||Object.hasOwn(db.users,accountId))throw new HttpError(404,'A private NPC character is unavailable.');
@@ -410,66 +436,71 @@ export function createAccountsApi({ initialOwnerCharacters = null, file = proces
     ...createCharTransferHooks({load,transact}),
     ...createGMTransferHooks({load,transact,authorize:async(req,db)=>{
       const key=hash(token(req)),session=db.sessions[key];
-      if(!session||session.expires<=Date.now()||!Object.hasOwn(db.users,session.id)||session.id==='admin'&&(!ownerLocalRequest(req)||!ownerSessions.has(key)))return null;
+      if(!session||session.expires<=Date.now()||!Object.hasOwn(db.users,session.id)||isStaffBracketAccount(session.id)&&(!ownerLocalRequest(req)||!ownerSessions.has(key)))return null;
       return {id:session.id,...await accountPermissions(permissionsFile,session.id)};
     }}),
     async ownerLaunch(req,res) {
       try {
         if(!ownerLocalRequest(req)||req.headers.origin!==undefined)throw new HttpError(403,'Local admin requires the private owner launcher.');
-        const input=await body(req,512);if(Object.keys(input).length)throw new HttpError(400,'Owner launch accepts no credentials.');
-        await withAccountSession('admin',async()=>{
+        const input=await body(req,512);
+        const inputKeys=Object.keys(input||{});
+        if(inputKeys.some(k=>k!=='staffRole'))throw new HttpError(400,'Owner launch accepts no credentials.');
+        let bracketKey='admin';
+        if(input.staffRole!=null){try{bracketKey=normalizeStaffBracket(input.staffRole);}catch{throw new HttpError(400,'Staff role must be admin, gm, or dev.');}}
+        const bracket=staffBracket(bracketKey);
+        const accountId=bracket.id;
+        await withAccountSession(accountId,async()=>{
           const db=await load();
-          assertLoginAvailable(db,'admin');
-          if(!Object.hasOwn(db.users,'admin')){
+          assertLoginAvailable(db,accountId);
+          // ROLE-AUTOLOGIN: never sign the owner into (or grant staff to) a player's pre-4.2.0 'dev' account.
+          if(Object.hasOwn(db.users,accountId)&&!ownerBracketRecord(db.users[accountId],accountId))throw new HttpError(409,`A player account named "${accountId}" was registered before 4.2.0 reserved it. ${bracket.tag} owner launch was refused so that player's account is not taken over or given staff rights. Rename or remove that account first.`);
+          if(!Object.hasOwn(db.users,accountId)){
             const salt=randomBytes(16).toString('hex'),digest=(await scrypt(randomBytes(48).toString('hex'),salt,64)).toString('hex');
-            const characters=initialOwnerCharacters?await initialOwnerCharacters({id:'admin',characters:[]}):[];
+            const characters=initialOwnerCharacters?await initialOwnerCharacters({id:accountId,characters:[],staffRole:bracketKey}):[];
             validateCharacters(characters);
             await transact(next=>{
-              if(Object.hasOwn(next.users,'admin'))throw new HttpError(409,'The installation owner already exists. Retry sign-in.');
+              if(Object.hasOwn(next.users,accountId))throw new HttpError(409,'The installation owner already exists. Retry sign-in.');
               const names=new Set(Object.values(next.users).flatMap(u=>(u.characters||[]).map(c=>c.name.toLowerCase())));
               for(const ch of characters){if(names.has(ch.name.toLowerCase()))throw new HttpError(409,'An owner showcase character name is already occupied. Existing progress is preserved.');names.add(ch.name.toLowerCase());}
-              next.users.admin={id:'admin',salt,digest,created:Date.now(),revision:characters.length?1:0,characters};
+              next.users[accountId]={id:accountId,salt,digest,created:Date.now(),revision:characters.length?1:0,characters,staffBracket:bracketKey};
             });
-          }else if(initialOwnerCharacters&&freshOwnerPlaceholder(db)){
-            // A fresh install's server start reserves 'admin' first (bootstrap.mjs initializeLocalDemo: characters [],
-            // revision 0), so the branch above never ran and the owner started with no characters (2.1.0/2.1.1 known
-            // issue). That untouched placeholder is still a fresh owner: give it the initial roster. An admin that has or
-            // ever had characters (revision > 0) is never re-provisioned.
-            const characters=await initialOwnerCharacters({id:'admin',characters:[]});
+          }else if(initialOwnerCharacters&&(accountId==='admin'?freshOwnerPlaceholder(db):((db.users[accountId]?.characters||[]).length===0&&(db.users[accountId]?.revision||0)===0))){
+            const characters=await initialOwnerCharacters({id:accountId,characters:[],staffRole:bracketKey});
             validateCharacters(characters);
             if(characters.length)await transact(next=>{
-              if(!freshOwnerPlaceholder(next))throw new HttpError(409,'The installation owner changed during setup. Retry sign-in.');
+              const row=next.users[accountId];
+              const fresh=accountId==='admin'?freshOwnerPlaceholder(next):((row?.characters||[]).length===0&&(row?.revision||0)===0);
+              if(!fresh||!ownerBracketRecord(row,accountId))throw new HttpError(409,'The installation owner changed during setup. Retry sign-in.');
               const names=new Set(Object.values(next.users).flatMap(u=>(u.characters||[]).map(c=>c.name.toLowerCase())));
               for(const ch of characters){if(names.has(ch.name.toLowerCase()))throw new HttpError(409,'An owner showcase character name is already occupied. Existing progress is preserved.');names.add(ch.name.toLowerCase());}
-              next.users.admin={...next.users.admin,revision:1,characters};
+              next.users[accountId]={...next.users[accountId],revision:1,characters};
             });
           }
-          await setAccountRole({accountStore:file,file:permissionsFile,account:'admin',role:'gm'});
-          // Private host enqueue only: native preparation/movement must never
-          // consume the launch request timeout or the ticket's lifetime.
+          await setAccountRole({accountStore:file,file:permissionsFile,account:accountId,role:'gm'});
           let adminGuild=null;
           try{const report=onOwnerPrepared();if(report?.then)void Promise.resolve(report).catch(()=>{});else adminGuild=report;}catch{adminGuild={phase:'deferred',complete:false,reason:'setup-unavailable'};}
-          pruneLaunchTickets();invalidateLaunchTickets('admin');
-          const ticket=randomBytes(32).toString('hex');launchTickets.set(hash(ticket),{id:'admin',owner:true,host:launchHost(req),expires:launchNow()+LAUNCH_TICKET_MS});
-          json(res,200,{ticket,expiresIn:LAUNCH_TICKET_MS/1000,...(adminGuild?{adminGuild}:{})});
+          pruneLaunchTickets();invalidateLaunchTickets(accountId);
+          const ticket=randomBytes(32).toString('hex');launchTickets.set(hash(ticket),{id:accountId,owner:true,staffBracket:bracketKey,host:launchHost(req),expires:launchNow()+LAUNCH_TICKET_MS});
+          json(res,200,{ticket,expiresIn:LAUNCH_TICKET_MS/1000,account:accountId,staffRole:bracketKey,...(adminGuild?{adminGuild}:{})});
         });
       }catch(error){json(res,error.status||500,{error:error.status?error.message:'Owner sign-in failed.'});}
     },
+
     // Host-private stop guard: match the existing one-minute live-session admission window.
     // Persisted seven-day cookies and closed/crashed clients must not block stop forever.
     async activeSessionCount() {
       const db=await load(),now=Date.now();
-      return new Set(Object.entries(db.sessions).filter(([key,value])=>Object.hasOwn(db.users,value.id)&&value.expires>now&&(value.id!=='admin'||ownerSessions.has(key))&&now-(sessionActivity.get(key)??value.lastActive??0)<60000).map(([,value])=>value.id)).size;
+      return new Set(Object.entries(db.sessions).filter(([key,value])=>Object.hasOwn(db.users,value.id)&&value.expires>now&&(!isStaffBracketAccount(value.id)||ownerSessions.has(key))&&now-(sessionActivity.get(key)??value.lastActive??0)<60000).map(([,value])=>value.id)).size;
     },
     async activePermissions(id) {
       const db=await load();
-      return Object.entries(db.sessions).some(([key,s])=>s.id===id&&s.expires>Date.now()&&(id!=='admin'||ownerSessions.has(key))) ? accountPermissions(permissionsFile,id) : null;
+      return Object.entries(db.sessions).some(([key,s])=>s.id===id&&s.expires>Date.now()&&(!isStaffBracketAccount(id)||ownerSessions.has(key))) ? accountPermissions(permissionsFile,id) : null;
     },
     // Host-private identity/permission join; never included in account HTTP
     // responses and never inferred from character names or NPC labels.
     // Private host-only provision authority. Delegated GM roles are not owners.
-    async canProvisionAdminGuildSetup(id){if(id!=='admin')return false;const db=await load();return Object.hasOwn(db.users,id)&&(await accountPermissions(permissionsFile,id)).capabilities.includes('gm:commands');},
-    async canProvisionAdminGuildGlory(id){if(id!=='admin')return false;const db=await load();return Object.hasOwn(db.users,id)&&(await accountPermissions(permissionsFile,id)).capabilities.includes('gm:commands');},
+    async canProvisionAdminGuildSetup(id){if(!isStaffBracketAccount(id))return false;const db=await load();return Object.hasOwn(db.users,id)&&(await accountPermissions(permissionsFile,id)).capabilities.includes('gm:commands');},
+    async canProvisionAdminGuildGlory(id){if(!isStaffBracketAccount(id))return false;const db=await load();return Object.hasOwn(db.users,id)&&(await accountPermissions(permissionsFile,id)).capabilities.includes('gm:commands');},
     async listAdminGuildCandidates(){const db=await load(),out=[];for(const [id,owner]of Object.entries(db.users)){if(NPC_ACCOUNT_ID.test(id))continue;const access=await accountPermissions(permissionsFile,id);if(!access.capabilities.includes('gm:commands'))continue;for(const ch of owner.characters||[])if(ch.authority==='server'&&!ch.npcPlayer&&!ch.npcSeed)out.push({account:id,characterId:ch.id});}return out;},
     async readAdminGuildAccess(id){const db=await load();return Object.hasOwn(db.users,id)?accountPermissions(permissionsFile,id):{role:'player',capabilities:[]};},
     async canReadAssets(req) {return !!await sessionUser(req);},
@@ -577,6 +608,7 @@ export function createAccountsApi({ initialOwnerCharacters = null, file = proces
       return ok;
     },
     async renameWorldCharacter(accountId, characterId, name, nameColor, profile, {staffOverride=false}={}) {
+      if(staffOverride&&!(await accountPermissions(permissionsFile,accountId)).capabilities.includes('gm:commands'))throw new HttpError(403,'Staff labels require a currently authorized staff account.');
       name = staffOverride ? normalizeStaffCharacterName(name) : normalizeCharacterName(name);
       if (nameColor !== undefined) nameColor = normalizeCharacterNameColor(nameColor);
       return transact(db => {
@@ -628,7 +660,7 @@ export function createAccountsApi({ initialOwnerCharacters = null, file = proces
           pruneLaunchTickets();const key=hash(input.ticket),ticket=launchTickets.get(key);if(!ticket)throw new HttpError(401,'Launch expired or was already used. Log in again.');
           await withAccountSession(ticket.id,async()=>{
             if(launchTickets.get(key)!==ticket||ticket.expires<=launchNow())throw new HttpError(401,'Launch expired or was already used. Log in again.');
-            if(ticket.id==='admin'&&(!ticket.owner||!ownerLocalRequest(req)))throw new HttpError(403,'Local admin cannot connect remotely.');
+            if(isStaffBracketAccount(ticket.id)&&(!ticket.owner||!ownerLocalRequest(req)))throw new HttpError(403,'Local admin cannot connect remotely.');
             if(ticket.host!==launchHost(req))throw new HttpError(401,'Launch belongs to a different server address. Log in again.');
             if(ticket.owner){launchTickets.delete(key);await sessionUnlocked(req,res,ticket.id,200,[],true);return;}
             launchTickets.delete(key);const active=(await load()).sessions[ticket.source];if(!active||active.id!==ticket.id||active.expires<=Date.now())throw new HttpError(401,'Your account session changed. Log in again.');
@@ -642,7 +674,7 @@ export function createAccountsApi({ initialOwnerCharacters = null, file = proces
           if (Object.keys(data).some(key => !['id', 'password', ...(loginVersionGate?.acceptsField ? ['clientVersion'] : [])].includes(key))) throw new HttpError(400, 'Login and signup accept only ID and password.');
           if (loginVersionGate?.enabled) { const gate = loginVersionGate.check(data.clientVersion); if (!gate.ok) throw new HttpError(426, gate.error); }
           if (!/^[a-z0-9_-]{3,32}$/.test(id) || id === '__proto__' || typeof password !== 'string' || password.length < 6 || password.length > 128) throw new HttpError(400, 'Use an ID of 3–32 letters, numbers, underscores or dashes and a password of 6–128 characters.');
-          if(id==='admin')throw new HttpError(403,'This account is reserved for the installation owner launcher.');
+          if(id==='admin'||id==='gm'||id==='dev')throw new HttpError(403,'This account is reserved for the installation owner launcher.');
           const key = req.relay?.clientKey || req.socket.remoteAddress || 'local', now = Date.now();
           for (const [k, v] of attempts) if (v.until < now) attempts.delete(k);
           const rate = attempts.get(key) || { count: 0, until: now + 60000 };
@@ -651,7 +683,7 @@ export function createAccountsApi({ initialOwnerCharacters = null, file = proces
           const db = await load();
           if (pathname.endsWith('/signup')) {
             const salt = randomBytes(16).toString('hex'), digest = (await scrypt(password, salt, 64)).toString('hex');
-            await transact(next => {
+            await transactUser(id, next => {
               if (Object.hasOwn(next.users, id)) throw new HttpError(409, 'That account ID is already taken.');
               next.users[id] = { id, salt, digest, created: now, revision: 0, characters: [] };
             });
@@ -669,9 +701,9 @@ export function createAccountsApi({ initialOwnerCharacters = null, file = proces
           const input=await body(req,512);if(Object.keys(input).some(k=>k!=='replace'))throw new HttpError(400,'Remember accepts only the previous token to replace.');
           if(input.replace!==undefined&&!REMEMBER_TOKEN.test(String(input.replace)))throw new HttpError(400,'Invalid remember token.');
           const current=await user(req);if(!current)throw new HttpError(401,'Log in before saving this account.');
-          if(current.id==='admin')throw new HttpError(403,'The installation owner account cannot be saved.');
+          if(isStaffBracketAccount(current.id))throw new HttpError(403,'The installation owner account cannot be saved.');
           const secret=randomBytes(32).toString('hex'),now=Date.now();
-          await transact(db=>{const u=db.users[current.id];if(!u)throw new HttpError(401,'Log in before saving this account.');
+          await transactUser(current.id,db=>{const u=db.users[current.id];if(!u)throw new HttpError(401,'Log in before saving this account.');
             const old=input.replace===undefined?null:hash(input.replace);
             u.remember=(Array.isArray(u.remember)?u.remember:[]).filter(r=>r.expires>now&&r.h!==old);
             u.remember.push({h:hash(secret),created:now,expires:now+REMEMBER_MS});u.remember=u.remember.slice(-MAX_REMEMBER);});
@@ -680,7 +712,7 @@ export function createAccountsApi({ initialOwnerCharacters = null, file = proces
           rememberRate(req);
           const data=await body(req,512);if(Object.keys(data).some(k=>!['id','token'].includes(k)))throw new HttpError(400,'Saved login accepts only ID and token.');
           const id=String(data.id||'').trim().toLowerCase();
-          if(!/^[a-z0-9_-]{3,32}$/.test(id)||id==='__proto__'||id==='admin'||!REMEMBER_TOKEN.test(String(data.token)))throw new HttpError(401,'This saved login is no longer valid. Sign in with your password.');
+          if(!/^[a-z0-9_-]{3,32}$/.test(id)||id==='__proto__'||id==='admin'||id==='gm'||id==='dev'||!REMEMBER_TOKEN.test(String(data.token)))throw new HttpError(401,'This saved login is no longer valid. Sign in with your password.');
           const db=await load(),found=Object.hasOwn(db.users,id)?db.users[id]:null,digest=Buffer.from(hash(data.token),'hex');
           const match=!!found&&(Array.isArray(found.remember)?found.remember:[]).some(r=>r.expires>Date.now()&&/^[a-f0-9]{64}$/.test(r.h)&&timingSafeEqual(Buffer.from(r.h,'hex'),digest));
           if(!match)throw new HttpError(401,'This saved login is no longer valid. Sign in with your password.');
@@ -690,11 +722,11 @@ export function createAccountsApi({ initialOwnerCharacters = null, file = proces
           const data=await body(req,512);if(Object.keys(data).some(k=>!['id','token'].includes(k)))throw new HttpError(400,'Revoke accepts only ID and token.');
           const id=String(data.id||'').trim().toLowerCase();
           if(/^[a-z0-9_-]{3,32}$/.test(id)&&id!=='__proto__'&&REMEMBER_TOKEN.test(String(data.token))){const h=hash(data.token);
-            await transact(db=>{const u=Object.hasOwn(db.users,id)?db.users[id]:null;if(u&&Array.isArray(u.remember))u.remember=u.remember.filter(r=>r.h!==h);});}
+            await transactUser(id,db=>{const u=Object.hasOwn(db.users,id)?db.users[id]:null;if(u&&Array.isArray(u.remember))u.remember=u.remember.filter(r=>r.h!==h);});}
           json(res,200,{ok:true});
         } else if (method === 'POST' && pathname === '/api/auth/logout') {
           const key=hash(token(req)),current=(await load()).sessions[key];
-          const logout=async()=>{const id=await transact(db=>{const found=db.sessions[key];delete db.sessions[key];return found&&found.expires>Date.now()?found.id:null;});if(id){invalidateLaunchTickets(id,key);await onInvalidate(id,'logout');}};
+          const logout=async()=>{const id=await transactSessions((db,ops)=>{const found=ops.get(key);ops.delete(key);return found&&found.expires>Date.now()?found.id:null;});if(id){invalidateLaunchTickets(id,key);await onInvalidate(id,'logout');}};
           if(current)await withAccountSession(current.id,logout);else await logout();
           json(res, 200, { ok: true }, { 'Set-Cookie': cookie(req, '', 0) });
         } else if (method === 'GET' && pathname === '/api/auth/me') {
@@ -706,22 +738,39 @@ export function createAccountsApi({ initialOwnerCharacters = null, file = proces
           else if (method === 'DELETE') {
             // Character select > Delete: the host removes an ONLINE character (a browser backup can never delete one, see PUT below).
             // The typed name is checked again here; a character that is in a guild must leave it first (guild rosters keep character refs).
+            // cancelPending:true (Global client action 5 / btn_delete_cancel): clear pendingDeleteAt only — no removal.
+            // Delay duration remains UNRESOLVED; host only stores/clears a field the Global client already displays.
             const data = await body(req, 1024);
             if (data.account !== current.id) throw new HttpError(409, 'The signed-in account changed. Reload before deleting a character.');
-            if (typeof data.id !== 'string' || !data.id || typeof data.name !== 'string') throw new HttpError(400, 'Choose a character and type its name to confirm.');
-            if (isAccountOnline(current.id)) throw new HttpError(409, 'This account is connected to the world. Leave the world before deleting a character.');
-            const result = await transact(db => {
-              const owner = db.users[current.id];
-              const index = owner.characters.findIndex(c => c.id === data.id && c.authority === 'server');
-              if (index < 0) throw new HttpError(404, 'That online character no longer exists.');
-              const doomed = owner.characters[index];
-              if (characterNameKey(doomed.name) !== characterNameKey(data.name)) throw new HttpError(400, 'Type the character name exactly to confirm the deletion.');
-              const ref = characterRef(owner.id, doomed.id);
-              if (Object.values(db.social?.guilds || {}).some(g => (g.members || []).some(m => m.ref === ref))) throw new HttpError(409, 'This character is in a guild. Leave (or hand over) the guild first, then delete it.');
-              owner.characters.splice(index, 1); owner.revision++;
-              return { account: owner.id, revision: owner.revision, characters: owner.characters, deleted: doomed.id };
-            });
-            json(res, 200, result);
+            if (typeof data.id !== 'string' || !data.id) throw new HttpError(400, 'Choose a character to confirm.');
+            if (data.cancelPending === true) {
+              const result = await transactUser(current.id, db => {
+                const owner = db.users[current.id];
+                const index = owner.characters.findIndex(c => c.id === data.id && c.authority === 'server');
+                if (index < 0) throw new HttpError(404, 'That online character no longer exists.');
+                const cur = owner.characters[index];
+                const next = { ...cur };
+                delete next.pendingDeleteAt; delete next.deleteAt; delete next.pending_delete_at;
+                owner.characters[index] = next; owner.revision++;
+                return { account: owner.id, revision: owner.revision, characters: owner.characters, cancelledPending: cur.id };
+              });
+              json(res, 200, result);
+            } else {
+              if (typeof data.name !== 'string') throw new HttpError(400, 'Choose a character and type its name to confirm.');
+              if (isAccountOnline(current.id)) throw new HttpError(409, 'This account is connected to the world. Leave the world before deleting a character.');
+              const result = await transactUser(current.id, db => {
+                const owner = db.users[current.id];
+                const index = owner.characters.findIndex(c => c.id === data.id && c.authority === 'server');
+                if (index < 0) throw new HttpError(404, 'That online character no longer exists.');
+                const doomed = owner.characters[index];
+                if (characterNameKey(doomed.name) !== characterNameKey(data.name)) throw new HttpError(400, 'Type the character name exactly to confirm the deletion.');
+                const ref = characterRef(owner.id, doomed.id);
+                if (Object.values(db.social?.guilds || {}).some(g => (g.members || []).some(m => m.ref === ref))) throw new HttpError(409, 'This character is in a guild. Leave (or hand over) the guild first, then delete it.');
+                owner.characters.splice(index, 1); owner.revision++;
+                return { account: owner.id, revision: owner.revision, characters: owner.characters, deleted: doomed.id };
+              });
+              json(res, 200, result);
+            }
           }
           else if (method === 'POST') {
             const data = await body(req, 4096);
@@ -731,14 +780,30 @@ export function createAccountsApi({ initialOwnerCharacters = null, file = proces
             const classes = JSON.parse(await fs.readFile(path.join(gamedataRoot, 'classes.json'), 'utf8'));
             const def = (classes.classes || []).find(c => Number(c.index) === classIndex);
             if (!def) throw new HttpError(400, 'Unknown class.');
-            const ch = { id: `c${randomUUID().replace(/-/g, '')}`, name, nameColor, classIndex, className: def.name, authority: 'server',
+            let staffPrivileges = false;
+            let staffRole = null;
+            let staffName = name;
+            if (data.staffPrivileges === true) {
+              if (!current.capabilities?.includes('gm:commands')) throw new HttpError(403, 'Admin / GM / Dev character create requires max staff privileges.');
+              staffPrivileges = true;
+              staffRole = data.staffRole != null ? normalizeStaffBracket(data.staffRole) : (isStaffBracketAccount(current.id) ? normalizeStaffBracket(current.id) : 'admin');
+              staffName = normalizeStaffCharacterName('[' + staffBracket(staffRole).tag + '] ' + stripStaffNameTag(name), staffBracket(staffRole).tag);
+            } else if (data.staffPrivileges != null) throw new HttpError(400, 'staffPrivileges must be true when set.');
+            else if (data.staffRole != null) throw new HttpError(400, 'staffRole requires staffPrivileges.');
+            const ch = { id: `c${randomUUID().replace(/-/g, '')}`, name: staffName, nameColor, classIndex, className: def.name, authority: 'server',
               starterSkillPending: true, level: 1, exp: 0, dil: 0, hp: null, mp: null, statPoints: 0, skillPoints: 0, stats: null, map: 150,
               pos: { x: 203.5, z: 247.5, dirDeg: 0 }, inventory: [], equipment: {}, hotbar: [], skills: {},
               kills: 0, deaths: 0, playSeconds: 0, created: Date.now(), lastPlayed: Date.now() };
-            const result = await transact(db => {
+            // STAFF_CREATE_HOOK: unified Admin/GM/Dev checkbox -> full admin PvP/mobs builds when world data loads.
+            if (staffPrivileges) {
+              let worldData = null;
+              try { worldData = await loadWorldData({ gamedataRoot }); } catch {}
+              applyStaffCharacterCreate(ch, { account: current.id, classIndex, data: worldData || undefined, staffRole });
+            }
+            const result = await transactUser(current.id, db => {
               const owner = db.users[current.id];
-              if (owner.characters.length >= 100) throw new HttpError(409, 'Character slots are full.');
-              if (Object.values(db.users).some(u => u.characters.some(c => c.authority === 'server' && characterNameKey(c.name) === characterNameKey(name)))) throw new HttpError(409, 'That character name is already taken.');
+              if (owner.characters.length >= CHAR_TRADE_ENGINE_CHOSEN.receiverMaxCharacters) throw new HttpError(409, 'Character slots are full.'); // Evidenced Global UI capacity 18 (see engine-chosen-char-trade.js)
+              if (Object.values(db.users).some(u => u.characters.some(c => c.authority === 'server' && characterNameKey(c.name) === characterNameKey(staffName)))) throw new HttpError(409, 'That character name is already taken.');
               owner.characters.push(ch); owner.revision++;
               return { account: owner.id, revision: owner.revision, character: ch, characters: owner.characters };
             });
@@ -748,7 +813,7 @@ export function createAccountsApi({ initialOwnerCharacters = null, file = proces
             const data = await body(req), characters = validateCharacters(data.characters);
             // A different login in another tab must never receive this tab's characters.
             if (data.account !== current.id) throw new HttpError(409, 'The signed-in account changed. Reload before saving.');
-            const result = await transact(db => {
+            const result = await transactUser(current.id, db => {
               const owner = db.users[current.id];
               if (data.revision !== owner.revision) throw new HttpError(409, 'Characters changed in another session. Your local backup is preserved; reload to reconcile before syncing.');
               const trusted = owner.characters.filter(c => c.authority === 'server');
@@ -756,7 +821,7 @@ export function createAccountsApi({ initialOwnerCharacters = null, file = proces
               if (characters.some(c => c.authority === 'server' && !trustedIds.has(c.id))) throw new HttpError(403, 'Verified characters must be created by the server.');
               // Client backups cannot rewrite or delete characters belonging to the authoritative world.
               const combined = [...trusted, ...characters.filter(c => !trustedIds.has(c.id) && c.authority !== 'server')];
-              if (combined.length > 100) throw new HttpError(400, 'An account can hold at most 100 characters.');
+              if (combined.length > accountCharacterLimit(owner.characters.length)) throw new HttpError(400, `An account can hold at most ${CHAR_TRADE_ENGINE_CHOSEN.receiverMaxCharacters} characters.`); // Evidenced Global UI capacity 18
               owner.characters = combined; owner.revision++;
               return { account: owner.id, revision: owner.revision };
             });

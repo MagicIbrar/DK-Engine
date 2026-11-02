@@ -1,4 +1,4 @@
-import { PreviewReferences } from '../../ui/preview-cache.js';
+﻿import { PreviewReferences } from '../../ui/preview-cache.js';
 // Only requested page icons are baked. Shared item/model caches own their image URLs.
 export class ShopPageAssets {
   // load(id, {background}): background = a prefetch job (priority > 0). paused(): while true no prefetch job starts
@@ -76,15 +76,14 @@ export class ShopPageAssets {
   }
   async page(ids, options) { return Promise.all([...new Set(ids)].map(id => this.get(id, options))); }
   neighbors(ids, page, size, { signal } = {}) {
-    // One background slot: nearest next page first, second next then previous.
-    const next = ids.slice((page + 1) * size, (page + 2) * size);
-    const second = ids.slice((page + 2) * size, (page + 3) * size);
-    const previous = page > 0 ? ids.slice((page - 1) * size, page * size) : [];
-    return Promise.all([
-      this.page(next, { signal, priority: 1 }),
-      this.page(second, { signal, priority: 2 }),
-      this.page(previous, { signal, priority: 3 }),
-    ]).then(rows => rows.flat());
+    // Prefetch a wider ring so D-Shop page flips stay cache-hot (next 3 + previous 2).
+    const slices = [];
+    for (let d = 1; d <= 3; d++) slices.push({ ids: ids.slice((page + d) * size, (page + d + 1) * size), priority: d });
+    for (let d = 1; d <= 2; d++) {
+      if (page - d < 0) continue;
+      slices.push({ ids: ids.slice((page - d) * size, (page - d + 1) * size), priority: 3 + d });
+    }
+    return Promise.all(slices.map(s => this.page(s.ids, { signal, priority: s.priority }))).then(rows => rows.flat());
   }
   pump() {
     // Stable sort: re-sorting an already sorted queue never changes its order, so only new or re-prioritised jobs need it.

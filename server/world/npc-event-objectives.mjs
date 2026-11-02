@@ -1,7 +1,7 @@
 import {npcEventPartyFocus} from './npc-event-party-focus.mjs';
 import {npcDeadFrontTargetPriority} from './npc-dead-front-target-priority.mjs';
 import {mapFor} from './scene.mjs';
-import {ICE_CASTLE_ENGINE_CHOSEN as IC} from '../../src/config/engine-chosen-dungeon.js';
+// Lane 68: the Ice Castle paw near-monster radius (engine-chosen, no source) was removed with the run's refusal.
 import {canClaimDeadFrontTreasure} from './dead-front-treasure.mjs';
 import {createNpcApproachCache} from './npc-navigation.mjs';
 import {npcEventWalkStage} from './npc-chain-fire-attendance.mjs';
@@ -107,11 +107,10 @@ export function npcEventObjectivePlan(world,p,{isNpc=q=>!!q.npcPlayer,canAssist}
  }else{
   const gates={5172:121,5173:122,5175:123,5176:124};
   for(const id of O.paws||[]){const row=info.npcs?.find(r=>Number(r[0])===Number(id));if(!row||run.paws.has(id)||run.bricks.standing(gates[id]))continue;
-   if([...scene.monsters.values()].some(m=>!m.dead&&!m.brickDef&&Math.hypot(m.x-(Number(row[1])+.5),m.z-(Number(row[2])+.5))<IC.nearMonsters))continue;
    add(id,[0,0],'activating native ice altar');
   }
   for(const id of O.levers||[]){const west=[5172,5173,5174].includes(id);if(run.flags.has(west?'iceW':'iceE')&&!run.levers.has(id))add(id,[0,0],'opening native ice lever');}
-  if(run.midDead>0&&!run.tower)for(const id of O.asla||[]){
+  if(run.midDead>0&&!run.tower&&!run.towerStarting)for(const id of O.asla||[]){
    const row=info.npcs?.find(r=>Number(r[0])===Number(id)),at=row&&{x:Number(row[1])+.5,z:Number(row[2])+.5};
    if(at&&distance(at)>8&&scene.path&&!scene.path(p.x,p.z,at.x,at.z)?.length)add(5671,[0],'using native Regina chamber travel');
    else add(id,[0,0],'starting native shield tower');

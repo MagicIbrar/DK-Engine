@@ -740,6 +740,37 @@ function main() {
       note: 'map index not defined by share/maplist.csv: not loadable by this client (server-side copy or retired map)' };
     if (msg) { e.messages = msg.messages; if (msg.table) e.messageTable = msg.table; if (msg.stringCate !== null) e.stringCate = msg.stringCate; if (msg.stringComment) e.stringComment = msg.stringComment; }
     if (dir) e.files = { folder: (BY_DIR.get(dir) || []).filter((k) => k.endsWith('.csv') || k.endsWith('.mal')) };
+    // Lane 52: an orphan floor's own Global brick_/npc_ CSVs (map 120 Karon's Fragments [Hard]: brick_120_under_crespo_indun.csv,
+    // npc_120_under_crespo_indun.csv) are parsed the same way as a maplist floor's, so the runtime gets the floor's real bricks
+    // and DUNGEON_SCRIPT NPCs. Only that folder's own files are read (never a sibling's). No .mac grid: no walk check.
+    if (dir) {
+      const keys = BY_DIR.get(dir) || [];
+      const brickKey = keys.find((k) => /\/brick_[^/]*\.csv$/.test(k));
+      const npcKey = keys.find((k) => /\/npc_[^/]*\.csv$/.test(k));
+      if (brickKey) {
+        const ob = parseBrickCSV(readKr(brickKey)).map((b) => {
+          if (!brickDefs.defs[b.brickIndex]) hard(`map ${i}: brick index ${b.brickIndex} not in brick.csv`);
+          return { uid: b.uid, brick: b.brickIndex, x: round(b.x), y: round(b.y), dir: b.direction ?? 0, create: b.isCreate ?? 1, revival: b.revival ?? 0, regen: b.regenCycle ?? 0 };
+        });
+        if (ob.length) e.bricks = ob;
+        e.bricksFile = brickKey;
+      }
+      if (npcKey) {
+        const sn = [];
+        for (const q of parseNpcCSV(readKr(npcKey)).npcs) {
+          if (q.id === null || q.x === null) continue;
+          const def = NPC.npcs[q.id];
+          for (const [jt, ji] of def?.jobs || []) if (jt === 31 || jt === 80) sn.push({ npc: q.id, name: def.name, shape: def.shape, x: round(q.x), y: round(q.y), dir: q.direction ?? 0, warp: q.warpX != null ? [round(q.warpX), round(q.warpY)] : null, job: [jt, ji] });
+        }
+        if (sn.length) {
+          const list = sn.map((n) => { const o = { npc: n.npc, name: n.name, x: n.x, y: n.y, dir: n.dir, job: n.job }; if (n.warp) o.warp = n.warp; return o; });
+          assignDialogs(list, sn, e.messages, e.missions);
+          for (const o of list) o.role = npcRole(o, o.dialog != null ? e.messages?.[o.dialog] : null);
+          e.scriptNpcs = list;
+        }
+        e.npcsFile = npcKey;
+      }
+    }
     const ls = (locByMap.get(i) || []).map((l) => l.index); if (ls.length) e.locations = ls;
     maps[i] = e;
   }

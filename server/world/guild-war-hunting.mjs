@@ -3,8 +3,11 @@
 // share/guildwarhunting/config.csv (MAPINDEX 707, StartX/Y, ReviveX1/Y1, ObserverMaxCount, monster -> Score rows);
 // maps[707] random call tables + random position tables (radius) + the castle gate brick (isCreate 1); maplist level 200+,
 // IsPvP 0 / PeaceZone 1 (no player combat); strings 707|100 Begin in, 101 Progress Time, 102 invaders appeared,
-// 103 End waiting time; scoreboard columns 270|4/77-85. Timings, the session model and the server name are
-// ENGINE-CHOSEN (src/config/engine-chosen-guild-war-hunting.js).
+// 103 End waiting time; scoreboard columns 270|4/77-85.
+// Session (Lane 47): driven by the Global GM commands guildwarhunting_open|ready|start|finish [world index] (Global client
+// GM help strings). open = entry allowed, ready = 'begin', start = 'battle' (kills score), finish = 'end' + final board.
+// Global data has no begin/battle/call/end durations, no server name and no minimap light meaning: none are used here.
+// Lane 71: timed random call tables REMOVED (no Global / older-server / online interval) - huntSpawnCall is never scheduled.
 // Model: one shared instance per session. Every guild member who enters at Vascuda joins it, and kills score for the
 // killer's guild. The final board ranks guilds by score (ties: the guild that reached its score first), then everyone
 // returns to where they entered. Observers (job 138, up to ObserverMaxCount) are invisible and untargetable and can
@@ -19,7 +22,8 @@ import {guildMark} from './guilds.mjs';
 import {footprintCells} from '../../src/systems/events/bricks.js';
 import {plain} from '../../src/systems/events/text.js';
 import {registerObserverMode,isObserver,anyObserverAction} from './observers.mjs';
-import {GUILD_WAR_HUNTING_ENGINE_CHOSEN as CHOSEN} from '../../src/config/engine-chosen-guild-war-hunting.js';
+const GM_STEPS=['open','ready','start','finish'],GM_PHASE={open:'begin',ready:'begin',start:'battle',finish:'end'};
+export const GUILD_WAR_HUNTING_GM_COMMANDS=Object.freeze(GM_STEPS.map(s=>`guildwarhunting_${s}`));
 export const HUNT_SCHEMAS={hunt:['token','type','operation','npcIndex']};
 export const HUNT_MAP=707;
 const JOB_GUILDER=137,JOB_OBSERVER=138;
@@ -47,7 +51,7 @@ function newRun(world,instance){
   for(const [ci,mon,count,pos] of info?.randomCalls||[]){if(!calls.has(ci))calls.set(ci,[]);calls.get(ci).push({mon:Number(mon),count:Number(count)||1,pos:Number(pos)});}
   for(const [pi,x,z,r] of info?.randomPositions||[]){if(!positions.has(pi))positions.set(pi,[]);positions.get(pi).push([Number(x),Number(z),Number(r)||0]);}
   const now=world.now();
-  const run={id:instance.id,instance,phase:'begin',startedAt:now,phaseEnd:now+CHOSEN.beginSec*1000,nextCall:Infinity,callIndex:0,order:[...calls.keys()].sort((a,b)=>a-b),calls,positions,
+  const run={id:instance.id,instance,phase:GM_PHASE[world.guildWarHuntSession?.gm]||'begin',startedAt:now,callIndex:0,order:[...calls.keys()].sort((a,b)=>a-b),calls,positions,
     scoreOf:new Map((modeOf(world)?.monsterScore||[]).map(([m,s])=>[Number(m),Number(s)])),guilds:new Map(),players:new Map(),observers:new Set(),invaders:new Set(),board:null,closing:false,bricks:[]};
   // the castle gate (isCreate 1) stands for the whole battle: block its footprint in the instance collision
   const scene=instance.scene;
@@ -72,6 +76,7 @@ async function enter(world,p,input,observer){
   if(!placed||!placed.jobs.some(([t,i])=>Number(t)===job&&offersOriginalJob(world,placed,job,i)))fail('Stand near Vascuda in Ardeca.',403);
   const info=mapInfo(world),min=Number(info?.level?.[0])||1;
   if((Number(p.profile.level)||1)<min)fail(`Guild War Hunting requires Lv. ${min}+.`,403);
+  const session=world.guildWarHuntSession;if(!session||session.gm==='finish')fail('Guild War Hunting is not open.',409);
   let run=currentRun(world);const guild=observer?null:huntGuildOf(world,p);
   if(!observer&&!guild)fail('Only guild members can join Guild War Hunting.',403);
   if(observer){if(!run||run.phase==='end')fail('No Guild War Hunting is in progress to observe.',409);
@@ -79,8 +84,8 @@ async function enter(world,p,input,observer){
   else if(run&&run.phase==='end')fail('This Guild War Hunting is ending. Enter the next session.',409);
   const exit={map:p.map,x:p.x,z:p.z};
   if(!run){
-    const total=(CHOSEN.beginSec+CHOSEN.battleSec+CHOSEN.endSec+300)*1000;
-    const instance=await createInstance(world,{map:HUNT_MAP,members:[p],kind:'guildWarHunting',exit,durationMs:total});
+    // No Global duration: the instance lives until guildwarhunting_finish and the last participant leaves.
+    const instance=await createInstance(world,{map:HUNT_MAP,members:[p],kind:'guildWarHunting',exit,durationMs:Infinity});
     run=world.guildWarHunt=newRun(world,instance);
   }else admit(world,run.instance,p);
   const at=startPoint(world,run.instance.scene,observer);p.x=at.x;p.z=at.z;p.yaw=0;
@@ -90,7 +95,8 @@ async function enter(world,p,input,observer){
   world.changed(p);await world.persist(p);if(!observer)world.emit(p.map,{type:'join',actorId:p.id});
   return {operation:observer?'observe':'enter',phase:run.phase};
 }
-function spawnCall(world,run){
+/** Spawn the next maps[707] random call table. Not scheduled: no source gives a call interval (removed, lane 71). */
+export function huntSpawnCall(world,run){
   const ci=run.order[run.callIndex++],scene=run.instance.scene,rows=run.calls.get(ci)||[];
   for(const c of rows){const def=world.data.monsterDef(c.mon);if(!def)continue;const pts=run.positions.get(c.pos)||[];if(!pts.length)continue;
     const [px,pz,r]=pts[Math.floor(world.random()*pts.length)%pts.length];
@@ -108,35 +114,37 @@ export function creditKill(world,run,killer,m){
   const row=run.players.get(killer.characterId),guild=row&&run.guilds.get(row.guildId),score=Number(m.huntScore)||0;if(!guild||score<=0)return;
   row.score+=score;guild.score+=score;guild.scoredAt=world.now();
 }
-function ranking(run){return [...run.guilds.values()].sort((a,b)=>b.score-a.score||a.scoredAt-b.scoredAt||a.name.localeCompare(b.name)).map((g,i)=>({rank:i+1,id:g.id,name:g.name,level:g.level,master:g.master,mark:g.mark,server:CHOSEN.serverName,score:g.score}));}
+function ranking(run){return [...run.guilds.values()].sort((a,b)=>b.score-a.score||a.scoredAt-b.scoredAt||a.name.localeCompare(b.name)).map((g,i)=>({rank:i+1,id:g.id,name:g.name,level:g.level,master:g.master,mark:g.mark,server:'',score:g.score}));}
 export function tickGuildWarHunting(world){
-  const run=currentRun(world);if(!run)return;const now=world.now();
-  if(run.phase==='begin'&&now>=run.phaseEnd){run.phase='battle';run.phaseEnd=now+CHOSEN.battleSec*1000;run.nextCall=now+1000;}
-  if(run.phase==='battle'){
-    while(now>=run.nextCall&&run.callIndex<run.order.length){spawnCall(world,run);run.nextCall+=CHOSEN.callEverySec*1000;}
-    if(now>=run.phaseEnd){for(const m of run.invaders)run.instance.scene.monsters.delete(m.id);run.invaders.clear();run.board=ranking(run);run.phase='end';run.phaseEnd=now+CHOSEN.endSec*1000;
-      world.emit(HUNT_MAP,{type:'hunt:board',instanceId:run.id});}
-  }
-  if(run.phase==='end'&&now>=run.phaseEnd){run.closing=true;void requestInstanceClose(world,run.instance)?.catch?.(()=>{});}
+  const run=currentRun(world);
+  if(!run){if(world.guildWarHuntSession?.gm==='finish')world.guildWarHuntSession=null;return;}
+  if(run.phase!=='end'||run.closing)return;
+  if([...world.players.values()].some(q=>!q.leaving&&inRun(run,q)))return;
+  run.closing=true;world.guildWarHuntSession=null;void requestInstanceClose(world,run.instance)?.catch?.(()=>{});
+}
+/** Host side of guildwarhunting_open|ready|start|finish [world index]; the index is one of config World1/2/3Index. */
+export function guildWarHuntingGm(world,name,args){
+  const step=String(name).toLowerCase().replace(/^guildwarhunting_/,'');if(!GM_STEPS.includes(step))fail('Unknown Guild War Hunting GM command.');
+  const c=modeOf(world)?.config;if(!c)fail('Guild War Hunting data is not loaded.',503);
+  if(args.length!==1||!/^\d+$/.test(args[0]))fail(`guildwarhunting_${step} [world index]`);
+  const worldIndex=Number(args[0]),worlds=[1,2,3].map(i=>Number(c[`World${i}Index`])).filter(Number.isInteger);
+  if(!worlds.includes(worldIndex))fail(`World index ${worldIndex} is not in share/guildwarhunting/config.csv (${worlds.join(', ')}).`);
+  const session=world.guildWarHuntSession;let run=currentRun(world);
+  if(step==='open'){if((session&&session.gm!=='finish')||run)fail('Guild War Hunting is already open.',409);world.guildWarHuntSession={worldIndex,gm:'open'};}
+  else{if(!session||session.gm==='finish'||session.worldIndex!==worldIndex)fail(`Guild War Hunting is not open for world ${worldIndex}.`,409);
+    if(GM_STEPS.indexOf(step)<=GM_STEPS.indexOf(session.gm))fail(`Guild War Hunting is already at ${session.gm}.`,409);
+    session.gm=step;
+    if(run){const next=GM_PHASE[step];
+      if(next==='end'){for(const m of run.invaders)run.instance.scene.monsters.delete(m.id);run.invaders.clear();run.board=ranking(run);}
+      run.phase=next;if(next==='end')world.emit(HUNT_MAP,{type:'hunt:board',instanceId:run.id});}}
+  return {ok:true,message:`guildwarhunting_${step} ${worldIndex}`,guildWarHunting:{worldIndex,step,phase:run?.phase||GM_PHASE[step]}};
 }
 export function huntSnapshot(world,p){
   const run=world.guildWarHunt;if(!inRun(run,p))return null;
   const board=run.board||ranking(run),observer=run.observers.has(p.characterId),mine=run.players.get(p.characterId),own=mine&&board.find(r=>r.id===mine.guildId);
-  return {id:run.id,map:HUNT_MAP,phase:run.phase,remainingMs:Math.max(0,run.phaseEnd-world.now()),observer,final:!!run.board,top:board.slice(0,10),
-    me:own?{rank:own.rank,guildName:own.name,server:CHOSEN.serverName,name:p.profile.name,mark:own.mark,guildScore:own.score,score:mine.score}:null,
-    observers:run.observers.size,bricks:run.bricks,lights:huntLights(world,run,p,mine)};
-}
-const r1=v=>Math.round(v*10)/10;
-/** ui_huntminimapwnd lights (ENGINE-CHOSEN meaning, see the config): you, your guild members' centre, the two areas
- *  with the most live invaders, and the strongest live invader. */
-export function huntLights(world,run,p,mine=run.players.get(p.characterId)){
-  const live=[...run.invaders].filter(m=>!m.dead),areas=new Map();
-  for(const m of live){if(!m.huntArea)continue;const k=m.huntArea.join(':');const a=areas.get(k)||{x:m.huntArea[0]+.5,z:m.huntArea[1]+.5,count:0};a.count++;areas.set(k,a);}
-  const invaders=[...areas.values()].sort((a,b)=>b.count-a.count||a.x-b.x||a.z-b.z).slice(0,2).map(a=>[r1(a.x),r1(a.z),a.count]);
-  const boss=live.filter(m=>(Number(m.huntScore)||0)>=CHOSEN.minimap.bossMinScore).sort((a,b)=>b.huntScore-a.huntScore||String(a.id).localeCompare(String(b.id)))[0]||null;
-  const mates=mine?[...world.players.values()].filter(q=>q!==p&&!q.leaving&&inRun(run,q)&&!run.observers.has(q.characterId)&&run.players.get(q.characterId)?.guildId===mine.guildId):[];
-  const guild=mates.length?[r1(mates.reduce((n,q)=>n+q.x,0)/mates.length),r1(mates.reduce((n,q)=>n+q.z,0)/mates.length),mates.length]:null;
-  return {self:[r1(p.x),r1(p.z)],guild,invaders,boss:boss?[r1(boss.x),r1(boss.z),boss.huntScore]:null};
+  return {id:run.id,map:HUNT_MAP,phase:run.phase,observer,final:!!run.board,top:board.slice(0,10),
+    me:own?{rank:own.rank,guildName:own.name,server:'',name:p.profile.name,mark:own.mark,guildScore:own.score,score:mine.score}:null,
+    observers:run.observers.size,bricks:run.bricks};
 }
 /** Death inside the hunt revives at ReviveX1/Y1 instead of leaving the run. */
 // Other modes that revive inside their own scene (ARENA: server/world/arena.mjs) register here; core's revive asks huntRevive first.

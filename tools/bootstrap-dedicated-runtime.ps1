@@ -94,8 +94,41 @@ function Ensure-WebView2{
 }
 
 if($MyInvocation.InvocationName -eq '.'){return}
+function Test-NetFramework4 {
+  try {
+    $key=Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full' -ErrorAction Stop
+    return [bool]($key.Release -ge 378389) # 4.5+; Client.exe uses inbox Framework 4.x
+  } catch { return $false }
+}
+function Test-VcRedistX64 {
+  foreach($path in @(
+    'HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64',
+    'HKLM:\SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\x64'
+  )){
+    try {
+      $key=Get-ItemProperty -LiteralPath $path -ErrorAction Stop
+      if([int]$key.Installed -eq 1){return $true}
+    } catch {}
+  }
+  # Fallback: system DLLs commonly present with Universal CRT / VS 2015+ redist
+  foreach($dll in @('vcruntime140.dll','msvcp140.dll')){
+    if(Test-Path -LiteralPath (Join-Path $env:SystemRoot "System32\$dll") -PathType Leaf){return $true}
+  }
+  return $false
+}
+function Get-DependencySnapshot {
+  [pscustomobject]@{
+    node24=[bool](Find-Node24)
+    webView2=[bool](Test-WebView2)
+    netFramework4=[bool](Test-NetFramework4)
+    vcRedistX64=[bool](Test-VcRedistX64)
+    sqlExpressInstalled=[bool](Test-SqlExpress)
+    bundledNode=[bool](Test-Path -LiteralPath (Join-Path $PSScriptRoot '..\runtime\node.exe') -PathType Leaf)
+  }
+}
+
 if($CheckOnly){
-  [pscustomobject]@{node24=[bool](Find-Node24);webView2=[bool](Test-WebView2);sqlExpressInstalled=[bool](Test-SqlExpress)} | ConvertTo-Json -Compress
+  Get-DependencySnapshot | ConvertTo-Json -Compress
   exit 0
 }
 if($InstallSql){ & (Join-Path $PSScriptRoot 'install-dedicated-sql.ps1') -AcceptLicense:$AcceptSqlLicense }

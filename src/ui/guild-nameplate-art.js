@@ -4,6 +4,7 @@ import {AuthoredEffectsData} from '../systems/items/authored-effects-data.js';
 import {evalKeys} from '../systems/skills/effects.js';
 import {flipFrame} from '../systems/skills/fx-units.js';
 import {GUILD_GLORY_ART_CHOSEN as CHOSEN} from '../config/engine-chosen-guild.js';
+import {globalEmitCount,globalSpawnRotation,globalStepRotation,globalAgeFraction} from '../systems/skills/global-particle-rules.js'; // LANE-63
 
 // Native Guild / Alliance of Glory illumination: itemcash Type0 Code16/30 EventType -> effectscene cate 8 ("UI") scene 1.
 // UI-attached cate-8 scenes are authored x right / y up (3019's side flashes sit at (+-.3,0)/(0,+-.3), 3004's lights orbit
@@ -13,7 +14,7 @@ import {GUILD_GLORY_ART_CHOSEN as CHOSEN} from '../config/engine-chosen-guild.js
 // src/config/engine-chosen-guild.js GUILD_GLORY_ART_CHOSEN. Absent scenes, inactive controls and other unit families stay absent.
 const MARK_PX=18;   // .dk-plate-mark (src/ui/style.css); the Glory column scales the whole crest and its native effect to 24 px
 export const GUILD_ART_LAYOUT=Object.freeze({markPixels:MARK_PX,borderUnits:CHOSEN.EMBLEM_BORDER_UNITS,unitPixels:MARK_PX/(2*CHOSEN.EMBLEM_BORDER_UNITS),maxDpr:CHOSEN.MAX_DPR,maxMarks:64,maxTextures:128,cycleMs:CHOSEN.CYCLE_MS,maxExtentUnits:CHOSEN.MAX_EXTENT_UNITS,maxStepMs:CHOSEN.MAX_STEP_MS});
-const U=GUILD_ART_LAYOUT.unitPixels,clamp01=v=>Math.max(0,Math.min(1,v)),burst=e=>String(e?.state||'explode').startsWith('explode');
+const U=GUILD_ART_LAYOUT.unitPixels,clamp01=v=>Math.max(0,Math.min(1,v));
 /** Control state at `elapsed` ms of the repeating scene: native life window, keys over 0..999 of it, sprite size [x, z]. */
 export function sampleGuildSprite(control,unit,elapsed,period,frames=1){
  if(control.active===false)return null;const time=((elapsed%period)+period)%period,start=(Number(control.life?.[0])||0)*period/1000,end=(Number(control.life?.[1])||1000)*period/1000;
@@ -33,13 +34,14 @@ export function spawnGuildParticles(parts,unit,state,count,random=Math.random){
   if(rad>0){const a=random()*Math.PI*2,off=st==='exploderange'||planar||st==='gather'?[Math.cos(a)*rad,0,Math.sin(a)*rad]:d.map(v=>v*rad);if(st==='gather'&&!planar)off[1]=(random()-.5)*rad;for(let k=0;k<3;k++)p[k]+=off[k];}
   let v=d.map(x=>x*speed);if(st==='gather'){const ep=e.endPos||[0,0,0];v=ep.map((x,k)=>(x+o[k]-p[k])/Math.max(.05,life));}
   const ps=e.particleSize||[0,0],size=(Number(unit.size)||1)*((ps[0]||ps[1])?span(ps):1),cr=(Number(e.colorRange)||0)/100;
-  parts.push({p,v,t:0,life,size,rot:random()*Math.PI*2,tint:cr>0?[1-random()*cr,1-random()*cr,1-random()*cr]:null});
+  parts.push({p,v,t:0,life,size,rot:globalSpawnRotation(e.addRotate,random),tint:cr>0?[1-random()*cr,1-random()*cr,1-random()*cr]:null});
  }
 }
-/** Advance particles dt seconds: acceleration along the velocity, gravity, addrotate spin; expired ones leave. */
+/** Advance particles dt seconds: acceleration along the velocity, gravity, addrotate spin (Global FUN_011a7980: addrotate x age
+ * fraction before this tick, LANE-63); expired ones leave. */
 export function stepGuildParticles(parts,unit,dt){
- const e=unit.emitter||{},g=e.gravity||[0,0,0],acc=Number(e.acceleration)||0,spin=(Number(e.addRotate)||0)*Math.PI/180;
- for(let i=parts.length-1;i>=0;i--){const q=parts[i];q.t+=dt;if(q.t>=q.life){parts.splice(i,1);continue;}const l=Math.hypot(...q.v);if(acc&&l>1e-4)for(let k=0;k<3;k++)q.v[k]+=q.v[k]/l*acc*dt;for(let k=0;k<3;k++){q.v[k]+=(g[k]||0)*dt;q.p[k]+=q.v[k]*dt;}q.rot+=spin*dt;}
+ const e=unit.emitter||{},g=e.gravity||[0,0,0],acc=Number(e.acceleration)||0;
+ for(let i=parts.length-1;i>=0;i--){const q=parts[i],age0=globalAgeFraction(q.t,q.life);q.t+=dt;if(q.t>=q.life){parts.splice(i,1);continue;}const l=Math.hypot(...q.v);if(acc&&l>1e-4)for(let k=0;k<3;k++)q.v[k]+=q.v[k]/l*acc*dt;for(let k=0;k<3;k++){q.v[k]+=(g[k]||0)*dt;q.p[k]+=q.v[k]*dt;}q.rot=globalStepRotation(e.addRotate,age0,q.rot);}
  return parts;
 }
 // Farthest scene distance a layer can light (rotation-safe half-diagonal; particles: spawn ring + flight + streak).
@@ -83,9 +85,11 @@ export class GuildNameplateArt{
   prepared.layers.forEach((layer,index)=>{const {control,unit,images}=layer,ctx=contexts.get(layer.add),state=sampleGuildSprite(control,unit,elapsed,prepared.period,images.length);
    ctx.save();ctx.globalCompositeOperation=layer.add?'lighter':'source-over';
    if(layer.kind==='sprite'){if(state&&state.alpha>0)this.draw(ctx,layer,images[state.frame],state.color,state.alpha,cx+state.position[0]*U,cy-state.position[1]*U,U*state.size*state.scale[0],U*state.size*state.scale[1],-state.rotation*Math.PI/180);}
-   else{const em=entry.emitters.get(index)||{parts:[],acc:0,cycle:null,state:null};entry.emitters.set(index,em);stepGuildParticles(em.parts,unit,dt);
-    if(state){em.state=state;const e=unit.emitter||{};if(burst(e)){if(em.cycle!==state.cycle){em.cycle=state.cycle;spawnGuildParticles(em.parts,unit,state,Number(e.max)||20,this.random);}}
-     else{const lr=e.lifetimeMs||[500,500],avg=Math.max(.05,(lr[0]+(lr[1]||lr[0]))/2000),max=Math.max(1,Math.min(160,Number(e.max)||20));em.acc+=(Number(e.rate)>0?Math.max(Number(e.rate),max/avg):max/avg)*dt;const k=Math.floor(em.acc);if(k>0){em.acc-=k;spawnGuildParticles(em.parts,unit,state,k,this.random);}}}
+   else{const em=entry.emitters.get(index)||{parts:[],emitAcc:0,state:null};entry.emitters.set(index,em);stepGuildParticles(em.parts,unit,dt);
+    if(state){em.state=state;const e=unit.emitter||{};
+      // LANE-63: Global emit tick FUN_011a65e0 for every state (emitrate > 0 = ms per particle, < 0 = per frame, max 10 per tick);
+      // the burst-per-cycle and the pool-fill rate were engine choices.
+      const k=globalEmitCount(em,dt*1000,e.rate);if(k>0)spawnGuildParticles(em.parts,unit,state,k,this.random);}
     const s=em.state;if(s)for(const q of em.parts){const k=q.t/q.life,alpha=s.alpha*(k>.7?1-(k-.7)/.3:1),speed=Math.hypot(q.v[0],q.v[1]),follow=unit.emitter?.followDir&&speed>1e-3;if(alpha<=0)continue;
      this.draw(ctx,layer,images[flipFrame(unit,elapsed,images.length,.5)],q.tint?s.color.map((c,i)=>c*q.tint[i]):s.color,alpha,cx+q.p[0]*U,cy-q.p[1]*U,U*q.size*s.scale[0],U*q.size*s.scale[1]*(follow?2:1),follow?Math.atan2(q.v[0],q.v[1]):-q.rot);}}
    ctx.restore();});

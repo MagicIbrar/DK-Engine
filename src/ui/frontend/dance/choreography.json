@@ -1,0 +1,117 @@
+{
+  "version": 2,
+  "title": "Sexy and I Know It - login dance (draft 2 \u2014 owner timing)",
+  "status": "FULL-SONG PREVIEW 2026-10-27 America/Los_Angeles: load\u2192wait 2s\u2192stand\u2192THEN song\u2192dance entire track (~203s / beatmap)\u2192sit. faceYaw=chair.yaw+PI so stand/dance faces login camera. loginDance OFF by default; preview enables audio+full duration. Moves still placeholder LMFAO-class until the owner's IndexedDB MP3/reference is available; royalty-free ~130 BPM stand-in used for preview mux.",
+  "beatmap": "beatmap.json",
+  "seat": {
+    "clip": "anim/object/etc/mal_chair_sit.anim",
+    "fallbackClip": "anim/character/swordmans/motion/emoti/swd_emt_sit.anim"
+  },
+  "stand": {
+    "clip": "anim/character/swordmans/motion/nonbtl/swd_non_stand_01.anim"
+  },
+  "preSongSeconds": 2.0,
+  "standUpSeconds": 1.85,
+  "dimBgm": {
+    "to": 0.18,
+    "seconds": 1.2
+  },
+  "mark": {
+    "forward": 2.6
+  },
+  "sections": [
+    {
+      "name": "intro strut to mark",
+      "from": 0,
+      "to": 8,
+      "move": "strut",
+      "travel": "toMark"
+    },
+    {
+      "name": "intro strut",
+      "from": 8,
+      "to": 32,
+      "move": "strut"
+    },
+    {
+      "name": "verse 1 shuffle",
+      "from": 32,
+      "to": 64,
+      "move": "shuffle"
+    },
+    {
+      "name": "verse 1 strut",
+      "from": 64,
+      "to": 96,
+      "move": "strut"
+    },
+    {
+      "name": "work out pose",
+      "from": 96,
+      "to": 128,
+      "move": "chestPose"
+    },
+    {
+      "name": "wiggle hook",
+      "from": 128,
+      "to": 160,
+      "move": "wiggle"
+    },
+    {
+      "name": "verse 2 shuffle",
+      "from": 160,
+      "to": 192,
+      "move": "shuffle"
+    },
+    {
+      "name": "work out pose 2",
+      "from": 192,
+      "to": 224,
+      "move": "chestPose"
+    },
+    {
+      "name": "wiggle hook 2",
+      "from": 224,
+      "to": 256,
+      "move": "wiggle"
+    },
+    {
+      "name": "breakdown strut",
+      "from": 256,
+      "to": 288,
+      "move": "strut"
+    },
+    {
+      "name": "shuffle 3",
+      "from": 288,
+      "to": 320,
+      "move": "shuffle"
+    },
+    {
+      "name": "work out pose 3",
+      "from": 320,
+      "to": 352,
+      "move": "chestPose"
+    },
+    {
+      "name": "wiggle finale",
+      "from": 352,
+      "to": 430,
+      "move": "wiggle"
+    },
+    {
+      "name": "strut back to chair",
+      "from": 430,
+      "to": 440,
+      "move": "strut",
+      "travel": "toChair"
+    },
+    {
+      "name": "sit back down",
+      "from": 440,
+      "to": 448,
+      "transition": "sitDown"
+    }
+  ],
+  "blendBeats": 1
+}

@@ -10,8 +10,10 @@ import { fetchText, fetchCSV } from '../../engine/assets.js';
 
 export const STRING_LIST = 'script/string/list.txt';
 export const LOADING_TIPS = 'script/loading_map_info.csv';
+/** Bundled Global tip strings when script/loading_map_info.csv is missing from the served data. */
+export const TIPS_FALLBACK = '/src/ui/frontend/tips.json';
 /** Categories the front-end needs. */
-export const FRONT_CATES = [30, 31, 2000, 100, 80, 81];
+export const FRONT_CATES = [30, 31, 2000, 100, 101, 80, 81];
 
 /** Parse a categorised string table -> Map('cate:code' -> text). Later duplicates win. */
 export function parseCategorised(text) {
@@ -125,6 +127,9 @@ const FALLBACK = {
   '30:131': 'Please enter a name.', '30:202': 'Information', '30:203': 'Preview', '30:208': 'Standard', '30:209': 'Arena',
   '2000:13': 'Exit Game', '2000:14': 'Cancel', '2000:15': 'Ok', '2000:22': 'Confirm', '2000:79': 'Exit Game',
   '2000:80': 'Server Login', '100:63': 'Delete Character',
+  '30:123': '<color=ff0000>Deletion</color>\n<color=ff0000>in progress</color>\n%s', '30:124': '<color=00ff00>Deletion</color>\n<color=00ff00>in Progress</color>',
+  '30:125': 'Cancel Deletion', '30:126': 'Delete',
+  '101:17': 'Day(s)', '101:18': 'Hour(s)', '101:19': 'Minute(s)', '101:20': 'Second(s)',
 };
 
 export class Texts {
@@ -162,13 +167,25 @@ export class Texts {
     if (!this._loading) {
       this._loading = this.ensure(FRONT_CATES)
         .then(() => fetchCSV(LOADING_TIPS, true).catch(() => []))
-        .then(rows => {
+        .then(async rows => {
           this.tips = rows.slice(1).map(r => {
             const text = r.slice(2).join(',').replace(/,+\s*$/, '').trim();
             return { map: Number(r[1]), text };
           }).filter(t => t.text && Number.isFinite(t.map));
+          // Global CSV missing from a thin data slice: use bundled tips.json (Scrubbed Global strings).
+          if (!this.tips.length) {
+            try {
+              const res = await fetch(TIPS_FALLBACK, { cache: 'no-store' });
+              if (res.ok) {
+                const body = await res.json();
+                const list = Array.isArray(body?.tips) ? body.tips : Array.isArray(body) ? body : [];
+                this.tips = list.map(tip => ({ map: Number(tip.map), text: String(tip.text || '').trim() }))
+                  .filter(tip => tip.text && Number.isFinite(tip.map));
+              }
+            } catch { /* tips stay empty; load screen keeps the wait line */ }
+          }
           return this;
-        });
+        })
     }
     return this._loading;
   }

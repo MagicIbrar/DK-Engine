@@ -1,5 +1,6 @@
 import {evalKeys} from '../skills/effects.js';
 import {SOCKET_GLOW_CHOSEN, socketPhase} from '../../config/engine-chosen-socket-glow.js';
+import {gfxB} from '../../config/gfx-b-switches.js'; // LANE-70b: iconSocketWashOff
 
 // Socket glow of an inventory / equipment / drag icon (weapons with stones). Baked into the icon sheet like the refinement halo
 // (preview-glow.js), so every paint path (bag grid, equipment slot, drag icon, tooltips) shows it with no extra DOM work.
@@ -8,12 +9,13 @@ import {SOCKET_GLOW_CHOSEN, socketPhase} from '../../config/engine-chosen-socket
 // scene: sprite sp_soket_<element> (size .9, texture/Effect/soket/socket_*.dds, additive), scale keys (1.5,1,1.5)(1.8,2,1.8)
 // (1.5,1,1.5), alpha keys (.5)(.8)(.5), 1000 ms loop. The gem hue is socketHueOf(that texture).
 // ENGINE-CHOSEN (src/config/engine-chosen-socket-glow.js ICON): the UI scene authors no position, so one sprite sits on each
-// filled socket marker; one UI unit = marker size x SPRITE_UNIT; plus the gem-coloured wash over the artwork and its halo.
+// filled socket marker; one UI unit = marker size x SPRITE_UNIT (JUDGMENT: Global authors no UI-unit-to-icon-pixel scale).
+// LANE-70b: the gem-coloured tint/wash over the artwork, its halo stack and SPRITE_GAIN are ENGINE-CHOSEN with no Global source;
+// gfx-B iconSocketWashOff (default on) removes them, leaving the authored sprite at its authored alpha.
 
 // Position in the authored 1000 ms pulse of sheet frame k. frame 0 = authored alpha peak (still thumbnails show the effect). The sheet
-// is the 2 s spin loop and must loop seamlessly, so it holds ONE pulse (it used to hold one per second: 2 per loop, 4x quicker
-// than the in-hand gem loop SOCKET_ORB_LOOP_MS). A pulse as slow as the in-hand one (4 s) would need a sheet of twice the frames
-// (twice the icon memory for every socketed weapon).
+// is the 2 s spin loop and must loop seamlessly, so it holds ONE pulse (it used to hold one per second: 2 per loop).
+// The in-hand socket loop is the authored modeleffect group 24 eff_time (1000 ms, LANE-63).
 const pulseMs = (k, frames) => (500 + k / Math.max(1, frames) * 1000) % 1000;
 
 /** Everything one socket glow needs from the data: per attribute {hue, texture canvas, scale/alpha keys, unit size}. */
@@ -35,7 +37,7 @@ const rgb = (hue, scale = 255) => `rgb(${hue.map(v => Math.round(Math.max(0, Mat
 /** Composite the glow into every frame of a sheet (cols x rows frames of W x H, glow gems in reference px, S = sheet px per
  * reference px). Returns a new canvas of the same size. */
 export function compositeSocketGlow(base, assets, glow, {W, H, cols, rows, frames, S, period}) {
-  const C = SOCKET_GLOW_CHOSEN.ICON;
+  const C = SOCKET_GLOW_CHOSEN.ICON, authoredOnly = gfxB('iconSocketWashOff');
   const output = document.createElement('canvas'); output.width = base.width; output.height = base.height;
   const out = output.getContext('2d');
   const mk = () => { const c = document.createElement('canvas'); c.width = W; c.height = H; return c; };
@@ -64,6 +66,7 @@ export function compositeSocketGlow(base, assets, glow, {W, H, cols, rows, frame
     out.beginPath(); out.rect(col * W, row * H, W, H); out.clip();
     out.translate(col * W, row * H);
     out.globalCompositeOperation = 'source-over'; out.globalAlpha = 1; out.drawImage(frame, 0, 0);
+    if (!authoredOnly) {
     // recolour a share of the artwork, then light it with the gem colour
     out.globalCompositeOperation = 'source-atop'; out.globalAlpha = Math.min(1, C.TINT * pulse * phase); out.drawImage(tint, 0, 0);
     out.globalCompositeOperation = 'lighter'; out.globalAlpha = Math.min(1, C.WASH * pulse * phase); out.drawImage(tint, 0, 0);
@@ -74,12 +77,13 @@ export function compositeSocketGlow(base, assets, glow, {W, H, cols, rows, frame
       h.filter = `blur(${blur * S}px)`; h.drawImage(tint, 0, 0); h.filter = 'none';
       out.globalAlpha = Math.min(1, C.HALO * strength * pulse * phase); out.drawImage(halo, 0, 0);
     }
+    }
     // the authored UI sprite on every filled socket marker
     out.globalCompositeOperation = 'lighter';
     for (const g of gems) {
       const a = g.asset, scale = evalKeys(a.scale, key, 3) || [1, 1, 1], alpha = evalKeys(a.alpha, key, 1)?.[0] ?? 1;
       const unit = g.size * C.SPRITE_UNIT * a.size, width = unit * scale[0], height = unit * (scale[1] ?? scale[0]);
-      out.globalAlpha = Math.max(0, Math.min(1, alpha * C.SPRITE_GAIN));
+      out.globalAlpha = Math.max(0, Math.min(1, alpha * (authoredOnly ? 1 : C.SPRITE_GAIN)));
       out.drawImage(a.canvas, g.x - width / 2, g.y - height / 2, width, height);
     }
     out.restore();

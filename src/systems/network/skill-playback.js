@@ -63,13 +63,32 @@ export class RemoteSkillPlayback {
     const index=Number(actor.save?.classIndex??actor.classDef?.index),generation=this.generation,request={};
     if(!Number.isInteger(index)||index<0)return false;
     this.end(actor);this.requests.set(actor,request);
+    // Cold class-pack await has no native twin (Global packs are resident). While pending,
+    // busy() already blocks hit interruption, but advanceServerPose could still select run
+    // because _networkAnimHold was only set after pack resolution. Hold locomotion now and
+    // freeze a playing walk/run pose so the observer does not keep running during the gap.
+    // Evidence: CLIENT-OPEN-ISSUES observer delayed-pack; isolated-clip test-observer-cold-pack-timing.
+    request.pendingAnimHold = true;
+    actor._networkAnimHold = Number.POSITIVE_INFINITY;
+    // Freeze prior locomotion pose first (state may still be run/walk), then mark
+    // ownership as skill immediately — same as local Actor.play("skill") before clip ready.
+    if (actor.animator && (actor.state === 'run' || actor.state === 'walk' || (actor._locoGround > 0))) {
+      try { actor.animator.stop(); } catch { /* ignore */ }
+      actor._locoGround = 0;
+    }
+    if (actor.state !== 'skill') actor.state = 'skill';
+    const clearPendingHold = () => {
+      if (this.requests.get(actor) !== request) return;
+      this.requests.delete(actor);
+      if (actor._networkAnimHold === Number.POSITIVE_INFINITY) actor._networkAnimHold = 0;
+    };
     try {
       const pack=await this.pack(index);
       if(this.disposed||generation!==this.generation||this.requests.get(actor)!==request||actor.dead||actor.disposed)return false;
       const skill=pack.data.skill(event.skillId),level=Number(event.level)||1,L=pack.data.level(skill,level);
-      if(!skill||!L){this.requests.delete(actor);return false;}
+      if(!skill||!L){clearPendingHold();return false;}
       const phases=skillPhases(skill,L).map(p=>({...p,step:p.st,dur:Math.max(0,p.durationMs)/1000}));
-      if(!phases.length){this.requests.delete(actor);return false;}
+      if(!phases.length){clearPendingHold();return false;}
       let style=Number(actor.classDef?.style??1);
       if(this.game.items?.db&&actor.save?.equip)style=new Equipment({db:this.game.items.db,game:{save:structuredClone(actor.save),settings:this.game.settings}}).style();
       const run={actor,pack,skill,phases,i:0,t:0,handles:[],style,target,point:event.point};
@@ -87,7 +106,8 @@ export class RemoteSkillPlayback {
     if(clip?.anim&&(p.kind==='cast'||p.dur>=INSTANT_STEP)){
       actor._skillStyles?.set?.(String(clip.anim).trim().replace(/\\/g,'/').replace(/^\/+/, '').toLowerCase(),Number(clip.style??1));
       const cycle=p.kind==='cast'&&p.act?Math.max(.05,Number(p.act.durationMs??p.act.timeTick)/1000||p.dur):p.dur;
-      playOnce(actor,'skill',{anim:clip.anim,timeLength:cycle,loop:p.kind==='cast',variant:clip.clipIndex},this.game.time||0,p.dur);
+      const phase=run.i;
+      playOnce(actor,'skill',{anim:clip.anim,timeLength:cycle,loop:p.kind==='cast',variant:clip.clipIndex,_skillPhaseCurrent:()=>this.active.get(actor)===run&&run.i===phase&&!actor.dead&&!actor.disposed},this.game.time||0,p.dur);
     }
     run.hitAt=p.kind==='step'&&p.step.result?(p.dur<.004?0:(clip?.timing>0&&clip.timing<=1?clip.timing:.5)*p.dur):null;run.resultPlayed=false;
     if(run.hitAt===0)this.land(run);
@@ -150,8 +170,13 @@ export class RemoteSkillPlayback {
    *  clear, an error) removes every effect of the run at once. */
   end(actor,finished=false) {
     this.requests.delete(actor);
-    const run=this.active.get(actor);if(!run)return;
-    this.active.delete(actor);if(actor._networkAnimHold===run.holdUntil)actor._networkAnimHold=0;
+    const run=this.active.get(actor);
+    if(!run){
+      // Pending cast only (pack still loading): drop the Infinity sentinel hold.
+      if(actor && actor._networkAnimHold === Number.POSITIVE_INFINITY) actor._networkAnimHold = 0;
+      return;
+    }
+    this.active.delete(actor);if(actor._networkAnimHold===run.holdUntil || actor._networkAnimHold === Number.POSITIVE_INFINITY)actor._networkAnimHold=0;
     if(actor._gpState==='skill'){actor._gpState=null;actor._gpHold=0;}
     run.ended=finished?'finished':'aborted';
     if(finished)this.endLoops(run,Infinity);

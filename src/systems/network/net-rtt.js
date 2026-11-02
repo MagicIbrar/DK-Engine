@@ -15,12 +15,19 @@ export function entryNetworkMs(entry, origin = globalThis.location?.origin) {
   if (!url.pathname.startsWith(API_PREFIX)) return null;
   const route = url.pathname.slice(API_PREFIX.length);
   if (entry.initiatorType && entry.initiatorType !== 'fetch') return null;          // EventSource ('other'), scripts, images
-  if (route === 'events') return null;          // the SSE stream: its entry would span the whole stream
+  if (route !== 'ping') return null;          // PING: only the dedicated no-work probe counts; action/move/skill requests include server work          // the SSE stream: its entry would span the whole stream
   const start = Number(entry.requestStart), end = Number(entry.responseEnd);
   if (!(start > 0) || !(end > 0) || end < start) return null;                       // 0 = hidden by the browser (cross-origin without Timing-Allow-Origin)
   if (entry.transferSize === 0 && entry.decodedBodySize > 0) return null;           // answered from a cache: no network round trip happened
   const ms = end - start;
   return ms >= 0 && ms < 15000 ? ms : null;
+}
+
+/** PING WORKER probe (server/ping-worker.mjs): same network timing rule, different port. */
+export function entryDirectMs(entry) {
+  const start = Number(entry.requestStart), end = Number(entry.responseEnd);
+  if (!(start > 0) || !(end > 0) || end < start) return null;
+  const ms = end - start; return ms < 15000 ? ms : null;
 }
 
 export class NetRttMeter {
@@ -45,7 +52,7 @@ export class NetRttMeter {
     } catch { this.observer = null; return false; }
   }
   sample(entry) {
-    const ms = entryNetworkMs(entry, this.origin);
+    const ms = this.directUrl && typeof entry?.name === 'string' && entry.name.startsWith(this.directUrl) ? entryDirectMs(entry) : entryNetworkMs(entry, this.origin);
     if (ms == null) return false;
     this.rtt = Number.isFinite(this.rtt) ? this.rtt * SMOOTH_OLD + ms * SMOOTH_NEW : ms;
     this.latest = ms; this.lastAt = Math.min(this.now(), Number(entry.responseEnd));
@@ -53,11 +60,11 @@ export class NetRttMeter {
     return true;
   }
   /** one game request finished (client.js _request): counts requests that did not produce a timing sample since the last one */
-  noteRequest() { if (this.observer) this.unsampled++; }
+  noteRequest() { /* PING: game requests no longer feed the label; staleness is time-based (STALE_MS) */ }
   /** smoothed network round trip in ms, or null when unavailable or stale */
   value() {
     if (!this.observer || !Number.isFinite(this.rtt) || this.unsampled > STALE_AFTER || this.now() - this.lastAt >= STALE_MS) return null;
-    return Math.max(this.latest, this.rtt);
+    return this.rtt;
   }
   dispose() {
     try { this.observer?.disconnect(); } catch { /* ignore */ }

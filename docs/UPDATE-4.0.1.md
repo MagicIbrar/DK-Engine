@@ -7,7 +7,7 @@ Version 4.0.1 updates 4.0.0 with the following fixes. The 4.0.0 notes remain ava
 <details>
 <summary>Contributors</summary>
 
-Thanks to Franky, DEV ShadoW, CYBER and Magic Ibrar for helping with the project, and to everyone contributing, testing and sharing feedback.
+Thanks to DEV ShadoW, CYBER and Magic Ibrar for helping with the project, and to everyone contributing, testing and sharing feedback.
 
 </details>
 

@@ -1,10 +1,10 @@
 // ALLIANCE: the guild alliance, inside the durable social state (server/world/social-state.mjs socialTransaction).
 // Rules + original sources: src/systems/extras/alliance-rules.js (share/guild/alliance.csv via gamedata life.json guild.alliance,
 // share/maplist.csv IsCreateAlliance / IsInviteAlliance, stringtable_alliance cate 140). Values the data does not define:
-// src/config/engine-chosen-guild.js ALLIANCE_CHOSEN (tagged ENGINE-CHOSEN (not in Global data)).
+// src/config/engine-chosen-guild.js ALLIANCE_CHOSEN (each value labelled with its source; LANE-61 removed the request / naming timeouts).
 // State: state.alliances[id] = {id, name, commander: guildId, guilds: [guildId], notice, mark?, glory?, createdAt}
 //        state.allianceRequests = [{id, kind: form|join, stage: invite|naming, allianceId?, fromGuild, fromRef, fromName,
-//                                   toGuild, toRef, toName, expiresAt}]
+//                                   toGuild, toRef, toName}]  (LANE-61: no expiresAt; requestLive below)
 // The host answers with the original texts (TEXT, = the 140:x / 130:x strings without markup); the client shows the 140:x string.
 // Notices (140:x with arguments) are emitted to the affected characters after the transaction commits.
 import {randomUUID} from 'node:crypto';
@@ -23,8 +23,12 @@ const alliances=state=>state.alliances||={};
 const requests=state=>Array.isArray(state.allianceRequests)?state.allianceRequests:(state.allianceRequests=[]);
 /** The alliance a guild belongs to (or null). */
 export function allianceOfGuild(state,guildId){return guildId?Object.values(state?.alliances||{}).find(a=>a.guilds.includes(guildId))||null:null;}
-const pendingOf=(state,guildId,now)=>(state.allianceRequests||[]).find(r=>r.expiresAt>now&&(r.fromGuild===guildId||r.toGuild===guildId))||null;
 const online=(world,ref)=>[...world.players.values()].find(q=>!q.leaving&&socialRef(q)===ref)||null;
+/** LANE-61: a request has no lifetime (REMOVED: no timeout in Global 140, the decompiles, the older server reference or online).
+ *  It stands until it is answered or cancelled, or one of Global's cancel reasons (140:120-129) applies: the requester went
+ *  offline or is no longer the guild master, or a guild is gone. Old saved requests with an expiresAt are read the same way. */
+const requestLive=(world,state,r)=>!!(state.guilds[r.fromGuild]&&state.guilds[r.toGuild]&&state.guilds[r.fromGuild].master===r.fromRef&&online(world,r.fromRef));
+const pendingOf=(world,state,guildId)=>(state.allianceRequests||[]).find(r=>requestLive(world,state,r)&&(r.fromGuild===guildId||r.toGuild===guildId))||null;
 const byName=(world,name)=>{const key=typeof name==='string'?name.normalize('NFC').trim().toLowerCase():'';return key?[...world.players.values()].find(q=>!q.leaving&&String(q.profile?.name||'').toLowerCase()===key)||null:null;};
 const allRefs=(state,a)=>a.guilds.flatMap(id=>state.guilds[id]?.members.map(m=>m.ref)||[]);
 const guildRefs=(state,id)=>state.guilds[id]?.members.map(m=>m.ref)||[];
@@ -50,14 +54,14 @@ function dissolveIfSmall(state,a,notices){
 export function allianceGuildGuard(world,state,g,operation){
   if(!g)return;
   const a=allianceOfGuild(state,g.id);
-  if(operation==='disband'){if(a)fail(TEXT.guildAlliedDisband,409);if(pendingOf(state,g.id,world.now()))fail(TEXT.guildFormingDisband,409);}
+  if(operation==='disband'){if(a)fail(TEXT.guildAlliedDisband,409);if(pendingOf(world,state,g.id))fail(TEXT.guildFormingDisband,409);}
   if(operation==='transfer'&&a&&a.commander===g.id)fail(TEXT.guildCommanderTransfer,409);
 }
 
 /** One alliance operation inside socialTransaction. ctx: {state, profile, ref, g, input, level(row), guildMark(mark)}. Returns notices. */
 export function allianceCommand(world,p,{state,profile,ref,g,input,level,guildMark}){
   const now=world.now(),op=input.operation,notices=[];
-  state.allianceRequests=requests(state).filter(r=>r.expiresAt>now&&state.guilds[r.fromGuild]&&state.guilds[r.toGuild]);
+  state.allianceRequests=requests(state).filter(r=>requestLive(world,state,r));
   const a=g?allianceOfGuild(state,g.id):null;
   if(op==='allianceInvite'){
     if(!g)fail(TEXT.reqNoGuild);
@@ -72,7 +76,7 @@ export function allianceCommand(world,p,{state,profile,ref,g,input,level,guildMa
       if(!Number.isSafeInteger(profile.dil)||profile.dil<cost(world,'MONEY'))fail(TEXT.reqDil);
       if(!flags.create)fail(TEXT.createMap);
     }
-    if(pendingOf(state,g.id,now))fail(TEXT.reqBusy,409);
+    if(pendingOf(world,state,g.id))fail(TEXT.reqBusy,409);
     const target=byName(world,input.name);if(!target)fail(TEXT.targetOffline,404);
     const targetRef=socialRef(target),tg=Object.values(state.guilds).find(row=>row.members.some(m=>m.ref===targetRef));
     if(!tg)fail(TEXT.noGuild,404);
@@ -80,9 +84,9 @@ export function allianceCommand(world,p,{state,profile,ref,g,input,level,guildMa
     if(tg.master!==targetRef)fail(TEXT.targetCondition);
     if(level(tg)<MIN_GUILD_LEVEL)fail(TEXT.targetLevel);
     if(allianceOfGuild(state,tg.id))fail(TEXT.targetInAlliance,409);
-    if(pendingOf(state,tg.id,now))fail(TEXT.targetForming,409);
+    if(pendingOf(world,state,tg.id))fail(TEXT.targetForming,409);
     if(!mapAllianceFlags(world.data.dungeonData.dg.maps,target.map).invite)fail(TEXT.targetMap);
-    state.allianceRequests.push({id:randomUUID(),kind:a?'join':'form',stage:'invite',...(a?{allianceId:a.id}:{}),fromGuild:g.id,fromRef:ref,fromName:profile.name,toGuild:tg.id,toRef:targetRef,toName:target.profile.name,expiresAt:now+ALLIANCE_CHOSEN.INVITE_TIMEOUT_MS});
+    state.allianceRequests.push({id:randomUUID(),kind:a?'join':'form',stage:'invite',...(a?{allianceId:a.id}:{}),fromGuild:g.id,fromRef:ref,fromName:profile.name,toGuild:tg.id,toRef:targetRef,toName:target.profile.name});
     notices.push({code:STR.invited,args:[tg.name],refs:[ref]});   // 140:20
     return notices;
   }
@@ -99,7 +103,7 @@ export function allianceCommand(world,p,{state,profile,ref,g,input,level,guildMa
     if(allianceOfGuild(state,tg.id))fail(TEXT.targetInAlliance,409);
     if(!online(world,r.fromRef)){state.allianceRequests=state.allianceRequests.filter(row=>row!==r);fail(plainOf(STR.cancelledOffline),409);}
     if(r.kind==='form'){
-      r.stage='naming';r.expiresAt=now+ALLIANCE_CHOSEN.NAMING_TIMEOUT_MS;
+      r.stage='naming';
       notices.push({code:STR.agreed,refs:[ref]});   // 140:28; the requester names the alliance (snapshot outgoing stage naming)
       return notices;
     }
@@ -237,15 +241,15 @@ export function allianceChat(world,p,input){
 
 /** Snapshot field `alliance` of a guild member. helpers: {names(ref, fallback), level(row), guildMark(mark)}. */
 export function allianceSnapshot(world,state,ref,g,helpers){
-  const now=world.now(),list=(state.allianceRequests||[]).filter(r=>r.expiresAt>now&&state.guilds[r.fromGuild]&&state.guilds[r.toGuild]);
+  const list=(state.allianceRequests||[]).filter(r=>requestLive(world,state,r));
   const a=g?allianceOfGuild(state,g.id):null,guildRow=id=>{const row=state.guilds[id];if(!row)return null;const m=row.members.find(x=>x.ref===row.master);
     return {id,name:row.name,masterName:helpers.names(row.master,m?.name||''),members:row.members.length,level:helpers.level(row),mark:helpers.guildMark(row.mark)};};
   const current=a?{id:a.id,name:a.name,commanderGuild:a.commander,commanderName:helpers.names(state.guilds[a.commander]?.master,guildRow(a.commander)?.masterName||''),
     isCommander:isCommander(state,a,ref),isExecutive:isExecutive(state,a,ref),notice:a.notice||'',mark:helpers.guildMark(a.mark),glory:a.glory?{itemIndex:a.glory.itemIndex}:null,
     guilds:a.guilds.map(guildRow).filter(Boolean)}:null;
   const incoming=list.filter(r=>r.toRef===ref&&r.stage==='invite').map(r=>({id:r.id,kind:r.kind,guildName:state.guilds[r.fromGuild].name,from:r.fromName,
-    allianceName:r.allianceId?state.alliances?.[r.allianceId]?.name||'':'',expiresAt:r.expiresAt}));
-  const outgoing=list.filter(r=>r.fromRef===ref).map(r=>({id:r.id,kind:r.kind,stage:r.stage,guildName:state.guilds[r.toGuild].name,to:r.toName,expiresAt:r.expiresAt}));
+    allianceName:r.allianceId?state.alliances?.[r.allianceId]?.name||'':'',expiresAt:null}));
+  const outgoing=list.filter(r=>r.fromRef===ref).map(r=>({id:r.id,kind:r.kind,stage:r.stage,guildName:state.guilds[r.toGuild].name,to:r.toName,expiresAt:null}));
   const n=k=>{const v=Number(world.data.guild?.alliance?.[k]);return Number.isSafeInteger(v)?v:null;};
   return {current,incoming,outgoing,formCost:n('MONEY'),markCost:n('MARKDIL'),inviteTimeoutMs:ALLIANCE_CHOSEN.INVITE_TIMEOUT_MS,namingTimeoutMs:ALLIANCE_CHOSEN.NAMING_TIMEOUT_MS};
 }

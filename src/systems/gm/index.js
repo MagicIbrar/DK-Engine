@@ -177,10 +177,7 @@ export class GM {
     this.windows.print(t, color);
     this.panel?.status?.(t, color);
     const kind = color === COL.err ? 'err' : 'gm';
-    for (const line of t.split('\n')) {
-      if (this.game.chat?.system) this.game.chat.system(line, kind);
-      else this.game.hud?.log?.(line, kind === 'err' ? 'err' : 'sys');
-    }
+    void kind; // command output stays in the GM console/panel only: chat and the map HUD ignore commands
   }
   /** Client string (sync; fallback when not loaded). */
   text(group, cate, code, fallback = '') {
@@ -423,9 +420,9 @@ export class GM {
       const w = g.world;
       let p = { x, z };
       if (w.isWalkable && !w.isWalkable(x, z)) { const n = w.nearestWalkable?.(x, z, 48); if (n) p = { x: n.x, z: n.z }; }
-      job = playerIntent({ game: g, status: (t) => this.say(t) }, 'teleportDestination', { map, x: p.x, z: p.z });
+      job = playerIntent({ game: g, status: () => {} }, 'teleportDestination', { map, x: p.x, z: p.z }); // Global: no chat teleport ack
     } else {
-      job = teleport(g, map, x, z).then(r => this.say(`Teleported to ${Math.floor(r.x)}, ${Math.floor(r.z)}.`));
+      job = teleport(g, map, x, z); // Global: no chat teleport ack
     }
     return job.catch(e => this.err('failed', e?.message)).finally(() => { this._tpBusy = false; });
   }

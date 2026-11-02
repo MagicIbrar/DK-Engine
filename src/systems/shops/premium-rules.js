@@ -51,11 +51,13 @@ export const isPremiumItem = (dshop, idx) => Number(idx) > 0 && !!premiumRow(dsh
 export const activePremiums = (state, now) => Object.values(state || {}).filter(p => p && p.until > now);
 export const premiumAny = (state, now, key) => activePremiums(state, now).some(p => p.fields?.[key] > 0);
 export const holyWaterFields = fields => fields?.storeIndex>0&&fields?.post>0&&fields?.brokerage>0;
+// Global formula.ini byAddExpPlus=10 (and older server-ref period.csv IPAMON Exp AddRate=10).
+// Native cash strings code83: Premium + regular adds 10% EXP; shared effects do not multiply.
+export const BY_ADD_EXP_PLUS = 10;
 export const premiumSum = (state, now, key) => {
   const entries=activePremiums(state,now),holy=entries.filter(p=>holyWaterFields(p.fields));
-  // Native cash strings code83: Premium + regular adds 10% EXP; shared effects do not multiply.
   if(holy.some(p=>p.accountWide)&&holy.some(p=>!p.accountWide)){
-    const value=Math.max(...holy.map(p=>Number(p.fields?.[key])||0))+(key==='rate'?10:0);
+    const value=Math.max(...holy.map(p=>Number(p.fields?.[key])||0))+(key==='rate'?BY_ADD_EXP_PLUS:0);
     return value+entries.filter(p=>!holyWaterFields(p.fields)).reduce((sum,p)=>sum+(p.fields?.[key]||0),0);
   }
   return entries.reduce((s,p)=>s+(p.fields?.[key]||0),0);

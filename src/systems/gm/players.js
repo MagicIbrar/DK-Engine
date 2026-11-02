@@ -1,5 +1,5 @@
 import {createBotRosterView,currentPlayerMap} from './bot-roster-view.js';
-import {normalizeCharacterName, normalizeStaffCharacterName, configureCharacterNameInput, characterNameColorSelect} from '../../game/character-name.js';
+import {normalizeCharacterName, normalizeStaffCharacterName, stripStaffNameTag, configureCharacterNameInput, characterNameColorSelect} from '../../game/character-name.js';
 import {playerMapBackdrop} from './player-map-backdrop.js';
 import {h,btn,input,select} from './kit.js';
 import {playerMapPosition,constrainPlayerMapView,zoomPlayerMap,panPlayerMap,playerMapDestination} from './player-map-view.js';
@@ -10,16 +10,25 @@ export async function playerIntent(ctx,operation,fields={}){
  const net=ctx.game.network,token=net?.token;if(!net?.ready||!token||net.disposed)throw Error('Connect to the shared world first.');
  const result=await net._request('gm',{token,operation,...fields});if(ctx.game.network!==net||net.token!==token||!net.ready||net.disposed||!hasGMPanelPermission(ctx.game))throw Error('The GM session changed. Reconnect and refresh this tool.');if(result.state)net._receiveSnapshot(result.state);if(result.message)ctx.status(result.message);return result;
 }
+let staffLabelGroup=0;
 export function renameControls(ctx){
  const name=input('text','',{placeholder:'New character name'});configureCharacterNameInput(name);
- const staffTag=select([['','Ordinary name'],['GM','[GM] override'],['DEV','[DEV] override']], '',()=>{});
+ // Cosmetic labels are mutually exclusive and never change account privileges.
+ const staffLabel=document.createElement('span');staffLabel.setAttribute('role','radiogroup');staffLabel.setAttribute('aria-label','Staff name label');
+ const group='staff-name-label-'+(++staffLabelGroup),staffChoices=[];
+ for(const [value,text] of [['','Account default'],['ADMIN','[ADMIN]'],['GM','[GM]'],['DEV','[DEV]']]){
+  const wrap=document.createElement('label'),radio=document.createElement('input');radio.type='radio';radio.name=group;radio.value=value;radio.checked=value==='';
+  wrap.style.cssText='display:inline-flex;align-items:center;gap:3px;white-space:nowrap;';wrap.append(radio,document.createTextNode(text));staffLabel.append(wrap);staffChoices.push(radio);
+ }
+ const staffValue=()=>staffChoices.find(r=>r.checked)?.value||'';
  const color=characterNameColorSelect();
  const keep=document.createElement('option');keep.value='';keep.textContent='Keep current color';color.insertBefore(keep,color.firstChild);
  const target=h('span.gold');const refresh=()=>{target.textContent=ctx.panel.playerTarget?.name||ctx.game.save.name;color.value=ctx.panel.playerTarget?(ctx.panel.playerTarget.nameColor||''):(ctx.game.save.nameColor||'white');};
  let pending=false;
- const rename=async()=>{if(pending)return;const targetId=ctx.panel.playerTarget?.id||ctx.game.network?.self?.id;pending=true;renameButton.disabled=true;try{const result=await playerIntent(ctx,'renamePlayer',{targetId,name:staffTag.value?normalizeStaffCharacterName(`[${staffTag.value}] ${name.value.replace(/^\[(GM|DEV)\]\s*/,'' )}`):normalizeCharacterName(name.value),staffOverride:!!staffTag.value,...(color.value?{nameColor:color.value}:{})});if(!hasGMPanelPermission(ctx.game))return;if(ctx.panel.playerTarget?.id===targetId&&result.player?.id===targetId){ctx.panel.playerTarget.name=result.player.name;ctx.panel.playerTarget.nameColor=result.player.nameColor;}refresh();}catch(e){if(hasGMPanelPermission(ctx.game))ctx.status(e.message);}finally{pending=false;renameButton.disabled=false;}};const renameButton=btn('Rename',rename);refresh();
- return {el:h('div.row',null,h('span.lbl',null,'Rename'),target,name,staffTag,color,renameButton,btn('Select self',()=>{ctx.panel.playerTarget=null;refresh();})),refresh};
+ const rename=async()=>{if(pending)return;const targetId=ctx.panel.playerTarget?.id||ctx.game.network?.self?.id;pending=true;renameButton.disabled=true;try{const bare=stripStaffNameTag(name.value);const result=await playerIntent(ctx,'renamePlayer',{targetId,name:staffValue()?normalizeStaffCharacterName(`[${staffValue()}] ${bare}`):normalizeCharacterName(name.value),staffOverride:!!staffValue(),...(color.value?{nameColor:color.value}:{})});if(!hasGMPanelPermission(ctx.game))return;if(ctx.panel.playerTarget?.id===targetId&&result.player?.id===targetId){ctx.panel.playerTarget.name=result.player.name;ctx.panel.playerTarget.nameColor=result.player.nameColor;}refresh();}catch(e){if(hasGMPanelPermission(ctx.game))ctx.status(e.message);}finally{pending=false;renameButton.disabled=false;}};const renameButton=btn('Rename',rename);refresh();
+ return {el:h('div.row',null,h('span.lbl',null,'Rename'),target,name,staffLabel,color,renameButton,btn('Select self',()=>{ctx.panel.playerTarget=null;refresh();})),refresh};
 }
+
 export function playersPage(ctx){
  let rows=[],maps=[],busy=false,last=0,active=true,generation=0,destination=null,teleporting=false;
  const tiles=new Map(),views=new Map();
@@ -30,7 +39,7 @@ export function playersPage(ctx){
  const destinationLabel=h('span.gold',null,'Click the map to mark a teleport destination. Ctrl+click to teleport at once.');
  const teleportNow=async()=>{
   if(!destination||teleporting)return;const point={...destination},gen=generation;teleporting=true;teleport.disabled=true;
-  try{const result=await playerIntent(ctx,'teleportDestination',point);if(active&&gen===generation&&destination?.map===point.map&&destination?.x===point.x&&destination?.z===point.z){destination=result.destination;destinationLabel.textContent=`Arrived · Map ${destination.map} · ${destination.x.toFixed(1)}, ${destination.z.toFixed(1)}`;draw();}}
+  try{const result=await playerIntent(ctx,'teleportDestination',point);if(active&&gen===generation&&destination?.map===point.map&&destination?.x===point.x&&destination?.z===point.z){destination=result.destination;destinationLabel.textContent=`Map ${destination.map}`;draw();}}
   catch(error){if(active&&gen===generation)ctx.status(error.message);}finally{teleporting=false;teleport.disabled=!destination||!active;}
  };
  const teleport=btn('Teleport',teleportNow);teleport.disabled=true;teleport.title='Teleport your GM character to the marked walkable location.';

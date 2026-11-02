@@ -11,12 +11,12 @@ export function create({navigate}) {
   const ids = ['overview', 'explorer', 'monitor', 'query', 'backup'];
   const panels = Object.fromEntries(ids.map(i => [i, h('div', {class: 'tab-panel', id: 'panel-' + i, role: 'tabpanel', 'aria-labelledby': 'tab-' + i, hidden: i !== 'overview'})]));
   let active = 'overview'; const built = {};
-  const bar = tabs([{id: 'overview', label: 'Storage & connections', ico: 'database'}, {id: 'explorer', label: 'Explorer', ico: 'table'}, {id: 'monitor', label: 'Monitor', ico: 'pulse'}, {id: 'query', label: 'Query', ico: 'terminal'}, {id: 'backup', label: 'Backup & migration', ico: 'shield'}], {current: 'overview', label: 'SQL sections', onSelect: t => select(t)});
+  const bar = tabs([{id: 'overview', label: 'Storage & connections', ico: 'database'}, {id: 'explorer', label: 'Explorer', ico: 'table'}, {id: 'monitor', label: 'Monitor', ico: 'pulse'}, {id: 'query', label: 'Query', ico: 'terminal'}, {id: 'backup', label: 'Backup & migration', ico: 'shield'}], {current: 'overview', label: 'SQL categories', onSelect: t => select(t), onOverview: () => { for (const b of Object.values(built)) b.hide?.(); history.replaceState(null, '', '#/sql'); }});
   function select(t) { active = t; for (const [k, p] of Object.entries(panels)) p.hidden = k !== t; if (!built[t]) built[t] = ({overview, explorer, monitor, query, backup})[t](); built[t].show?.(); for (const [k, b] of Object.entries(built)) if (k !== t) b.hide?.(); history.replaceState(null, '', `#/sql/${t}`); }
   // Shared selection survives refreshes and tab changes; nothing switches it automatically.
   const sel = {profile: state.mode === 'install' ? 'world' : 'preview-test', database: null}; let profiles = [];
   const ctxBar = h('div', {class: 'row wrap', id: 'sql-context'});
-  const el = h('div', {class: 'stack loose'}, h('div', {class: 'row between wrap'}, bar, ctxBar), ...Object.values(panels));
+  const el = h('div', {class: 'stack loose focus-page sql-page'}, ctxBar, bar, ...Object.values(panels));
   async function loadProfiles() { profiles = (await call('sql.profiles')).profiles; if (!profiles.some(p => p.id === sel.profile)) sel.profile = profiles[0]?.id; renderCtx(); }
   const prof = () => profiles.find(p => p.id === sel.profile);
   function renderCtx() {
@@ -185,5 +185,5 @@ export function create({navigate}) {
     window.addEventListener('dk-sql-profile', () => { if (active === 'backup') render(); });
     return {show() { loadProfiles().then(render); loadLog(); }};
   }
-  return {el, show(tab) { loadProfiles().then(() => bar.select(ids.includes(tab) ? tab : active)).catch(e => toast(e.message, 'err')); }, hide() { for (const b of Object.values(built)) b.hide?.(); }};
+  return {el, show(tab) { loadProfiles().then(() => bar.show(tab)).catch(e => toast(e.message, 'err')); }, hide() { for (const b of Object.values(built)) b.hide?.(); }};
 }

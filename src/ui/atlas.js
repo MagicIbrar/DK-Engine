@@ -140,8 +140,8 @@ export class UIAtlas {
   }
 
   /**
-   * Engine rows for screens the shipped imagetable.txt lacks (imagetable-format text, e.g. TRAINING-CAMP's ENGINE-CHOSEN
-   * TrainingCamp rows in src/config/engine-chosen-training-camp.js). They sit under imagetable.txt: a shipped row with
+   * Engine rows for screens the shipped imagetable.txt lacks (imagetable-format text).
+   * They sit under imagetable.txt: a shipped row with
    * the same (group,index) always wins. Kept across clear(); merged into an already loaded table at once.
    */
   addRows(text) {

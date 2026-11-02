@@ -40,7 +40,7 @@ const inside = (world, run, m) => { const q = m && byId(world, m.id); return q &
 const standing = (world, run, m) => { const q = inside(world, run, m); return q && !q.dead && q.hp > 0 ? q : null; };
 const mapText = (world, code, fallback) => String(world.data?.dungeonData?.dg?.maps?.[CARNIVAL_DUNGEON]?.messages?.[code]?.t || fallback).replace(/^\s*\[message\]\s*/i, '');
 const itemName = (world, item) => world.data?.itemDB?.def?.(item)?.name || `Item ${item}`;
-function busy(p) { return !!(p.instanceId || p.duelId || p.partyPvpId || p.tradeId || p.charTradeId || p.sceneTransition || fishingBusy(p) || p.arenaId || p.dkSquareId || p.trainingCampId || p.raceRun || p.pcShopOpen); }
+function busy(p) { return !!(p.instanceId || p.duelId || p.partyPvpId || p.tradeId || p.charTradeId || p.sceneTransition || fishingBusy(p) || p.arenaId || p.dkSquareId || p.pcShopOpen); }
 function levelOk(world, p) { const [lo, hi] = dungeonOf(world)?.entry?.levels || [0, 0], lv = num(p.profile.level); return lv >= lo && (!hi || lv <= hi); }
 function notice(world, p, text) { p.carnivalNotice = { text, at: world.now() }; world.changed(p); }
 /** The native Forgotten Shipwreck Normal Mode entrance of Scarlet (fee + items of its text), or null when the data lacks it. */
@@ -83,6 +83,7 @@ export async function carnivalCommand(world, p, input) {
 }
 function register(world, p) {
   const fs = fsData(world), st = state(world);
+  if (C.closed) fail(T.closed, 403);   // Lane 71: closed - no Global entrance and no source for the team rules
   if (!fs?.schedule?.length || !dungeonOf(world)) fail(T.noServer, 503);
   if (st.queue.some(e => e.id === p.id)) fail(T.already);
   if (runOf(world, p)) fail(T.entry);

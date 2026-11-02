@@ -27,8 +27,7 @@ export const DK_SQUARE_CHOSEN = Object.freeze({
   roomCap: 'rank.csv Max_Room',
   // ENGINE-CHOSEN (not in Global data): Lobby Name (160:15) = the opener's character name (createdksquarewnd has no name input).
   lobbyName: 'opener character name',
-  // ENGINE-CHOSEN (not in Global data): seconds of the entry confirmation (ui_confirmwnd 160:48 / raid 160:79 '(%d)').
-  confirmSec: 15,
+  // Lane 47/71: confirmSec (15) REMOVED - no Global, decompile, older-server (Option.csv VERIFYWAIT_TIME is a generic server option, not tied to this window) or online value for the ui_confirmwnd 160:48 / 160:79 '(%d)' seconds; the host waits for every OK / Cancel.
   // ENGINE-CHOSEN (not in Global data): the first StartPCCount who accept are dealt at random alternating Miseria / Ricchez (160:2); a later joiner raids (160:24 / 160:79) onto the team with fewer members present, ties to Miseria.
   teamRule: 'random alternating at start, fewest present on raid',
   // ENGINE-CHOSEN (not in Global data): EnterCost DIL is checked on Open Lobby / Join (160:669) and paid when the character enters the battlefield; it is not returned.
@@ -39,8 +38,8 @@ export const DK_SQUARE_CHOSEN = Object.freeze({
   battleReading: 'as engine-chosen-arena.js',
   // ENGINE-CHOSEN (not in Global data): a downed participant revives at the squad Revive_Pos; unrevived for autoExitSec it is moved out (160:636 '1 minute').
   autoExitSec: 60,
-  // ENGINE-CHOSEN (not in Global data): seconds between the result and moving everyone out (160:70 '%d second(s)').
-  finishWaitSec: 30,
+  // Lane 47/71: finishWaitSec (30) REMOVED - no source for the 160:70 '%d second(s)' move-out time (the JP DK Square guide no=41&pno=61 gives none); participants leave with Leave Now (160:71).
+  // Lane 47: fight time / StartPCCount / MaxPCCount may be replaced per mode + rank by the Global GM command set_dksquareInfo (server/world/dk-square.mjs).
   // ENGINE-CHOSEN (not in Global data): exit point = where each participant stood when it joined the lobby (map 67's kickTo is the lobby map 68, not entered).
   exitPoint: 'own spot at join',
   // ENGINE-CHOSEN (not in Global data): still unapplied: dktierbuff GradePercentValue (no rule names what it scales), changeshape.csv PET rows (a pet companion is not an appearance slot), the season reset of 160:137/138, stone HPRecovery and the brick exp column. The weapon look rows (type 0 code 64 appearance materials) are drawn on every body.

@@ -9,15 +9,27 @@ import { nativeTextRequirements } from './native-text-requirements.js';
 import { nativeTextRewards } from './native-text-rewards.js';
 import { nativeEarnedObjectives } from './native-earned-objectives.js';
 import { nativeExchangePage } from './native-exchange-menus.js';
+import { nativeOfferResolution } from './native-offer-resolution.js';
 
 let questsP = null, dialogsP = null, boxesP = null;
 
+function onceJSON(get, set, url) {
+  // Module-level promise must not pin a rejected transient forever; fetchJSON retries
+  // after backoff only when a fresh call reaches cachedAssetRequest.
+  let p = get();
+  if (!p) {
+    p = fetchJSON(url).catch(err => { if (get() === p) set(null); throw err; });
+    set(p);
+  }
+  return p;
+}
+
 /** quests.json (quests, groups, lines, notices, requestBoards, assets, enums). */
-export function loadQuests() { return (questsP ||= fetchJSON('/gamedata/quests.json')); }
+export function loadQuests() { return onceJSON(() => questsP, v => { questsP = v; }, '/gamedata/quests.json'); }
 /** dialogs.json (quests[q] trees, strings[q][code], objectiveStrings, common, npcs, jobTypeLabels). */
-export function loadDialogs() { return (dialogsP ||= fetchJSON('/gamedata/dialogs.json')); }
+export function loadDialogs() { return onceJSON(() => dialogsP, v => { dialogsP = v; }, '/gamedata/dialogs.json'); }
 /** boxes.json (boxes, items, itemSets, summons, levelUpChains, starter, ui). */
-export function loadBoxes() { return (boxesP ||= fetchJSON('/gamedata/boxes.json')); }
+export function loadBoxes() { return onceJSON(() => boxesP, v => { boxesP = v; }, '/gamedata/boxes.json'); }
 
 /**
  * The shared quest database: raw tables + helpers. `Q` is created by the quest system and also used by the
@@ -26,7 +38,9 @@ export function loadBoxes() { return (boxesP ||= fetchJSON('/gamedata/boxes.json
 export class QuestDB {
   constructor(game, quests, dialogs) {
     this.game = game;
-    this.Q = nativeQuestCustody(nativeTicketIssuance(nativeTitleExchanges(questNpcLayout(quests, game?.data?.npcs).quests, dialogs, game), dialogs, game), dialogs, game);
+    const laid = questNpcLayout(quests, game?.data?.npcs).quests;
+    this.Q = nativeOfferResolution(laid, dialogs);
+    this.Q = nativeQuestCustody(nativeTicketIssuance(nativeTitleExchanges(this.Q, dialogs, game), dialogs, game), dialogs, game);
     this.Q = nativeTextRequirements(nativeTextRewards(this.Q, dialogs, game), dialogs, game);
     this.Q = nativeEarnedObjectives(this.Q, dialogs);
     this.D = dialogs;         // dialogs.json

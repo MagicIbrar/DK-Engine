@@ -21,6 +21,10 @@ import { comboStepTiming } from './attack-timing.js';
 import { authoritativeAttackStep } from './attack-recovery.js';
 import { MoveMarker } from '../actors/movemarker.js';
 import { rootMotionCurves, attackStepAnim, startRootRun, advanceRootRuns, rootToWorld, sweepRoot } from '../systems/skills/root-motion.js';
+import { MOVEMENT_SYNC } from '../systems/network/movement-config.js';
+
+// Current engines expose holdsBody; older source snapshots expose active.
+const skillOwnsBody = game => !!(game?.skills?.holdsBody || game?.skills?.active);
 
 const HOLD_REPATH = 0.2;       // s between re-paths while the left button is held on the ground
 const CHASE_REPATH = 0.5;      // s between re-paths while chasing a target around obstacles
@@ -371,6 +375,7 @@ export class PlayerController {
 
   // ---------------------------------------------------------------- callbacks from other systems
   onSkillStart() {
+    this._clearDirectionalState();
     this._cancelUnsentAttackRoots();
     this._attackRootEpoch++;
     this.combo = null;
@@ -388,7 +393,7 @@ export class PlayerController {
     // no reaction); offline the same rule rolls locally. The body is held for that row's TimeLength (classes.json).
     const variant = this.game?.network?.active ? eventDefeat(event) : playerDefeatReaction({defeatResistance:combatOptionValue(p,'DEFENSE_DEFEATRATE_MUL')},rand);
     if (variant == null) return;
-    const idle = !this.order && !this.combo && !this._wasd && !this.game?.skills?.busy;
+    const idle = !this.order && !this.combo && !this._wasd && !skillOwnsBody(this.game);
     if (idle) playOnce(p, 'hit', { variant }, this.now, defeatSeconds(p, variant));
   }
   onPlayerDeath() {
@@ -431,7 +436,7 @@ export class PlayerController {
     }
 
     this._advanceAttackRoot(dt);
-    if (g.skills?.busy) return; // skill clips own the character (NO_CANCEL steps)
+    if (skillOwnsBody(g)) return; // skillMotion / holdsBody: every phase + attackHoldUntil owns the body (not just NO_CANCEL)
     if (this._wasd) return;
     this._runOrder(dt);
   }
@@ -531,7 +536,7 @@ export class PlayerController {
       }
     }
     if (!held) { this._holdMove = false; if (!leftClick) this._pressHandled = false; }
-    if (held && this._holdMove && !g.skills?.busy) {
+    if (held && this._holdMove && !skillOwnsBody(g)) {
       this._holdTimer -= dt;
       if (this._holdTimer <= 0) {
         this._holdTimer = HOLD_REPATH;
@@ -543,13 +548,23 @@ export class PlayerController {
     this._handleDirectionalInput(dt, inp);
   }
 
+  _clearDirectionalState() {
+    this._wasd = false;
+    this._wasdReleaseAt = 0;
+    this._wasdDx = this._wasdDz = null;
+    this._directBlocked = false;
+  }
+
   _handleDirectionalInput(dt, inp) {
     const g = this.game, p = this.player;
+    // Skill animation/root motion owns this frame; release debounce is not a
+    // fresh movement intent and must never force run or send a stop over it.
+    if (skillOwnsBody(g)) { this._clearDirectionalState(); return; }
     // Keyboard, touch and left gamepad stick share camera-relative movement.
     // groundBasis() is THREE space: FILE = (x, -z).
     const fwd = Math.max(-1, Math.min(1, (inp.down('KeyW') ? 1 : 0) - (inp.down('KeyS') ? 1 : 0) + (inp.mobile?.moveY || 0) + (inp.gamepad?.moveY || 0)));
     const side = Math.max(-1, Math.min(1, (inp.down('KeyD') ? 1 : 0) - (inp.down('KeyA') ? 1 : 0) + (inp.mobile?.moveX || 0) + (inp.gamepad?.moveX || 0)));
-    if ((fwd || side) && !g.skills?.busy) {
+    if ((fwd || side) && !skillOwnsBody(g)) {
       const b = g.cam?.groundBasis?.();
       let dx, dz;
       if (b) {
@@ -564,13 +579,25 @@ export class PlayerController {
         this.combo = null;
         this._holdMove = false;
         this._wasd = true;
+        this._wasdDx = dx; this._wasdDz = dz; this._wasdReleaseAt = 0;
         this._stepDirect(dx, dz, this._speed() * dt);
         playLoop(p, 'run', this._runOpts(), this.now, true);
       }
     } else if (this._wasd) {
-      this._wasd = false;
-      this._directBlocked = false;
-      if (this.game.network?.active) this.game.network.stop();
+      // MOVE-NO-RUBBERBAND: ignore sub-frame WASD gaps (A/S or W/S spam) — keep last heading briefly, then stop.
+      const now = performance.now();
+      if (!this._wasdReleaseAt) this._wasdReleaseAt = now;
+      const debounce = Number(MOVEMENT_SYNC?.WASD_RELEASE_DEBOUNCE_MS) || 66;
+      if (now - this._wasdReleaseAt < debounce && this._wasdDx != null) {
+        this._stepDirect(this._wasdDx, this._wasdDz, this._speed() * dt);
+        playLoop(p, 'run', this._runOpts(), this.now, true);
+      } else {
+        this._wasd = false;
+        this._wasdReleaseAt = 0;
+        this._wasdDx = this._wasdDz = null;
+        this._directBlocked = false;
+        if (this.game.network?.active) this.game.network.stop();
+      }
     }
   }
 
@@ -660,7 +687,7 @@ export class PlayerController {
 
   _updateMoveClick(dt) {
     const g=this.game,p=this.player;
-    const held=this._holdMove&&!!g.input?.held?.left&&!g.skills?.busy&&!this._inputBlocked();
+    const held=this._holdMove&&!!g.input?.held?.left&&!skillOwnsBody(g)&&!this._inputBlocked();
     if(!p||p.dead||p.disposed||(g.network?.active&&!g.network.ready)||(!held&&this.order?.type!=='move')){
       this._moveClick?.dispose();this._moveClick=null;return;
     }
@@ -669,7 +696,9 @@ export class PlayerController {
       if(gp&&this._walkable(gp.x,gp.z))this._showMoveClick(gp.x,gp.z);
       else {this._moveClick?.dispose();this._moveClick=null;return;}
     }
-    this._moveClick?.update(dt);
+    // Lane 60 (Global Target::State::Ground, movemarker.js): a held button re-sets the ground target every frame, which
+    // restarts the field_target scene at its first frame (static circle); only after release does the scene play on.
+    this._moveClick?.update(held?0:dt);
     if(this._moveClick?.disposed)this._moveClick=null;
   }
 

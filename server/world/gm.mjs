@@ -27,6 +27,7 @@ import {setMonsterFactor,setMonsterDropItem} from './monster-tuning.mjs';
 import {gmPartyWarControl} from './events.mjs';
 import {gmZutoControl} from './urban-warfare-controller.mjs';
 import {oxQuizCommand,oxQuizData} from './ox-quiz.mjs';
+import {globalEventGM} from './gm-global-events.mjs';
 import {AuthoritativeInventory} from './inventory.mjs';
 import {socialState,socialRef} from './social-state.mjs';
 import {GM_PRIZE} from '../../src/config/engine-chosen-gm-prize.js';
@@ -92,6 +93,9 @@ export function createWorldGM({ gamedataRoot = defaultRoots().gamedataRoot, regi
     try { a = await coerceArgs(cmd, match.rest, match.restText, commandData); }
     catch (error) { throw new WorldError(400, `${error.detail || error.message}. ${cmd.syntax}`); }
     const id = cmd.id;
+    // Lane 47: Global GM event commands (dkrpvp_*, set_dksquareInfo, guildwarhunting_*) - server/world/gm-global-events.mjs
+    if(['dkrpvp_create','dkrpvp_delete','dkrpvp_applystart','dkrpvp_applymember','dkrpvp_selectteam','dkrpvp_createleague','dkrpvp_open','dkrpvp_finish','dkrpvp_setstatus','dkrpvp_createtournament','set_dksquareinfo','guildwarhunting_open','guildwarhunting_ready','guildwarhunting_start','guildwarhunting_finish'].includes(id)){let globalEvent;try{globalEvent=await globalEventGM(world,`/gm ${id} ${a.args||''}`);}catch(error){throw new WorldError(error.status||400,error.message);}
+      if(!globalEvent)throw new WorldError(400,cmd.syntax);world.emit(p.map,{type:'gm:command',actorId:p.id,command:id});return {...globalEvent,state:world.snapshot(p)};}
     if(['exprate','droprate','dilrate'].includes(id)){
       if(a._extra?.length)throw new WorldError(400,cmd.syntax);
       if(!world.rateSettings)throw new WorldError(503,'Live rate settings are unavailable on this host.');
@@ -152,8 +156,9 @@ export function createWorldGM({ gamedataRoot = defaultRoots().gamedataRoot, regi
         const need = world.data.expNeeded(p.profile.level);
         if (!(need > 0) || !Number.isFinite(need) || p.profile.exp < need) break;
         p.profile.exp -= need; p.profile.level++;
-        p.profile.statPoints = (p.profile.statPoints || 0) + 5;
-        p.profile.skillPoints = (p.profile.skillPoints || 0) + 1;
+        const _pts = Number(world.data.classesFile?.statPointsPerLevel) || Number(world.data.formula?.byStatPointPerLevel) || 0;
+        p.profile.statPoints = (p.profile.statPoints || 0) + _pts;
+        p.profile.skillPoints = (p.profile.skillPoints || 0) + 1; // see progression.SKILL_POINTS_PER_LEVEL
         world.emit(p.map, { type: 'levelup', actorId: p.id, level: p.profile.level });
       }
       refresh(true);
@@ -177,7 +182,7 @@ export function createWorldGM({ gamedataRoot = defaultRoots().gamedataRoot, regi
           grantExp(Math.max(0, amount));
         } else {
           p.profile.level = target; p.profile.exp = 0;
-          p.profile.statPoints = Math.max(0, (p.profile.statPoints || 0) - (before-target)*5);
+          const _pts = Number(world.data.classesFile?.statPointsPerLevel) || Number(world.data.formula?.byStatPointPerLevel) || 0; p.profile.statPoints = Math.max(0, (p.profile.statPoints || 0) - (before-target)*_pts);
           p.profile.skillPoints = Math.max(0, (p.profile.skillPoints || 0) - (before-target)); refresh(true);
         }
         message = `Level ${before} → ${p.profile.level}.`; break;

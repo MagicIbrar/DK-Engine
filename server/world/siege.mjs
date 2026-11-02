@@ -13,6 +13,7 @@
 import {randomUUID} from 'node:crypto';
 import {requireGuildSiegeMember} from './guild-siege-roster.mjs';
 import {registerPvpMode} from './pvp.mjs';
+import {grantModeSafeTime} from './wanted.mjs';
 import {sameScene} from './scene.mjs';
 import {socialError as fail,socialRef,socialState,initializeSocial} from './social-state.mjs';
 import {nearbyNpc,npcPlacements,offersOriginalJob} from './npc-services.mjs';
@@ -203,7 +204,7 @@ function placeAt(world,q,index){
 function respawn(world,b,q){
   const rules=world.data.pvpRules||{reviveHpRatio:100,reviveMpRatio:100},side=sideOf(world,guildOfRef(world.socialState,socialRef(q))?.id);
   q.dead=false;q.hp=Math.max(1,Math.round(q.maxHp*(rules.reviveHpRatio??100)/100));q.mp=Math.round((q.stats?.maxMp||0)*(rules.reviveMpRatio??100)/100);delete q.pvpLastHit;
-  placeAt(world,q,side==='defender'?1:2);world.emit(q.map,{type:'revive',actorId:q.id});void world.persist(q).catch(()=>{});
+  placeAt(world,q,side==='defender'?1:2);grantModeSafeTime(world,q,'siege');world.emit(q.map,{type:'revive',actorId:q.id});void world.persist(q).catch(()=>{});
 }
 async function endBattle(world,b){
   const now=world.now(),d=siegeData(world);b.phase='end';b.empathy=null;removeObjects(world,b);

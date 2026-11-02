@@ -19,11 +19,20 @@ export function normalizeCharacterNameColor(value = 'white') {
   if (typeof value !== 'string' || !Object.hasOwn(CHARACTER_NAME_COLORS, value)) invalid('Choose an available character name color.');
   return value;
 }
-export function normalizeStaffCharacterName(value) {
+/** Staff name tags: ADMIN, GM, DEV stay distinct (one privilege set, three brackets). */
+export const STAFF_NAME_TAG = 'ADMIN';
+export const STAFF_NAME_TAG_ALIASES = Object.freeze(['ADMIN', 'GM', 'DEV']);
+export function stripStaffNameTag(value) {
+  return String(value ?? '').replace(/^ *(?:\[(?:ADMIN|GM|DEV)\]\s*)+/iu, '');
+}
+export function normalizeStaffCharacterName(value, preferredTag = STAFF_NAME_TAG) {
   if (typeof value !== 'string') invalid('Choose a valid staff character name.');
-  const match = /^\[(GM|DEV)\]\s*(.+)$/u.exec(value.trim());
-  if (!match) return normalizeCharacterName(value);
-  const name = `[${match[1]}] ${normalizeCharacterName(match[2])}`;
+  const match = /^\[(ADMIN|GM|DEV)\]\s*(.+)$/iu.exec(value.trim());
+  const tagRaw = match ? match[1] : preferredTag;
+  const tag = String(tagRaw || STAFF_NAME_TAG).toUpperCase();
+  if (!STAFF_NAME_TAG_ALIASES.includes(tag)) invalid('Choose ADMIN, GM, or DEV as the staff name tag.');
+  const base = stripStaffNameTag(value.trim());
+  const name = `[${tag}] ${normalizeCharacterName(base)}`;
   if ([...name].length > CHARACTER_NAME_MAX) invalid('The staff tag and character name must fit within 30 characters.');
   return name;
 }

@@ -1,6 +1,8 @@
-// Retired engine-authored wings: saved-item compatibility shared by client/server.
-// Original extracted tables stay unchanged. These IDs are separate from GM drafts.
-import { WING_DESIGNS, WING_ITEM_BASE, wingAssetKey } from './wings-catalog.js';
+﻿// Retired engine-authored wings REMOVED from live catalog (2026-10-27 ANIM-FX-GLOBAL-REA).
+// Procedural WING_DESIGNS / engine/wings/*.wing were fabricated — NOT Global data.
+// Live wings = native Global mounts.json + mesh/item/armor/wing/* only (native-wing-shop.js).
+// Saved engine-wings item IDs (88010001+) no longer resolve to fake geometry; shop offers stay retired.
+import { WING_DESIGNS, WING_ITEM_BASE } from './wings-catalog.js';
 
 export const WING_SHOP_MAIN = 4;
 export const WING_PRICE = 500;
@@ -15,31 +17,19 @@ export const WING_NATIVE_BASELINE = Object.freeze({
   equippedEffects: Object.freeze([]),
 });
 
+/** No-op: fabricated engine wing definitions are not installed. Global native wings only. */
 export function installWingItems(db) {
   if (!db?.items) return;
-  db.visual ||= {}; db.visual.shapes ||= {};
-  db.looks ||= {}; db.looks.looks ||= {}; db.looks.assets ||= [];
-  db.descriptions ||= {};
+  // Strip any previously injected engine-wings rows if a hot reload left them.
   for (const design of WING_DESIGNS) {
     const index = WING_ITEM_BASE + design.id;
-    if (db.items[index] && db.items[index].src !== SOURCE) throw new Error('The installed item catalog conflicts with the engine wing collection.');
-    const asset = { mesh: wingAssetKey(design.id) };
-    let assetId = db.looks.assets.findIndex(row => row?.mesh === asset.mesh);
-    if (assetId < 0) { assetId = db.looks.assets.length; db.looks.assets.push(asset); }
-    db.items[index] = {
-      name: design.name, src: SOURCE, type: 6, code: 1, slot: 'wing', rank: 0,
-      classMask: 32767, reqLv: 1, maxLv: 0, reqStr: 0, reqDex: 0, reqSpr: 0, reqGrade: 0,
-      w: 2, h: 1, stack: 0, maxStack: 1, autoStack: 0, quality: 24,
-      cash: WING_PRICE, price: 0, sell: 0, npcSell: 0, period: 0, trade: 1,
-      purchaseLimit: 0, purchaseLimitLv: 0, action: 0, prev: 0, next: 0,
-      shape: index, desc: index, options: WING_NATIVE_BASELINE.options.map(option => [...option]), exOptions: [], optionPools: [],
-      socketRates: [0, 0, 0, 0], melee: [0, 0], magic: [0, 0], ranged: [0, 0], def: [0, 0],
-      pvpDmg: 0, pvpDef: 0, block: 0, range: 0, speed: 0, crit: 0,
-    };
-    db.descriptions[index] = `${design.description || design.name}\nAnimated wings for every class. Favnil's Wings baseline: Max HP +8%, Max MP +8%, Movement Speed +8%.`;
-    db.visual.shapes[index] = { game: asset, inv: asset, field: asset, invTwoSide: true, invScale: 1 };
-    db.looks.looks[index] = { slot: 'wing', all: assetId, bone: db.equipment?.wingBone || 'weaponW' };
-    db._defs?.delete(index);
+    if (db.items[index]?.src === SOURCE) {
+      delete db.items[index];
+      delete db.descriptions?.[index];
+      delete db.visual?.shapes?.[index];
+      delete db.looks?.looks?.[index];
+      db._defs?.delete?.(index);
+    }
   }
 }
 

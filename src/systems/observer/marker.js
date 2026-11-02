@@ -33,14 +33,17 @@ export function createObserverMarker(game,{loadRows=fetchCSV,onError=error=>cons
     if(!current())return;
     const model=await game.models?.loadSkinned?.({skelKey:shape.skel,parts:[{meshKey:shape.mesh,tpackKey:shape.tpack,transparent:true,depthWrite:false,twoSide:true,maxDiffuse:true}]});
     if(!current())return;if(!model||model.empty||model.missingSkeleton)throw Error('Native observer model is unavailable.');
-    const clip=await game.models.loadClip(shape.anim,model);if(!current())return;
+    let clip;
+    try{clip=await game.models.loadClipWithStatus(shape.anim,model);}
+    catch(error){if(error?.transient)return;throw error;}
+    if(!current())return;
     if(!clip)throw Error('Native observer animation is unavailable.');
     instance=model.instantiate();instance.root.name='observer-local-marker';instance.root.userData.observerMarker={...shape};
     animator=new Animator(instance);animator.play(clip,{loop:true,fade:0});animator.update(0);
     // Shared native model resources remain cached; dispose only this skeleton and
     // mixer. The marker is not an Actor and cannot enter picking/network lists.
     world=scene;worldRoot.add(instance.root);sync();
-   }catch(error){if(current()){release();failed=true;onError(error);}}
+   }catch(error){if(current()){if(error?.transient){release();return;}release();failed=true;onError(error);}}
    finally{if(generation===serial)pending=null;}
   })();pending=task;return task;
  }

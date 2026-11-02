@@ -1,4 +1,4 @@
-// Graphics system: the original client's look without losing
+﻿// Graphics system: the original client's look without losing
 // frame rate. game.gfx = this module's Graphics:
 //
 //   bloom      bloom.js - binary/bloomeffect.fx (pow -> 7-tap blur x/y -> add) at 1/4 size, per-map parameters from the
@@ -15,6 +15,7 @@
 //
 // Console: dekaron.gfx.stats(), dekaron.gfx.governor.force(n), dekaron.gfx.governor.enabled = false.
 import { Bloom, bloomFromEnvironment, BLOOM_LEVELS } from './bloom.js';
+import { effectBloomOverride } from '../../world/global-effect-light.js';
 import { GlowPass } from './glow-pass.js';
 import { ShadowTuner } from './shadows.js';
 import { SecondaryMotion } from './secondary.js';
@@ -39,7 +40,7 @@ export class Graphics {
     this.renderScale = 1;
     this._basePR = null;             // pixel ratio the Options / resize set (before our render scale)
     this._appliedPR = null;
-    this._bloomEnv = { enabled: true, pow: 2.06, weight: 4.41, strength: 0.4 };
+    this._bloomEnv = { enabled: true, pow: 2.35, weight: 4.41, strength: 1.045 };
     this._stats = { sceneMs: 0, bloomMs: 0, calls: 0, triangles: 0, frames: 0 };
     this._pacing = { framesOver20Ms: 0, maxFrameMs: 0, longTasks: 0, maxLongTaskMs: 0 };
     game.settings && game.settings.adaptiveQuality === false && (this.governor.enabled = false);
@@ -120,7 +121,7 @@ export class Graphics {
   _applySpecular() { SPEC.gain.value = this._opt('specular', true) ? 1 : 0; }
 
   _bloomActive() {
-    return !this._bloomBroken && !!this._opt('bloom', false) && this._bloomEnv.enabled && this.bloom.params.intensity > 0.001;
+    return !this._bloomBroken && !!this._opt('bloom', true) && this._bloomEnv.enabled && this.bloom.params.intensity > 0.001;
   }
 
   // ------------------------------------------------------------------ map
@@ -152,7 +153,7 @@ export class Graphics {
     // the limit in force right now, background caps included (the same rule as the limiter in hud-options/apply.js): an unfocused
     // window capped at 15 / 30 fps must not read as lag and cost the player quality when they come back. Unlimited = aim for 60.
     const bg = document.hidden || (typeof document.hasFocus === 'function' && !document.hasFocus());
-    const lim = effectiveFrameLimit(this._opt('frameLimit', 0), this._opt('bgFrame', 1), bg) || 0;
+    const lim = effectiveFrameLimit(this._opt('frameLimit', 3), this._opt('bgFrame', 2), bg) || 0;
     const target = lim > 0 ? Math.min(60, lim) : 60;
     const active = !document.hidden && !g.paused && !g._loadingMap;
     const now = performance.now();
@@ -166,7 +167,9 @@ export class Graphics {
     else if (this._appliedPR != null && Math.abs(g.renderer.getPixelRatio() - this._appliedPR) > 1e-3) this._applyLevel();   // resized / Options resolution
     // bloom parameters: the environment's current sample
     const env = g.world?.environment?.current;
-    if (env) this._bloomEnv = bloomFromEnvironment(env);
+    // LANE-54 pass 5: an active effect light's bloom block (bloom_enable) overrides the map bloom with its fade weight
+    // (FUN_7ff6712436b0 -> CEnvironment+0x84..0x8c -> HighRenderer FUN_7ff6716bc8d0 g_fPowValue / g_fWeightValue).
+    if (env) this._bloomEnv = effectBloomOverride(bloomFromEnvironment(env), env.effectBloom);
     const lvl = Math.max(0, Math.min(2, Math.round(Number(this._opt('bloomLevel', 1)))));
     const b = this.bloom.params;
     b.pow = this._bloomEnv.pow; b.weight = this._bloomEnv.weight;

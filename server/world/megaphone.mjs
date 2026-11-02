@@ -4,6 +4,7 @@
 // stops), one FIFO per server scope (the field server, or one DK server), released one at a time every MEGAPHONE_SLOT_MS.
 // Recipients are derived here from the scope at release time; a client never names them.
 import {AuthoritativeInventory} from './inventory.mjs';
+import {isBlacklisted} from './blacklist.mjs';
 import {commitLife,serializeLife} from './life-transactions.mjs';
 import {megaphoneCode,megaphoneMapBlocker,checkMegaphone,sameLeft,recordSame,serverScope,MEGAPHONE_SLOT_MS,MEGAPHONE_COLORS,SUPERCHAT_TEXT} from '../../src/systems/hud-options/superchat-rules.js';
 
@@ -58,7 +59,9 @@ export function tickMegaphone(world){
     if(!queue.list.length||now<queue.busyUntil)continue;
     const b=queue.list.shift();
     queue.busyUntil=now+MEGAPHONE_SLOT_MS;
-    const recipients=[...world.players.values()].filter(q=>!q.leaving&&serverScope(q.channel)===scope).map(q=>q.id);
+    // Blacklist: viewers who listed the broadcaster do not receive megaphone (same chat-visibility rule as social.mjs).
+    const speakerName=b.name;
+    const recipients=[...world.players.values()].filter(q=>!q.leaving&&serverScope(q.channel)===scope&&!isBlacklisted(q,speakerName)).map(q=>q.id);
     if(!recipients.length)continue;
     world.emit(b.map,{type:'megaphone',actorId:b.actorId,name:b.name,text:b.text,color:MEGAPHONE_COLORS[b.color],code:b.code,scope,duration:MEGAPHONE_SLOT_MS,recipients});
   }

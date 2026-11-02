@@ -10,7 +10,10 @@ import { EventRun } from './run.js';
 import { grantExp } from '../../game/progression.js';
 import { addPoints } from './inventory.js';
 import { hudLog } from './text.js';
-import { PARTY_WAR_ENGINE_CHOSEN as PW } from '../../config/engine-chosen-dungeon.js';
+// Lane 59: Dead Front start / close / timeout steps follow the older server reference script (deadfront.js)
+// Lane 68: Ice Castle uses the same frame (src/config/ice-castle-script-ref.js, icecastle.js _closeStep / _timeout);
+// the former engine-chosen party-war gaps were removed (ice-castle-script-ref.js ICE_CASTLE_REMOVED).
+import { DEAD_FRONT_SCRIPT_TIMINGS as DFT } from '../../config/dead-front-script-ref.js';
 
 const PHASE_FMT = { waitStart: 3, fortress: 4, waitPvp: 5, pvp: 6, waitExtension: 7, extension: 8, waitClose: 9 };
 
@@ -38,8 +41,8 @@ export class PartyWarRun extends EventRun {
 
   async start() {
     await super.start();
-    this.setPhase('waitStart', this.inMap.waitStart?.sec ?? 180);
-    this.say(1001);
+    this.setPhase('waitStart', this.waitStartSec?.() ?? this.inMap.waitStart?.sec ?? 180);
+    // 1001 plays 120 s into the wait (older server reference; deadfront.js / icecastle.js tick)
     this.ui.partyInfo(this.score, 1);
     await this.onWaitStart?.();
     this._offerSkip();
@@ -59,7 +62,7 @@ export class PartyWarRun extends EventRun {
 
   onPhaseEnd(id) {
     if (id === 'waitStart') {
-      this.setPhase('fortress', this.inMap.fortress?.sec ?? 1800);
+      this.setPhase('fortress', this.fortressSec?.() ?? this.inMap.fortress?.sec ?? 1800);
       this.say(1003);
       this.pw(300, 100);
       this.onFortress?.();
@@ -73,8 +76,7 @@ export class PartyWarRun extends EventRun {
   tick(dt) {
     // the countdown effect 1002 (5..1) plays in the last 5 s of the start wait, 1503 before the close
     if (this.phase === 'waitStart' && this.phaseT <= 5 && !this.flags.has('cd1')) { this.flags.add('cd1'); this.say(1002); }
-    if (this.phase === 'waitClose' && this.phaseT <= 5 && !this.flags.has('cd2')) { this.flags.add('cd2'); this.say(1503); }
-    if (this.phase === 'waitClose' && this.phaseT <= PW.closeNoticeSec && !this.flags.has('c3')) { this.flags.add('c3'); this.pw(300, 106); }
+    // the close lines are the script close of each mode (deadfront.js / icecastle.js tick)
     this._uiT = (this._uiT || 0) - dt;
     if (this._uiT <= 0) {
       this._uiT = 0.25;
@@ -86,9 +88,9 @@ export class PartyWarRun extends EventRun {
    * The attach-process channel (supply depots, slates). A cancelled channel prints its original reason line,
    * partywar #300|124 moved / 125 attacked / 126 left the map (both partywar tables), before the caller's failure line.
    */
-  async channel(text, ms) {
+  async channel(text, ms, extra = {}) {
     let why = null;
-    const ok = await this.ui.channel(text, ms, { onFail: (w) => { why = w; } });
+    const ok = await this.ui.channel(text, ms, { ...extra, onFail: (w) => { why = w; } });
     const code = { moved: 124, hit: 125, left: 126 }[why];
     if (!ok && code && !this.ended) this.pw(300, code);
     return ok;
@@ -113,40 +115,25 @@ export class PartyWarRun extends EventRun {
   /** Solo final battle: uncontested win (objective done) or loss; then the close wait. */
   resolveFinal(win) {
     if (this.won != null) return;
-    if (this.mode === 'deadFront' && (!win || !this.objectiveDone())) {
-      this.won = false; this.failed = true;
-      this.setPhase('waitClose', this.inMap.waitClose?.sec ?? 300);
-      this.say(1504);
+    // older server reference (Dead Front script; Ice Castle shares its frame codes, Lane 68): fail / timeout -> 1504 /
+    // 1503 / end at 15 s (_timeout); one party -> the close step 5 s after the objective (_closeStep). No 1401 / 1402
+    // for one party (the script sends none). field.csv Loser / Winner respawns stay (Global data).
+    if (!win || !this.objectiveDone()) {
       const point = this.point(this.field.loserRespawn);
       if (point) void this.teleport(point).catch(error => hudLog(this.game, error?.message || String(error), 'err'));
-      this.rewards();
+      this._timeout();
       return;
     }
-    this.won = !!win;
-    this.say(1401);
-    // the end message order / gaps are ENGINE-CHOSEN (config)
-    this.after(PW.finalLineGapSec[0], () => {
-      this.say(1402);
-      this.after(PW.finalLineGapSec[1], async () => {
-        // win 1403 (Win effect); loss: Dead Front 1404 (Lose_red), Ice Castle has no solo loss line (1404-1406 = 2nd-4th place)
-        if (this.won) this.say(1403);
-        else if (this.mode !== 'iceCastle') this.say(1404);
-        const p = this.point(this.won ? this.field.winnerRespawn : this.field.loserRespawn);
-        if (p) await this.teleport(p);
-        if (this.won) this.pw(300, 105);
-        this.rewards();
-        this.setPhase('waitClose', this.inMap.waitClose?.sec ?? 300);
-        // the close effect: 1501 = Clear (Clear_Dead_front 2036 / icecastle_mission_complete 2169) on a win, 1504 = Fail
-        // (Fail_Dead_front 2035, both tables) on a loss; an Ice Castle tower that fell already played 1504.
-        if (this.won) this.say(1501);
-        else if (!this.failed) this.say(1504);
-        this.after(PW.closeLineSec, () => this.say(1502));
-      });
+    this.won = true;
+    this.after(DFT.closeSec, async () => {
+      const p = this.point(this.field.winnerRespawn);
+      if (p) await this.teleport(p);
+      this._closeStep();
     });
   }
 
   rewards() {
-    const fortressFailed = this.mode === 'deadFront' && this.failed && !this.won;
+    const fortressFailed = this.failed && !this.won;   // Dead Front fortress / Ice Castle tower failure (script frame)
     if (fortressFailed && this._failedRewardsGranted) return;
     if (fortressFailed) this._failedRewardsGranted = true;
     const res = this.res;

@@ -41,12 +41,12 @@ export class EventRun {
   /** Say a map-table code (stringtable of this map). */
   say(code, opts = {}) {
     const e = this.data.mapStr(this.map, code);
-    if (e) this.msg.say(e, opts);
+    if (e) this.msg.say(e, { ...opts, source: { file: 'map', cate: this.map, code } });
     return e;
   }
   sayIn(file, cate, code, opts = {}) {
     const e = this.data.str(file, cate, code);
-    if (e) this.msg.say(e, opts);
+    if (e) this.msg.say(e, { ...opts, source: { file, cate, code } });
     return e;
   }
   text(code, dflt = '') { return this.data.mapTxt(this.map, code, dflt); }

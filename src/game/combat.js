@@ -19,7 +19,9 @@
 // player fighting a level-30 Spider loses about half their HP per kill without armour, which matches the
 // potion-heavy pace of the original.
 import { grantExp, applyDeathPenalty, sumStatus, formulaOf, COMBAT_TIMEOUT } from './progression.js';
+import { personalExpBonus } from '../systems/charwin/exp-bonus.js';
 import { normalizeOptionName } from '../systems/items/option-identities.js';
+import { globalPhysicalReduction, globalMagicReduction } from './global-battle-stats.js';
 
 // ------------------------------------------------------------------ random numbers (swappable for tests)
 export const RNG = { random: Math.random };
@@ -130,6 +132,21 @@ export function combatOptionValue(actor, code, sources = {}) {
   for (const name of Object.keys(itemOptions)) if (normalizedOptionName(name) === code) value += Number(itemOptions[name]) || 0;
   return value;
 }
+/** Global share/pc/statmaxvalue.csv caps the equipment (item) part and the skill/status part of an option separately
+ * (columns EquipMaxValue / SkillMaxValue). Returns the capped sum; parts are read exactly as combatOptionValue does. */
+export function combatOptionCapped(actor, code, equipMax, skillMax, sources = {}) {
+  code = normalizedOptionName(code);
+  const engine = actor?._skills?.engine || actor?.game?.skills;
+  const list = sources.statuses ?? actor?.statuses ?? actor?.profile?.buffs ?? [];
+  const passives = sources.passiveEntries ?? (engine?.game?.player === actor || actor?._skills ? engine?.passiveEntries?.() : []) ?? [];
+  const skill = sumOptionEntries(passives, code, sumOptionEntries(list, code, 0));
+  let item = 0;
+  const itemOptions = actor?.stats?.itemOptions || {};
+  for (const name of Object.keys(itemOptions)) if (normalizedOptionName(name) === code) item += Number(itemOptions[name]) || 0;
+  return Math.max(0, Math.min(equipMax, item)) + Math.max(0, Math.min(skillMax, skill));
+}
+/** Global statmaxvalue.csv rows used by the incoming-damage options (Index: [EquipMaxValue, SkillMaxValue]). */
+export const GLOBAL_STAT_MAX = Object.freeze({ DAMAGERATE_DAMAGEHP_MUL: [75, 90] /* row 63 */, RESIST_DISTANCE_MELEEDAMAGE: [75, 75] /* row 176 */, RESIST_DISTANCE_RANGEDAMAGE: [75, 75] /* row 177 */, ELEMENT_RESIST: 85 /* rows 239-245 */ });
 export function combatClassRaw(actor) {
   return actor?.stats?.raw ?? actor?.classDef?.stats?.raw ?? actor?.game?.classDef?.stats?.raw ?? {};
 }
@@ -160,21 +177,39 @@ export function criticalChance(attacker, defender, base = attacker?.stats?.critR
   // client ships the role/cap/factor, not the Global server's point equation.
   const factory = Number(raw.DESTRUCTION_FACTORY) || 5;
   const destruction = Math.max(0, Math.min(Number(raw.DESTRUCTIONRATE_MAX) || 50, combatOptionValue(attacker, 'STATUS_EX_CRITICAL_RESIST_DOWN') / factory));
-  const resistance = Math.max(0, combatOptionValue(defender, 'RATING_CRITICAL_SUB') - destruction);
+  // Global 0x7c0950: a character's critical resistance (+0x130) = min(75, min(100, RATING_CRITICAL_SUB)); the roll 0x587230 is
+  // clamp(attacker crit% - that, 0, 100). Monsters keep the plain option total (their stat calc is not decoded).
+  const sub = defender?.stats?.globalBattle ? Number(defender.stats.critResist) || 0 : combatOptionValue(defender, 'RATING_CRITICAL_SUB');
+  const resistance = Math.max(0, sub - destruction);
   return Math.max(0, Math.min(100, (Number(base) || 0) - resistance));
 }
 export function criticalDamageMultiplier(attacker, defender, base = attacker?.stats?.critMultiplier ?? 1.5) {
   // Native Vitality charwin271:47 affects critical power, not healing. The
   // point/factory equation is reconstructed; the role and +400% cap are native.
+  // Global 0x7c0950: a character's critical damage % = min(300, vitality/CRITICAL_DAMAGE_FACTORY*100 + clamp(150 + DAMAGERATE_CRITICAL_ADD,
+  // 0, 250)); stats.critMultiplier already is that /100 (progression.applyGlobalBattleStats), so vitality is not added twice.
   const factory = Number(combatClassRaw(attacker).CRITICAL_DAMAGE_FACTORY) || 1500;
-  const vitality = Math.max(0, Math.min(4, combatOptionValue(attacker, 'BALANCE_VITALITY_ADD') / factory));
+  const vitality = attacker?.stats?.globalBattle ? 0 : Math.max(0, Math.min(4, combatOptionValue(attacker, 'BALANCE_VITALITY_ADD') / factory));
   return (Math.max(1, Number(base) || 1) + vitality) * (1 - Math.min(90, combatOptionValue(defender, 'DAMAGERATE_EX_CRITICAL_SUB')) / 100);
 }
 /** Native Vitality increases damage absorption on a successful guard (max80%).
  * ENGINE-CHOSEN points/factory curve, kept distinct from the guard chance. */
 export function guardEfficiency(defender, base = defender?.stats?.guardEfficiency ?? 0) {
+  // Global 0x7c0950: min(80, vitality/GUARD_EFFICIENCY_FACTORY*100 + pcclass GUARD_EFFICIENCY), already in stats.guardEfficiency.
+  if (defender?.stats?.globalBattle && defender.kind !== 'monster') return Math.max(0, Math.min(80, Number(defender.stats.guardEfficiency) || 0));
   const factory = Number(combatClassRaw(defender).GUARD_EFFICIENCY_FACTORY) || 1250;
   return Math.max(0, Math.min(80, (Number(base) || 0) + Math.max(0, combatOptionValue(defender, 'BALANCE_VITALITY_ADD')) / factory * 100));
+}
+/** MATH-VERIFY 4.3.2 (Global 0x596890 -> 0x586ff0 / 0x5870a0 against a defending CHARACTER): block% (0x7c0950) + the ability-cap
+ *  Blocking column, a block ends the hit (0 damage); otherwise guard% + the Guard column, a guard keeps (100 - guard efficiency)%
+ *  of the damage. Only for characters with the Global stat calc (stats.globalBattle); `cap` = abilityCapFor(...) or null. */
+export function characterAvoidance(defender, cap, damage, rng = Math.random) {
+  if (!defender?.stats?.globalBattle) return { block: false, guard: false, damage };
+  const bp = Math.min(100, (Number(defender.stats.blockRate) || 0) + (Number(cap?.blocking) || 0));
+  const gp = Math.min(100, (Number(defender.stats.guardRate) || 0) + (Number(cap?.guard) || 0));
+  if (bp > 0 && rng() * 100 < bp) return { block: true, guard: false, damage: 0 };
+  if (gp > 0 && rng() * 100 < gp) return { block: false, guard: true, damage: Math.max(1, Math.round(damage * (1 - guardEfficiency(defender) / 100))) };
+  return { block: false, guard: false, damage };
 }
 /** ENGINE-CHOSEN point curve using native charwin31/46 + pcclass. Mastery
  * reduces the target's block/guard chances; it does not raise damage/cast speed. */
@@ -205,21 +240,60 @@ function avoidanceBase(defender, value) {
 }
 const HIT_ELEMENTS = [['fire','FIRE',1], ['ice','ICE',2], ['lightning','LIGHTNING',3], ['poison','POISON',4], ['curse','CURSE',5], ['dark','DARK',6]];
 export function elementResistance(defender, element, index) {
-  if (defender?.kind !== 'monster' && !defender?.def) return Math.max(-100, Math.min(75, (Number(defender?.stats?.resist?.[element]) || 0) / 10));
+  // Players: Global statmaxvalue.csv rows 239-245 (Fire/Ice/Lightning/Poison/Curse/Dark resistance) cap at 85, the same
+  // 85 as the binary reduction cap 0xc26ba0 (global-battle-stats.js). Was an unlabelled 75 (scan-fix 2026-10-29).
+  if (defender?.kind !== 'monster' && !defender?.def) return Math.max(-100, Math.min(GLOBAL_STAT_MAX.ELEMENT_RESIST, (Number(defender?.stats?.resist?.[element]) || 0) / 10));
   const raw = (Number(monsterDef(defender)?.resist?.[index]) || 0) + combatOptionValue(defender, `RESIST_${element.toUpperCase()}_ADD`);
+  // ENGINE-DEFAULT (configurable): monster element-resist clamp 90. Global statmaxvalue.csv caps only player options and the
+  // monster resist equation is server-side; no Global/decompile value exists for a monster clamp.
   return Math.max(-100, Math.min(90, raw / (raw > 100 ? 10 : 1)));
 }
 /** Final offensive stage shared by ordinary hits and skill hits. The curve and
  * caps remain this engine's reconstruction; native tables establish the option
  * identity/unit, not the undisclosed Global server's combat ordering. No RNG,
  * HP mutation, rewards or scripted/GM damage are performed here. */
-export function modifyHitDamage(attacker, defender, amount, { includeElement = true, round = true } = {}) {
+// MATH-VERIFY row 7 (Global DekaronServer Melee calculator 0x599860..0x599d55, stat calc 0x7c0950, PROVEN):
+// for each element k = Fire, Ice, Lightning, Poison, Curse (no Dark in Global's five slots)
+//   E_k = A * pct_k * 0.01 + flat_k,  term_k = max(0, E_k * (100 - R_k) * 0.01),  total = physical + sum(term_k)
+// A   = the integer weapon roll (Computer vt+0x4 / crit vt+0x14), BEFORE the defense reduction (0x599a48..0x599ad9)
+// pct = struct +0xdd+k  <- item option DAMAGERATE_<EL>_ADD (0x38..0x3c), clamped 0..250 (0x7c1c6f.. / setter vt+0x14c)
+// flat= struct +0xec+4k <- item option DAMAGEADD_<EL>_ADD  (0x58..0x5c), clamped 0..0xffff (setter 0x7e6320, vt+0x15c)
+// R_k = Computer vt+0xd4..0xec: the defender's element reduction (struct +0x1d0.., written by 0x7c2c1f.. from the
+//       ported global-battle-stats elementReduction, cap 85) plus the ability-cap Element Decrease column.
+export const GLOBAL_HIT_ELEMENTS = HIT_ELEMENTS.slice(0, 5);
+const F32 = Math.fround, PCT = Math.fround(0.01);
+const clampInt = (v, lo, hi) => Math.max(lo, Math.min(hi, Math.trunc(Number(v) || 0)));
+/** Defender reduction R_k. Characters with the Global stat port use their struct value; monsters keep this engine's
+ * elementResistance (UNPROVEN: the monster provider's +0x1d0.. writer is not traced). */
+export function globalElementReduction(defender, element, index) {
+  const own = defender?.stats?.globalBattle && defender.kind !== 'monster' ? Number(defender.stats.elementReduction?.[element]) || 0
+    : elementResistance(defender, element, index);
+  return F32(own);
+}
+/** Sum of the Global Melee-calculator element terms for weapon roll A. */
+export function globalElementDamage(attacker, defender, base, { capElement = 0 } = {}) {
+  const A = Number(base) || 0;
+  let total = 0;
+  for (const [element, code, index] of GLOBAL_HIT_ELEMENTS) {
+    const pct = clampInt(combatOptionValue(attacker, `DAMAGERATE_${code}_ADD`), 0, 250);
+    const flat = clampInt(combatOptionValue(attacker, `DAMAGEADD_${code}_ADD`), 0, 0xffff);
+    if (!pct && !flat) continue;
+    const e = F32(pct * PCT * A + flat);
+    const r = F32(globalElementReduction(defender, element, index) + (Number(capElement) || 0));
+    total += Math.max(0, F32((100 - r) * PCT * e));
+  }
+  return total;
+}
+export function modifyHitDamage(attacker, defender, amount, { includeElement = true, round = true, elementBase, capElement = 0 } = {}) {
   let damage = Math.max(0, Number(amount) || 0);
   if (!damage) return 0;
   // A monster under a native invincible/barrier row (e.g. Triforce 7324,
   // STATUS_EX2_ALL_TOLERANCE flag) takes no hit damage.
   if (monsterDef(defender) && defender?.kind === 'monster' && statusValue(defender, 'STATUS_EX2_ALL_TOLERANCE') > 0) return 0;
-  if (includeElement) for (const [element, code, index] of HIT_ELEMENTS) {
+  // Plain melee/ranged hits (callers pass elementBase = the weapon roll A) use the proven Global stage above.
+  // Skill hits still use the engine's former stage until row 7c decodes the per-element skill calculators.
+  if (includeElement && Number.isFinite(elementBase)) damage += globalElementDamage(attacker, defender, elementBase, { capElement });
+  else if (includeElement) for (const [element, code, index] of HIT_ELEMENTS) {
     const flat = combatOptionValue(attacker, `DAMAGEADD_${code}_ADD`);
     if (flat) damage += flat * Math.max(0, 1 + combatOptionPercent(attacker, `DAMAGERATE_${code}_ADD`) / 100) * (1 - elementResistance(defender, element, index) / 100);
   }
@@ -260,6 +334,7 @@ function attackProfile(attacker, opts, F) {
     }
     return {
       kind, min: lo[kind] ?? st.attackMin ?? 1, max: hi[kind] ?? st.attackMax ?? 1, absMin: 0, absMax: 0,
+      // ENGINE-DEFAULT (configurable): critRate 5 / critMult 1.5 only when the stats carry none (players use the globalBattle path).
       rating: st.hitRate ?? levelOf(attacker) * 14, critRate: st.critRate ?? 5, critMult: st.critMultiplier ?? 1.5,
     };
   }
@@ -273,6 +348,7 @@ function attackProfile(attacker, opts, F) {
   const min = a ? a[0] : lv * 3, max = a ? a[1] : lv * 3.3;
   return {
     kind, attackKey: key, min: min * mul, max: max * mul, absMin: a ? a[2] || 0 : 0, absMax: a ? a[3] || 0 : 0,
+    // ENGINE-DEFAULT (configurable): monster crit 3% x1.5 - monster crit is server-side; no Global table carries it.
     rating: lv * 14, critRate: 3, critMult: 1.5,
   };
 }
@@ -302,6 +378,9 @@ function defenceProfile(defender, F) {
 
 /** Chance (0..100) that `attacker` hits `defender`. */
 export function hitChance(attacker, defender, opts = {}, F = formulaOf(attacker?.game?.data || defender?.game?.data)) {
+  // Global 0x586f40: a character's miss chance is its own miss% (0x7c0950, stats.missRate); the level difference reaches
+  // the roll through the map's ability-cap Miss column, applied by the host (ability-cap.js), not here.
+  if (attacker?.stats?.globalBattle && attacker.kind !== 'monster' && Number.isFinite(Number(attacker.stats.missRate))) return Math.max(0, Math.min(100, 100 - Number(attacker.stats.missRate)));
   const A = opts._profile || attackProfile(attacker, opts, F);
   const D = opts._defence || defenceProfile(defender, F);
   const ar = Math.max(1, A.rating), dr = Math.max(1, D.dodge);
@@ -335,8 +414,19 @@ export function resolveAttack(attacker, defender, opts = {}) {
   if (!opts.nativeBrick && !opts.noMiss && rand() * 100 >= hitChance(attacker, defender, { ...opts, _profile: A, _defence: D }, F)) return res;
   res.miss = false;
 
+  // MATH-VERIFY (Global DekaronServer attack strategy 0x596890 / 0x597c8d): after the miss roll the server rolls block
+  // (a block ends the hit), then guard, then the critical ONLY when the guard roll failed; a critical takes the MAXIMUM
+  // of the damage range (Computer vt+0x14 / +0x20) instead of the uniform roll (vt+0x4 / +0x10). Siege bricks keep
+  // their authored path. The chances themselves are unchanged.
+  const pvp = attacker.kind === 'player' && defender.kind === 'player';
+  const block = opts.nativeBrick || pvp ? 0 : blockChance(attacker, defender, D.blockRate);
+  const guard = opts.nativeBrick || pvp ? 0 : guardChance(attacker, defender, D.guardRate);
+  if (block > 0 && rand() * 100 < block) { res.block = true; return res; }
+  if (guard > 0 && rand() * 100 < guard) res.guard = true;
+  if (!opts.nativeBrick && !res.guard && rand() * 100 < criticalChance(attacker, defender, A.critRate)) res.crit = true;
+
   const multiplier = opts.multiplier ?? 1;
-  let raw = randRange(A.min, Math.max(A.min, A.max)) * multiplier + (Number(opts.addDamage) || 0);
+  let raw = (res.crit ? Math.max(A.min, A.max) : randRange(A.min, Math.max(A.min, A.max))) * multiplier + (Number(opts.addDamage) || 0);
   // debuffs on the attacker (e.g. Segnale "Decrease attack": DAMAGE_PHYSICAL_SUB 6 = -6 %)
   if (attacker.kind === 'monster') {
     const sub = A.kind === 'magic' ? statusValue(attacker, 'DAMAGE_MAGICAL_SUB')
@@ -354,28 +444,29 @@ export function resolveAttack(attacker, defender, opts = {}) {
   const raw_ = defender.stats?.raw || {};
   const limit = (Number(raw_.LIMIT_DAMAGE_DECREASE_RATE) || 75) / 100;
   let red;
-  if (A.kind === 'magic') {
+  if (defender.stats?.globalBattle && defender.kind !== 'monster') {
+    // Global 0x7c0950: a character's reductions use ITS OWN level and pcclass factors, cap 85 (no LIMIT_DAMAGE_DECREASE_RATE).
+    const rf = defender.stats.reductionFactors || combatClassRaw(defender);
+    red = (A.kind === 'magic' ? globalMagicReduction(levelOf(defender), penetratedDefense(attacker, D.magicResist, 'magic'), rf)
+      : globalPhysicalReduction(levelOf(defender), penetratedDefense(attacker, D.def, A.kind), rf)) / 100;
+    red = Math.max(0, red);
+  } else if (A.kind === 'magic') {
     const eff = penetratedDefense(attacker, D.def * 0.5 + D.magicResist, A.kind);
     red = eff / (eff + aLv * 195 + 250);
   } else {
     const defense = penetratedDefense(attacker, D.def, A.kind);
     red = defense / (defense + aLv * 125 + 250);
   }
-  red = Math.max(0, Math.min(limit, red));
+  if (!(defender.stats?.globalBattle && defender.kind !== 'monster')) red = Math.max(0, Math.min(limit, red));
   let dmg = raw * (1 - red);
 
-  if (rand() * 100 < criticalChance(attacker, defender, A.critRate)) { res.crit = true; dmg *= criticalDamageMultiplier(attacker, defender, A.critMult); }
-  // Shared player skills apply the authoritative PvP block/guard stage later;
-  // resolving either here would roll and reduce the same native option twice.
-  const pvp = attacker.kind === 'player' && defender.kind === 'player';
-  const block = pvp ? 0 : blockChance(attacker, defender, D.blockRate), guard = pvp ? 0 : guardChance(attacker, defender, D.guardRate);
-  // ENGINE-CHOSEN ordinary PvE block: a successful block prevents this hit.
-  // Native BlockRate and BLOCKING clips establish the context; PK90 is a
-  // separate PvP formula and is not reused here. No extra roll without block.
-  if (block > 0 && rand() * 100 < block) { res.block = true; return res; }
-  if (guard > 0 && rand() * 100 < guard) { res.guard = true; dmg *= 1 - guardEfficiency(defender, D.guardEff) / 100; }
+  // The critical multiplier itself stays the engine's (UNKNOWN in MATH-VERIFY: the server's crit scaling is not decoded).
+  if (res.crit) dmg *= criticalDamageMultiplier(attacker, defender, A.critMult);
+  // Shared player skills apply the authoritative PvP block/guard stage later (pvp above rolls neither).
+  if (res.guard) dmg *= 1 - guardEfficiency(defender, D.guardEff) / 100;
   dmg += randRange(A.absMin || 0, Math.max(A.absMin || 0, A.absMax || 0));
-  res.amount = opts.deferFinalModifiers ? Math.max(1, Math.round(dmg)) : modifyHitDamage(attacker, defender, dmg);
+  const elementBase = !opts.skill && (A.kind === 'melee' || A.kind === 'range') ? raw : undefined;
+  res.amount = opts.deferFinalModifiers ? Math.max(1, Math.round(dmg)) : modifyHitDamage(attacker, defender, dmg, { elementBase });
   return res;
 }
 
@@ -408,6 +499,7 @@ export function applyDamage(game, attacker, defender, result) {
   game?.events?.emit('damage', {
     source: attacker || null, target: defender, amount, shieldDamage: miss ? 0 : Math.max(0, Math.round(Number(result.shieldDamage) || 0)), crit: !!result.crit, miss,
     guard: !!result.guard, block: !!result.block, kind: result.kind || null, skill: result.skill || null, dot: !!result.dot,
+    ...(result.immune ? { immune: true } : {}),   // STEP10-LANE51: older server reference 0x587150 Immune (ability-cap.js)
     attackKey: result.attackKey || null, status: result.status || null,
   });
 
@@ -415,11 +507,32 @@ export function applyDamage(game, attacker, defender, result) {
     kill(game, defender, attacker);
     return true;
   }
+  // HIT-MOVE-INTERRUPT: a landed hit (damage, block or guard; not a miss / zero-damage result, Global 0x5858b0 case 0)
+  // cuts the player's running skill back to Idle without cooldown (SkillEngine.interruptByHit). DoT ticks excluded.
+  if (defender === game?.player && hitInterrupts(result, amount, { noCancel: !!game.skills?.hitImmune })) game.skills?.interruptByHit?.();
   // reactions: monsters retaliate / flinch through their brain, the player through the controller
   try {
     if (defender.brain?.onDamaged) defender.brain.onDamaged(attacker, amount, result);
     else if (defender === game?.player) game.controller?.onDamaged?.(attacker, amount, result);
   } catch (err) { console.warn('damage reaction failed', err); }
+  return true;
+}
+
+/** HIT-MOVE-INTERRUPT: does this hit result cut a running skill? Global 0x5858b0 switches on result type (+0x20) through
+ *  vtable 0x9fef0c: type 0 (miss / zero damage; builder 0x5ae720 sets 0 when damage == 0) -> 0x594720 and types 3/4 ->
+ *  0x594390 (damage + push) change no skill; types 1 block, 2 guard, 5, 6 kill, 7 defeat, 8 knockdown, 9 run a handler
+ *  that calls the defender's skill Provider vt+0x2c(time, 0) when its action is SKILL (cmp byte [eax+0xf],0xa). */
+export function hitInterrupts(result, amount = result?.amount, defender = null) {
+  if (!result || result.miss || result.dot) return false;
+  // Block (type 1) is chosen by the calc before the result builder and its handler 0x595e80 always runs the skill check.
+  if (result.block) return true;
+  if (!((Number(amount) || 0) > 0)) return false; // builder: damage 0 -> type 0 before the guard test
+  // Builder 0x5ae720/0x5ae910: unreactable defender (0x589760: SKILL action in a NO_CANCEL combo step) -> type 4
+  // (0x594390, no skill check). Guard (type 2) is decided after that test, so it is not an exception.
+  if (defender?.noCancel) return false;
+  // ENGINE-CHOSEN: Global then needs ability byte +5 == 1 or dmg*100/maxHP >= ability +0x94 (0x586d00) for type 5;
+  // the +0x94 writer is not found, so a reactable defender is always interrupted. KnockBackMelee (0x597210 roll) and
+  // KnockDownMelee (0x596890, always 8) result classes are not modelled by the engine's hit results.
   return true;
 }
 
@@ -441,7 +554,13 @@ export function kill(game, actor, killer = null) {
   const player = game?.player;
   if (actor.kind === 'monster' && killer && (killer === player || killer.owner === player)) {
     const def = monsterDef(actor) || {};
-    try { grantExp(game, Number(def.exp) || 0, Number(def.level ?? actor.level) || 1); } catch (err) { console.warn('exp failed', err); }
+    try {
+      // Mirror server bonusOf personal %: worn cash AddExpRate / OPT_316 / RESULT_EXP_MUL + buffs + premium Rate.
+      const base = Number(def.exp) || 0;
+      const bonus = personalExpBonus(game, player.stats || game.player?.stats);
+      const amount = Math.max(0, Math.floor(base * (1 + (Number(bonus) || 0) / 100)));
+      grantExp(game, amount, Number(def.level ?? actor.level) || 1);
+    } catch (err) { console.warn('exp failed', err); }
     try { game.loot?.dropFrom?.(actor); } catch (err) { console.warn('loot failed', err); }
   }
   if (actor === player) {

@@ -11,6 +11,7 @@ import {sameScene} from './scene.mjs';
 import {AuthoritativeInventory} from './inventory.mjs';
 import {Container} from '../../src/systems/items/model.js';
 import {publishProfileChanges,refreshConcurrentBuffStats,persistInterveningProgress} from './profile-publication.mjs';
+import {canPcShopList} from './item-flags.mjs';
 
 export const PCSHOP_SCHEMAS={pcshop:['token','type','operation','uid','count','price','name','sellerId','revision','x','y']};
 export const PCSHOP_MAX_DIL=10_000_000_000;                 // 180:24 / 180:29 "10 Billion"
@@ -131,7 +132,7 @@ async function commit(world,p,profile){
 function registerable(world,item,def){
   if(!item||!def)fail(PCSHOP_TEXT.noItem);
   if(world.data.itemDB.category(def)==='quest'||/^event/.test(String(def.src||''))||def.eventType)fail(PCSHOP_TEXT.questEvent);
-  if(item.bound||Number(def.trade)===0)fail(PCSHOP_TEXT.binding);
+  if(!canPcShopList(def,{...item,expiresAt:undefined},0))fail(PCSHOP_TEXT.binding);
   if(item.expiresAt&&item.expiresAt<=world.now())fail(PCSHOP_TEXT.invalidItem);
   if(item.pet?.active||item.pet?.inv?.length)fail(PCSHOP_TEXT.registerFailed);
 }

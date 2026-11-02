@@ -18,12 +18,14 @@
 import { resolveRef } from './asset-ref-resolve.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { BinReader, parseCSV, toArrayBuffer } from '../src/formats/binreader.js';
 import {describeSentryResult} from './lib/siege-sentry-results.mjs';
 import {DEAD_ISLAND_IGNITER_SET} from '../src/config/engine-chosen-dead-island.js';
 // cross-format fit checks while choosing action tables (builder side only; the parse* exports below stay pure)
 import { parseMesh } from '../src/formats/mesh.js';
+import { referencedMapFolders } from '../src/world/map-folder-bindings.js';
 import { parseSkel, findBone } from '../src/formats/skel.js';
 import { parseAnim } from '../src/formats/anim.js';
 // native effect-body monsters (empty *_none body drawn only by its authored action effects): see src/game/effect-body.js
@@ -1346,8 +1348,34 @@ function buildMonsters({ locName, actions }) {
   const spawnFiles = {};          // file key -> rows
   let spawnRows = 0, spawnSkipped = 0;
   const editorLists = [];
+  // Scan fix A (handoff 2026-10-29): 'Global (older)' fallback. fullscan agent3 FINDINGS "Server-ref notes" lists 14 spawn
+  // tables that current Global ships empty (header-only) or not at all while the older server-ref Global data has rows
+  // (server-ref/share/map; the Arena copies are byte-identical). Current Global
+  // wins whenever its file has any row; only then are the server-ref rows used, tagged source:'server-ref (Global older)'.
+  // Evidence level 3 (server-ref data), read-only file reads; no server-ref program is run.
+  // Set DEKARON_NO_SERVER_REF_SPAWNS=1 to build Global-only; DEKARON_SERVER_REF_SHARE overrides the share folder.
+  const SR_SHARE = process.env.DEKARON_NO_SERVER_REF_SPAWNS ? null
+    : (process.env.DEKARON_SERVER_REF_SHARE || null);
+  const SR_SPAWN_KEYS = new Set([
+    '00_braiken_castle_old/mon_00_braiken_castle.csv', '07_loa_castle/mon_07_loa_castle.csv', '111_egutt/mon_111_egutt.csv',
+    '12_crespo/callmonster_12_crespo.csv', '13_drako/mon_13_draco.csv', '150_ardeca/callmonster_150_ardeca.csv',
+    '158_shrineofelonohm/mon_158_shrineofelonohm.csv', '20_under_python/callmonster_20_under_python.csv',
+    '20_under_python/mon_20_under_python.csv', '21_deneb/mon_03_deneb.csv', '27_seal/mon_27_seal.csv',
+    '548_lost_horizon/mon_548_lost_horizon.csv', '552_guild_agit/mon_552_guild_agit.csv', '63_land of death/callmonster_63_lod.csv',
+  ].map((r) => 'share/map/' + r));
+  const srFallbackUsed = new Set();
+  const srBytes = (key) => {
+    if (!SR_SHARE || !SR_SPAWN_KEYS.has(key)) return null;
+    let dir = path.join(SR_SHARE, 'map');
+    for (const part of key.split('/').slice(2)) {
+      let hit = null; try { hit = fs.readdirSync(dir).find((x) => x.toLowerCase() === part); } catch { return null; }
+      if (!hit) return null; dir = path.join(dir, hit);
+    }
+    try { return fs.statSync(dir).isFile() ? fs.readFileSync(dir) : null; } catch { return null; }
+  };
   const addSpawnFile = (f) => {
-    const p = parseSpawnCsv(readRel(f));
+    let p = existsRel(f) ? parseSpawnCsv(readRel(f)) : { rows: [], skipped: 0 };
+    if (!p.rows.length) { const b = srBytes(f); const q = b && parseSpawnCsv(b); if (q && q.rows.length) { p = q; srFallbackUsed.add(f); } }
     spawnFiles[f] = p.rows; spawnRows += p.rows.length; spawnSkipped += p.skipped;
     for (const r of p.rows) spawnCount.set(r[0], (spawnCount.get(r[0]) || 0) + 1);
   };
@@ -1360,6 +1388,10 @@ function buildMonsters({ locName, actions }) {
     if (/_monster\.csv$/.test(b)) { editorLists.push(f); continue; }
     addSpawnFile(f);
   }
+  for (const k of SR_SPAWN_KEYS) {
+    if (/\/mon_[^/]+\.csv$/.test(k) && !spawnFiles[k]) addSpawnFile(k);
+    if (/callmonster_[^/]+\.csv$/.test(k) && !callFiles.includes(k)) callFiles.push(k);
+  }
   // spawn tables a map list points at under another name (monster_177_python_inside.csv, 223_event_dungeon.csv)
   for (const mb of mapBindings()) for (const k of mb.mon) if (!spawnFiles[k] && has(k)) addSpawnFile(k);
   const spawns = {};
@@ -1371,10 +1403,45 @@ function buildMonsters({ locName, actions }) {
     if (!key) { missingSpawnFiles.push(`${mb.index} ${mb.name}: ${mb.mon[0]}`); continue; }
     unboundSpawnFiles.delete(key);
     spawns[mb.index] = { name: mb.name, map: mb.mapFile, file: key, rows: spawnFiles[key] };
+    if (srFallbackUsed.has(key)) spawns[mb.index].source = 'server-ref (Global older)';
     if (mb.from !== 'client') spawns[mb.index].from = mb.from;
   }
+  // Folder-convention: bind unbound MON files and replace cross-map misbinds (share/map/<index>_*/mon_*.csv).
+  // Only folders a Global maplist row / synthesised map references (orphan folders are never loaded; LANE-50).
+  const REF_FOLDERS = referencedMapFolders(DATA);
+  let folderSpawnAdds = 0, folderSpawnReplaces = 0;
+  const byFolderMon = new Map();
+  for (const f of Object.keys(spawnFiles)) {
+    const m = f.match(/^share\/map\/(\d+)_[^/]+\/(mon_[^/]+\.csv)$/i);
+    if (!m || /_monster\.csv$/i.test(f) || (REF_FOLDERS && !REF_FOLDERS.has(f.split('/')[2].toLowerCase()))) continue;
+    const mapIdx = +m[1];
+    const prev = byFolderMon.get(mapIdx);
+    const rows = spawnFiles[f];
+    const low = m[2].toLowerCase();
+    const nameHit = low.includes('_' + mapIdx + '_') || low.startsWith('mon_' + mapIdx + '_') || low.startsWith('mon_' + String(mapIdx).padStart(2, '0') + '_');
+    if (!prev || (nameHit && !prev.nameHit) || rows.length > prev.rows.length) byFolderMon.set(mapIdx, { file: f, rows, nameHit: !!nameHit });
+  }
+  // Scan fix A (SCAN-B I1): Tower of Spell 1F/5F (95/99) have an empty Global MonsterLocatePath (share/maplist.csv:90/:94)
+  // and are populated by their dungeon scripts (callmonster_95/_99 + waves in dungeons.json); the shared 16-row MON file
+  // (same SHA as 98's, which Global DOES bind) must not also spawn statically. Map 201 stays (LANE-07 decision).
+  // Owner rule (never remove content): the static table is KEPT by default and labelled; set
+  // DEKARON_SCRIPT_ONLY_MAPS_STATIC=0 to build these two maps script-only (the Global maplist reading).
+  const SCRIPT_ONLY_SPAWN_MAPS = process.env.DEKARON_SCRIPT_ONLY_MAPS_STATIC === '0' ? new Set([95, 99]) : new Set();
+  const NOT_GLOBAL_BOUND_SPAWN_MAPS = new Set([95, 99]);
+  for (const [mapIdx, t] of byFolderMon) {
+    const cur = spawns[mapIdx];
+    if (!cur && SCRIPT_ONLY_SPAWN_MAPS.has(mapIdx)) { unboundSpawnFiles.delete(t.file); continue; }
+    const curFolder = cur?.file && Number((String(cur.file).match(/^share\/map\/(\d+)_/i) || [])[1]);
+    if (cur && curFolder === mapIdx) { unboundSpawnFiles.delete(t.file); continue; }
+    if (cur) folderSpawnReplaces++; else folderSpawnAdds++;
+    const dirName = t.file.split('/')[2].replace(/^\d+_/, '').replace(/_/g, ' ');
+    spawns[mapIdx] = { name: cur?.name || dirName, map: cur?.map || null, file: t.file, rows: t.rows, from: 'folder' };
+    if (!cur && NOT_GLOBAL_BOUND_SPAWN_MAPS.has(mapIdx)) spawns[mapIdx].note = 'not bound by Global (kept per owner rule)';
+    if (srFallbackUsed.has(t.file)) spawns[mapIdx].source = 'server-ref (Global older)';
+    unboundSpawnFiles.delete(t.file);
+  }
   log(`spawn tables: ${Object.keys(spawnFiles).length} MON_*.csv, ${spawnRows} rows (${spawnSkipped} non-spawn lines), ${spawnCount.size} distinct monsters; ` +
-    `${Object.keys(spawns).length} maps bound, ${missingSpawnFiles.length} maplist paths missing, ${unboundSpawnFiles.size} files not referenced by maplist`);
+    `${Object.keys(spawns).length} maps bound, ${missingSpawnFiles.length} maplist paths missing, ${unboundSpawnFiles.size} files not referenced by maplist, folder +${folderSpawnAdds}/~${folderSpawnReplaces}`);
   // scripted spawns (dungeon scripts / triggers): share/map/<map>/[group]callmonster_*.csv
   // bound to maps by maplist CallMonsterPath (authoritative: the file's own MapIndex row is copy-pasted in ~20 files,
   // e.g. callmonster_25_crespotreasure.csv says 152); `map` keeps the file's value, `maps` the maplist rows using it
@@ -1385,9 +1452,12 @@ function buildMonsters({ locName, actions }) {
   let callHeaderDisagrees = 0; const callPathsMissing = [];
   for (const [k, list] of callMaps) if (!has(k)) callPathsMissing.push(`${list.join(',')}: ${k}`);
   for (const f of callFiles.sort()) {
-    const p = parseCallMonsterCsv(readRel(f));
+    let p = existsRel(f) ? parseCallMonsterCsv(readRel(f)) : { map: null, rows: [], randomCalls: [], randomPositions: [] };
+    let fromSr = false;
+    if (!p.rows.length && !p.randomCalls.length) { const b = srBytes(f); const q = b && parseCallMonsterCsv(b); if (q && (q.rows.length || q.randomCalls.length)) { p = q; fromSr = true; srFallbackUsed.add(f); } }
     if (!p.rows.length && !p.randomCalls.length) continue;
     const e = { map: p.map, group: /groupcallmonster_/.test(f), rows: p.rows };
+    if (fromSr) e.source = 'server-ref (Global older)';
     if (callMaps.has(f)) { e.maps = callMaps.get(f); if (!e.maps.includes(p.map)) callHeaderDisagrees++; }
     if (p.randomCalls.length) { e.randomCalls = p.randomCalls; e.randomPositions = p.randomPositions; }
     callSpawns[f] = e;
@@ -1396,6 +1466,10 @@ function buildMonsters({ locName, actions }) {
   }
   log(`call-monster tables: ${Object.keys(callSpawns).length} non-empty of ${callFiles.length}, ${callCount.size} distinct monsters; ` +
     `${Object.values(callSpawns).filter((e) => e.maps).length} bound by maplist CallMonsterPath (${callHeaderDisagrees} whose own MapIndex row disagrees), ${callPathsMissing.length} maplist paths missing`);
+
+  REPORT.serverRefSpawnFallback = { share: SR_SHARE, used: [...srFallbackUsed].sort(),
+    boundMaps: Object.entries(spawns).filter(([, v]) => v.source).map(([k, v]) => `${k} ${v.file} ${v.rows.length}`) };
+  log(`server-ref (Global older) spawn fallback: ${srFallbackUsed.size} file(s) used, ${REPORT.serverRefSpawnFallback.boundMaps.length} bound map(s)`);
 
   // ------------------------------------------------ registries
   const shapes = new ShapeRegistry('monster');
@@ -1409,6 +1483,15 @@ function buildMonsters({ locName, actions }) {
   const all = new Set([...dat.keys(), ...csv.byIndex.keys()]);
   const monsters = {};
   const itemSetsUsed = new Set();
+  const itemSetsExUsed = new Set();
+  // every monsterdropitemtable row per Index, in file order (loadTable's byIndex keeps only the first)
+  const dropRowsByIndex = new Map();
+  if (drop) for (let i = 1; i < drop.rows.length; i++) {
+    const r = drop.rows[i]; if (!r || r.length < 2) continue;
+    const k = String(r[0] ?? '').trim(); if (!/^-?\d+$/.test(k)) continue;
+    if (!dropRowsByIndex.has(+k)) dropRowsByIndex.set(+k, []);
+    dropRowsByIndex.get(+k).push(r);
+  }
   const sfxDone = new Set();
   const actHow = {};
   const fitStats = { override: [], mismatch: [], replaced: [] };
@@ -1510,8 +1593,12 @@ function buildMonsters({ locName, actions }) {
     }
     // ---- money + drops
     m.money = d ? [d.moneyMin, d.moneyMax, d.moneyRate] : [C(csv, c, 'Money_Min'), C(csv, c, 'Money_Max'), C(csv, c, 'Money_Rate')];
-    const dr = drop && drop.byIndex.get(idx);
-    if (dr) {
+    // scan fix A (M1/M2/M3, SCAN-A A1/A2): monsterdropitemtable.csv can hold several rows per Index keyed by CondName
+    // (Kill, PREMIUM_N/PREMIUM_Y, 45_DropHellionStamp, Curse_BoxCurse_Gold/Dil, BoxCorridor_Gold/Dil, 701_MainBoss). The first
+    // row stays the base drop (as before); its CondName is kept when it is not the default "Kill", and every later row is
+    // emitted under drops.alt[] with its own CondName. ItemSetEx/FixItemSetEx blocks, GainLimitTime and PetPick are carried.
+    const dropRowsAll = drop ? (dropRowsByIndex.get(idx) || []) : [];
+    const dropFrom = (dr) => {
       const drops = {};
       const money = [];
       for (let k = 1; k <= 10; k++) {
@@ -1541,6 +1628,31 @@ function buildMonsters({ locName, actions }) {
       if (fsets.length) drops.fixedSets = fsets;
       const range = C(drop, dr, 'DropRange');
       if (range) drops.range = range;
+      const setsEx = [];
+      for (let k = 1; k <= 15; k++) {
+        const s = C(drop, dr, `ItemSetExIndex_${k}`), ratio = C(drop, dr, `ItemSetExDropRatio_${k}`);
+        if (s > 0 && ratio > 0) { setsEx.push([s, ratio, C(drop, dr, `ItemSetExSocket_${k}`)]); itemSetsExUsed.add(s); }
+      }
+      if (setsEx.length) { drops.setsEx = setsEx; drops.maxSetsEx = C(drop, dr, 'MaxItemSetEx'); }
+      const fsetsEx = [];
+      for (let k = 1; k <= 10; k++) {
+        const s = C(drop, dr, `Fix_ItemSetEx_${k}`);
+        if (s > 0) { fsetsEx.push([s, C(drop, dr, `Fix_ItemSetExCountMin_${k}`), C(drop, dr, `Fix_ItemSetExCountMax_${k}`), C(drop, dr, `Fix_ItemSetExSocket_${k}`), C(drop, dr, `FixItemSetExRatio_${k}`)]); itemSetsExUsed.add(s); }
+      }
+      if (fsetsEx.length) drops.fixedSetsEx = fsetsEx;
+      const gainLimitTime = C(drop, dr, 'GainLimitTime');
+      if (gainLimitTime) drops.gainLimitTime = gainLimitTime;
+      // PetPick is 1 on almost every row; only the rows with 0 are marked (a pet must not auto-pick those drops)
+      if (drop.col('PetPick') >= 0 && !C(drop, dr, 'PetPick')) drops.noPetPick = true;
+      return drops;
+    };
+    const dr = dropRowsAll[0];
+    if (dr) {
+      const drops = dropFrom(dr);
+      const cond = S(drop, dr, 'CondName');
+      if (cond && cond !== 'Kill') drops.cond = cond;
+      const alt = dropRowsAll.slice(1).map((r) => ({ cond: S(drop, r, 'CondName'), ...dropFrom(r) }));
+      if (alt.length) drops.alt = alt;
       if (Object.keys(drops).length) m.drops = drops;
     } else if (c) {
       const sets = [];
@@ -1624,11 +1736,13 @@ function buildMonsters({ locName, actions }) {
   // run drops from its wave monsters (ENGINE-CHOSEN binding; no Global monster lists it).
   itemSetsUsed.add(DEAD_ISLAND_IGNITER_SET);
   const itemSets = {};
+  const itemSetsEx = {};
   const itemNames = {};
   if (existsRel('share/item/itemset.csv')) {
     const t = loadTable('share/item/itemset.csv');
     const itemsUsed = new Set();
-    for (const m of Object.values(monsters)) for (const f of m.drops?.fixed || []) itemsUsed.add(f[0]);
+    for (const m of Object.values(monsters)) for (const d of [m.drops, ...(m.drops?.alt || [])]) for (const f of d?.fixed || []) itemsUsed.add(f[0]);
+    for (const m of Object.values(monsters)) for (const a of m.drops?.alt || []) { for (const x of a.sets || []) itemSetsUsed.add(x[0]); for (const x of a.fixedSets || []) itemSetsUsed.add(x[0]); }
     for (const s of itemSetsUsed) {
       const r = t.byIndex.get(s);
       if (!r) continue;
@@ -1640,6 +1754,20 @@ function buildMonsters({ locName, actions }) {
         if (it > 0) { items.push([it, num(r[base + 1]), num(r[base + 2]), num(r[base + 3]), num(r[base + 4])]); itemsUsed.add(it); }
       }
       itemSets[s] = { name: kr(String(r[1] ?? '').trim()), total: num(r[2]), items };
+    }
+    // scan fix A (A2): ItemSetEx sets referenced by drop rows - share/item/itemsetex.csv rows (SetExIndex, GroupId, Name,
+    // DropRatio, then 15 x [ItemIndex, MagicRatio/Drop_Stack_Min, NobleRatio/Drop_Stack_Max, DivineNobleRatio]) plus the
+    // group weight of share/item/itemsetexgroup.csv (SetExIndex, GroupId, Name, DropRatio). Same shape as boxes.json itemSetsEx.
+    if (itemSetsExUsed.size && existsRel('share/item/itemsetex.csv')) {
+      const gr = new Map();
+      if (existsRel('share/item/itemsetexgroup.csv')) for (const r of parseCSV(readText('share/item/itemsetexgroup.csv')).slice(1)) if (r && /^\d+$/.test(String(r[0]).trim())) gr.set(`${num(r[0])}:${num(r[1])}`, num(r[3]));
+      for (const r of parseCSV(readText('share/item/itemsetex.csv')).slice(1)) {
+        if (!r || !/^\d+$/.test(String(r[0]).trim())) continue;
+        const id = num(r[0]); if (!itemSetsExUsed.has(id)) continue;
+        const e = []; for (let k = 4; k + 3 < r.length; k += 4) { const it = num(r[k]); if (it) { e.push([it, num(r[k + 1]), num(r[k + 2]), num(r[k + 3])]); itemsUsed.add(it); } }
+        (itemSetsEx[id] ||= { groups: [] }).groups.push({ g: num(r[1]), n: kr(String(r[2] || '').trim()), ratio: num(r[3]), groupRatio: gr.get(`${id}:${num(r[1])}`) ?? null, e });
+      }
+      for (const s of itemSetsExUsed) if (!itemSetsEx[s]) soft(`drop table references ItemSetEx ${s} missing from itemsetex.csv`);
     }
     for (const f of ['itemweapon.csv', 'itemarmor.csv', 'itemaccessory.csv', 'itemetc.csv', 'itemetc_socket.csv', 'itemcash.csv', 'itemmileage.csv']) {
       if (!existsRel(`share/item/${f}`)) continue;
@@ -1727,6 +1855,7 @@ function buildMonsters({ locName, actions }) {
     actionSets: sets.sets,
     monsters,
     itemSets,
+    itemSetsEx,
     itemNames,
     spawns,
     callSpawnFields: ['callIndex', 'monster', 'x', 'y', 'cell (scatter radius, cells)', 'count'],
@@ -1784,7 +1913,12 @@ function mapBindings() {
   for (const [mi, r] of cl.byIndex) {
     byIdx.set(mi, { index: mi, name: g(cl, r, 'Name'), mapFile: g(cl, r, 'MapFile').toLowerCase() || null, from: 'client',
       mon: [shareKey(g(cl, r, 'MonsterLocatePath'))].filter(Boolean),
-      npc: [shareKey(g(cl, r, 'NPCLocatePath')), g(cl, r, 'PosFile') ? dataKey('share', g(cl, r, 'PosFile')) : null].filter(Boolean),
+      // Scan fix A (SCAN-B I2): PosFile is only a fallback for a NAMED NPCLocatePath. A row with an empty NPCLocatePath binds
+      // no NPCs in Global (map 715 "Egutt (test)", share/maplist.csv:295, would otherwise copy map 67's 8 NPCs).
+      // Owner rule (never remove content): the PosFile binding is KEPT by default and labelled (npcPosFileOnly);
+      // set DEKARON_POSFILE_NPC_FALLBACK=0 for the Global reading (no NPCs on 715).
+      npcPosFileOnly: !g(cl, r, 'NPCLocatePath') && !!g(cl, r, 'PosFile'),
+      npc: (g(cl, r, 'NPCLocatePath') || process.env.DEKARON_POSFILE_NPC_FALLBACK !== '0') ? [shareKey(g(cl, r, 'NPCLocatePath')), g(cl, r, 'PosFile') ? dataKey('share', g(cl, r, 'PosFile')) : null].filter(Boolean) : [],
       call: [shareKey(g(cl, r, 'CallMonsterPath'))].filter((k) => k && !/^share\/0$/.test(k)) });
   }
   if (existsRel('share/server/maplist.csv')) {
@@ -1885,8 +2019,39 @@ function buildNpcs({ actions }) {
     placements[mb.index] = { name: mb.name, map: mb.mapFile, file: key,
       rows: pl.rows.map((q) => [q.npc, q.x, q.y, q.dir, q.warpX, q.warpY, q.isEvent, /^-?\d+$/.test(q.desc) ? +q.desc : q.desc]) };
     if (mb.from !== 'client') placements[mb.index].from = mb.from;
+    if (mb.npcPosFileOnly) placements[mb.index].note = 'not bound by Global (kept per owner rule)';
     for (const q of pl.rows) placed.set(q.npc, (placed.get(q.npc) || 0) + 1);
   }
+  // Folder-convention: bind unbound NPC_ files and replace cross-map misbinds (share/map/<index>_*/npc_*.csv).
+  // Only maplist/synthesised-referenced folders (orphan folders never load in Global; LANE-50).
+  const REF_NPC_FOLDERS = referencedMapFolders(DATA);
+  let folderNpcAdds = 0, folderNpcReplaces = 0;
+  const byFolderNpc = new Map();
+  for (const f of FILES) {
+    const m = String(f).match(/^share\/map\/(\d+)_[^/]+\/(npc_[^/]+\.csv)$/i);
+    if (!m || (REF_NPC_FOLDERS && !REF_NPC_FOLDERS.has(String(f).split('/')[2].toLowerCase()))) continue;
+    const mapIdx = +m[1];
+    const prev = byFolderNpc.get(mapIdx);
+    const low = m[2].toLowerCase();
+    const nameHit = low.includes('_' + mapIdx + '_') || low.startsWith('npc_' + mapIdx + '_') || low.startsWith('npc_' + String(mapIdx).padStart(2, '0') + '_');
+    if (!prev || (nameHit && !prev.nameHit)) byFolderNpc.set(mapIdx, { file: f, nameHit: !!nameHit });
+  }
+  for (const [mapIdx, t] of byFolderNpc) {
+    const cur = placements[mapIdx];
+    const curFolder = cur?.file && Number((String(cur.file).match(/^share\/map\/(\d+)_/i) || [])[1]);
+    if (cur && curFolder === mapIdx) continue;
+    // Scan fix A (SCAN-B I3): same file name as the maplist NPCLocatePath (map 31: 31_infinitehunt_c/npc_24_infinitehunt.csv vs
+    // Global share/maplist.csv:26 ..\Share\Map\24_Infinitehunt\NPC_24_Infinitehunt.csv) is a copy, not a misbind: keep Global's path.
+    if (cur && String(cur.file).split('/').pop().toLowerCase() === String(t.file).split('/').pop().toLowerCase()) continue;
+    if (!has(t.file)) continue;
+    const plFolder = parseNpcPlacementCsv(readRel(t.file));
+    if (cur) folderNpcReplaces++; else folderNpcAdds++;
+    const dirName = t.file.split('/')[2].replace(/^\d+_/, '').replace(/_/g, ' ');
+    placements[mapIdx] = { name: cur?.name || dirName, map: cur?.map || null, file: t.file,
+      rows: plFolder.rows.map((q) => [q.npc, q.x, q.y, q.dir, q.warpX, q.warpY, q.isEvent, /^-?\d+$/.test(q.desc) ? +q.desc : q.desc]), from: 'folder' };
+    for (const q of plFolder.rows) placed.set(q.npc, (placed.get(q.npc) || 0) + 1);
+  }
+  if (folderNpcAdds || folderNpcReplaces) log(`NPC folder binds: +${folderNpcAdds} added, ~${folderNpcReplaces} replaced`);
   let placedOk = 0; const placedMiss = [];
   for (const [i] of placed) {
     const n = out[i];

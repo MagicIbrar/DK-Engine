@@ -59,25 +59,61 @@ function protocolError(message, status = null) { const error = new Error(message
 /** Remember on `network` why its last request failed (admission() reports it). A plain function, not a method: tools/test-C13-native-editor.mjs
  *  builds a fake network out of SharedWorld.prototype._error and .poll alone, and _error must keep working on such an object. */
 export function noteNetworkFailure(network, error, phase, generation = network._leaseGeneration) { return network._admissionFailure = describeFailure(error, { phase, generation }); }
+// Presentation only: when a single snapshot has an exceptionally large set of
+// ordinary self-owned skill damage numbers, keep the selected target, a few
+// nearest targets and a rotating sample. Combat events are always delivered.
+export function chooseCrowdFloaters(events,{self,seen,lookup,selected,viewer,cursor=0}={}){
+ const rows=new Map(),eligible=new Set();
+ for(const e of events||[]){const seq=Number(e.sequence);if(!Number.isSafeInteger(seq)||seq<0||seen?.has(seq)||e.type!=='damage'||e.sourceId!==self||e.skillId==null||e.miss||e.guard||e.block)continue;
+  const target=lookup(e.targetId);if(!target||target.kind!=='monster')continue;eligible.add(seq);const prior=rows.get(e.targetId);
+  // Keep the latest ordinary hit over DoT for the same target.
+  if(!prior||(!e.dot&&prior.event.dot)||!!e.dot===!!prior.event.dot)rows.set(e.targetId,{event:e,target,id:e.targetId});
+ }
+ if(rows.size<=60)return null;
+ const all=[...rows.values()],prioritized=[];const focus=rows.get(selected);if(focus)prioritized.push(focus);
+ const distance=r=>Number.isFinite(r.target.x)&&Number.isFinite(r.target.z)&&Number.isFinite(viewer?.x)&&Number.isFinite(viewer?.z)?Math.hypot(r.target.x-viewer.x,r.target.z-viewer.z):Infinity;
+ const near=all.filter(r=>r!==focus).sort((a,b)=>distance(a)-distance(b)||String(a.id).localeCompare(String(b.id))).slice(0,8);prioritized.push(...near);
+ const used=new Set(prioritized.map(r=>r.id)),others=all.filter(r=>!used.has(r.id)),slots=48-prioritized.length,start=others.length?(Math.max(0,Math.floor(cursor))%others.length):0;
+ for(let i=0;i<Math.min(slots,others.length);i++)prioritized.push(others[(start+i)%others.length]);
+ return {eligible,shown:new Set(prioritized.map(r=>Number(r.event.sequence))),cursor:others.length?(start+slots)%others.length:0};
+}
+
 export class SharedWorld {
   constructor(game, options = {}) {
     const { request = globalThis.fetch.bind(globalThis), EventSourceClass = globalThis.EventSource } = options;
     this.game = game; this.request = request; this.EventSourceClass = EventSourceClass;
     this.prepareWorld=options.prepareWorld===true;
+    this.preparationTimeoutMs=Number.isFinite(options.preparationTimeoutMs)&&options.preparationTimeoutMs>0?options.preparationTimeoutMs:300000;
     this.active = game.save?.authority === 'server'; this.ready = false; this.token = null;
     if (this.active) game.accountPermissions = { role: 'player', capabilities: [] };
     this.self = null; this.players = new Map(); this.monsters = new Map(); this.servants=new Map(); this.sequence = -1;
     this.status = this.active ? 'connecting' : 'solo'; this.disposed = false;
     this._lastMove = null; this._nextMove = 0; this._lastAttack = -Infinity; this._pollAt = 0;
-    this._inputRelease = () => { if (this.game.controller?._wasd) { this.game.controller._wasd = false; this.stop(); } };
+    this._inputRelease = () => { const ctl = this.game.controller; if (ctl?._wasd) { /* MOVE-NO-RUBBERBAND: let controller debounce release; do not force-stop here */ if (!ctl._wasdReleaseAt) ctl._wasdReleaseAt = performance.now(); } };
     game.input?.canvas?.addEventListener?.('inputrelease', this._inputRelease);
     this._commandSequence=0;this._serverClock=null;this._loads = []; this._loading = 0; this._generation = 0;
     this._leaseGeneration = 0;
+    this._castRequestIdCapability = false;
     this._motionClock = new ServerClockFilter();
     // PING LABEL (network/net-rtt.js): the displayed ping is the browser's own network timing of these requests, not the main-thread wait.
     // Only for the real fetch (an injected request function has no resource timing); tests may pass PerformanceObserverClass.
     this._rttMeter = null;
     if (this.active) { const meter = new NetRttMeter(options.PerformanceObserverClass ? { ObserverClass: options.PerformanceObserverClass } : options.request === undefined ? {} : { ObserverClass: null }); if (meter.start()) this._rttMeter = meter; }
+    // PING: dedicated probe every 2 s; its time comes from the browser network stack (requestStart..responseEnd), so frame/skill load cannot move it.
+    this._pingTimer = this._rttMeter ? setInterval(() => this._ping(), 2000) : null;
+  }
+  /** PING: prefer the server's ping worker (own thread/port, immune to world-tick stalls); fall back to /api/world/ping. */
+  _ping() {
+    if (!this.ready || this.disposed || this._pingBusy) return;
+    const meter = this._rttMeter, direct = meter?.directUrl;
+    this._pingBusy = true;
+    const req = direct ? fetch(direct + '?' + (this._pingN = (this._pingN || 0) + 1), { mode: 'cors', cache: 'no-store', credentials: 'omit' }) : fetch(API + 'ping', { credentials: 'same-origin', cache: 'no-store' });
+    req.then(res => {
+      if (direct) { this._pingFails = 0; return; }
+      const port = Number(res.headers.get('X-Dekaron-Ping-Port')), loc = globalThis.location;
+      if (meter && Number.isSafeInteger(port) && port > 0 && loc?.protocol === 'http:' && !(this._pingDirectBanUntil > performance.now())) meter.directUrl = 'http://' + loc.hostname + ':' + port + '/ping';
+    }, () => { if (direct && ++this._pingFails >= 2 && meter) { meter.directUrl = null; this._pingFails = 0; this._pingDirectBanUntil = performance.now() + 60000; } })
+      .finally(() => { this._pingBusy = false; });
   }
   actors() { return [...this.players.values(), ...this.monsters.values(), ...this.servants.values()]; }
   unavailable(feature = 'This action') {
@@ -122,7 +158,9 @@ export class SharedWorld {
     return data;
   }
   async _prepareWorld(generation) {
+    const deadline=Date.now()+this.preparationTimeoutMs;
     while(!this.disposed&&generation===this._leaseGeneration){
+      if(Date.now()>=deadline){const error=new Error('World preparation timed out. Retry loading.');error.name='TimeoutError';throw error;}
       this._status('preparing','Preparing the shared world before joining.');
       const state=await this._request('ready');
       if(this.disposed||generation!==this._leaseGeneration)return false;
@@ -140,7 +178,7 @@ export class SharedWorld {
       }
       await new Promise(resolve=>{
         const finish=()=>{clearTimeout(timer);if(this._preparationWait===finish)this._preparationWait=null;resolve();};
-        const timer=setTimeout(finish,Math.max(250,state.retryAfterMs));this._preparationWait=finish;
+        const timer=setTimeout(finish,Math.min(Math.max(250,state.retryAfterMs),Math.max(0,deadline-Date.now())));this._preparationWait=finish;
       });
     }
     return false;
@@ -181,6 +219,7 @@ export class SharedWorld {
     this._simulationPopulationView=null;
     this._cancelInitialJoin();
     const generation = ++this._leaseGeneration;
+    this._castRequestIdCapability = false;
     this._joinBudget={generation,timeoutMs:15000};
     this._joining = true;
     let stage = this.prepareWorld ? 'ready' : 'join';   // where a failure happened: the readiness probe, the join request or installing its answer
@@ -224,7 +263,7 @@ export class SharedWorld {
     this.stream?.close();this.stream=null;this._streamAt=0;
     if (this.transport==='polling'||!this.EventSourceClass || !this.token || this.disposed) return;
     try {
-      this.stream = new this.EventSourceClass(API + `events?token=${encodeURIComponent(this.token)}`, { withCredentials: true });
+      this.stream = new this.EventSourceClass(API + `events?token=${encodeURIComponent(this.token)}&rd=2`, { withCredentials: true });
       const stream = this.stream, lease = this.token, generation = this._leaseGeneration;
       const rowsDelta = new RowsDeltaDecoder();
       const current = () => !this.disposed && generation === this._leaseGeneration && this.token === lease && this.stream === stream;
@@ -266,7 +305,7 @@ export class SharedWorld {
       this.game.accountPermissions = { role: 'player', capabilities: [] };
       this._status('expired', `${error.message} Return to the character screen and sign in again.`);
     } else if (this.status !== 'disconnected') {
-      this.ready = false; this._status('disconnected', 'Shared world connection interrupted. Reconnectingâ€¦');
+      this.ready = false; this._status('disconnected', 'Shared world connection interrupted. Reconnecting…');
     }
   }
   async poll() {
@@ -551,6 +590,7 @@ export class SharedWorld {
     this._signalVisuals();
     this._snapshotLease=this.token;this._snapshotLeaseGeneration=this._leaseGeneration;
     this.sequence = Number(snapshot.sequence); this.self = snapshot.self;
+    this._castRequestIdCapability = snapshot.castRequestIdVersion === 1;
     this._scenePreparationInvalid=false;
     try {
       const required=snapshot.npcScenePreparationRequired===undefined?false:snapshot.npcScenePreparationRequired;
@@ -644,6 +684,12 @@ export class SharedWorld {
         (snapshot.self.instanceId || null) !== (this.self.instanceId || null) ||
         (snapshot.self.channel ?? 0) !== (this.self.channel ?? 0)) return;
     const seen = this._seenEvents ||= new Set();
+    let sample=null;
+    try {
+      const viewer=this.game?.player, focus=viewer?.target?.networkId;
+      sample=chooseCrowdFloaters(snapshot.events,{self:this.self.id,seen,lookup:id=>this.monsters.get(id)||damageTargets?.get(id),selected:focus,viewer,cursor:this._crowdFloaterCursor||0});
+      if(sample)this._crowdFloaterCursor=sample.cursor;
+    } catch { /* display optimization must never prevent event delivery */ }
     for (const event of snapshot.events || []) {
       const sequence = Number(event.sequence);
       if (!Number.isSafeInteger(sequence) || sequence < 0 || seen.has(sequence)) continue;
@@ -651,8 +697,9 @@ export class SharedWorld {
       // Older presentation wrappers forward only the event argument. Keep the
       // reconciled-away damage targets scoped to this synchronous delivery so
       // the base handler can still show a lethal hit, without retaining ghosts.
-      const previousDamageTargets=this._eventDamageTargets;
+      const previousDamageTargets=this._eventDamageTargets,previousFloaterSuppression=this._suppressCrowdFloater;
       this._eventDamageTargets=damageTargets;
+      this._suppressCrowdFloater=!!sample&&sample.eligible.has(sequence)&&!sample.shown.has(sequence);
       try { this._event(event,damageTargets); }
       catch (error) {
         // A presentation failure must not drop the rest of an accepted host
@@ -668,6 +715,7 @@ export class SharedWorld {
           failure.reportedAt=now;failure.reportedCount=failure.count;
         }
       } finally {
+        if(previousFloaterSuppression===undefined)delete this._suppressCrowdFloater;else this._suppressCrowdFloater=previousFloaterSuppression;
         if(previousDamageTargets===undefined)delete this._eventDamageTargets;
         else this._eventDamageTargets=previousDamageTargets;
         // ENGINE-CHOSEN bounded duplicate history, including failed attempts.
@@ -764,6 +812,7 @@ export class SharedWorld {
     } finally {if(this._initialVisualActors===initial)this._initialVisualActors=null;}
   }
   _loadActors() {
+    if(this._loadYieldPending)return;
     while (this._loading < 2 && this._loads.length) {
       let next=this._initialVisualActors?this._loads.findIndex(job=>this._initialVisualActors.has(job.actor)&&!job.actor._networkVisualPending):-1;
       if(next<0)next=this._loads.findIndex(job=>!job.actor._networkVisualPending);
@@ -784,7 +833,19 @@ export class SharedWorld {
             actor._appearanceDirty=false;actor._appearanceQueued=true;
             this._loads.push({actor,generation,appearance:true});
           }
-          this._loading--; this._loadActors();this._signalVisuals();
+          this._loading--; this._signalVisuals();
+          // Cached async loads can form a long microtask chain. Give the browser
+          // a task boundary periodically after entry; initial-readiness retains
+          // its existing unthrottled two-worker scheduling and deadline.
+          if(!this._initialVisualActors&&this._loads.length){
+            this._loadBurst=(this._loadBurst||0)+1;
+            if(this._loadBurst>=8){
+              this._loadBurst=0;
+              if(!this._loadYieldPending){this._loadYieldPending=true;setTimeout(()=>{this._loadYieldPending=false;this._loadActors();},0);}
+              return;
+            }
+          }else this._loadBurst=0;
+          this._loadActors();
         });
     }
   }
@@ -826,10 +887,12 @@ export class SharedWorld {
     }
     if (event.type === 'damage' && target) {
       actor && (actor.lastCombat = g.time); target.lastCombat = g.time;
-      const blocked = !!(event.guard || event.block);
-      const kind = event.miss ? 'miss' : blocked ? 'guard' : event.crit ? 'crit' : event.dot ? 'dot' : target === g.player ? 'dmg-in' : 'dmg-out';
+      const blocked = !!event.block;
+      const kind = event.miss ? 'miss' : blocked ? 'block' : event.crit ? 'crit' : event.dot ? 'dot' : target === g.player ? 'dmg-in' : 'dmg-out';
       const amount = String(event.amount || 0);
-      g.hud?.floater?.(target, event.miss ? 'Miss' : blocked ? `Block ${amount}` : amount, kind);
+      // STEP12-LANE51: Global draws no Guard word (no native UV); a guarded hit shows its damage digits like a plain hit.
+      const word = event.miss ? 'Miss' : blocked ? 'Block' : amount;
+      if(!this._suppressCrowdFloater)g.hud?.floater?.(target, word, kind);
       if (!target.disposed && !target.dead && target !== g.player) {
         // A player flinches only on the host's DEFEAT row (event.defeat; absent = no reaction) and holds it for
         // that row's TimeLength, exactly as the victim's own controller does (src/game/hit-reaction.js); like the victim's
@@ -845,7 +908,9 @@ export class SharedWorld {
       if (target === g.player) g.controller?.onDamaged?.(actor, event.amount, event);
       // Cosmetic event only; local damage/death listeners must not award trusted progression.
       g.events?.emit?.('server:damage', { source: actor, target, amount: event.amount,
-        crit: !!event.crit, miss: !!event.miss, guard: !!(event.guard || event.block), dot: !!event.dot,
+        shieldDamage: Number(event.shieldDamage) || 0,
+        crit: !!event.crit, miss: !!event.miss, block: !!event.block, guard: !!event.guard, dot: !!event.dot,
+        immune: !!event.immune, blow: !!event.blow,   // LANE51: cancel dropped (no Global message class / display type)
         skill: event.skillId != null ? { index: event.skillId } : null });
     }
     if (event.type === 'chat') {
@@ -939,5 +1004,5 @@ export class SharedWorld {
     this._leaving = token ? this._request('leave', { token }, keepalive).then(() => true, () => false) : Promise.resolve(true);
     return this._leaving;
   }
-  dispose() { this.game.input?.canvas?.removeEventListener?.('inputrelease', this._inputRelease); return this.leave({ keepalive: true }); }
+  dispose() { if (this._pingTimer) { clearInterval(this._pingTimer); this._pingTimer = null; } this.game.input?.canvas?.removeEventListener?.('inputrelease', this._inputRelease); return this.leave({ keepalive: true }); }
 }

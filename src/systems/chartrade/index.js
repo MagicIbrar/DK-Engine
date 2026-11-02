@@ -1,10 +1,11 @@
-// Character trade: the original "Character Move" windows of game2/chartradewnd. The giving player
-// opens it from the player menu row 240:103 "Character Transfer" (or /chartrade Name); the receiver answers
+﻿// Character trade: the original "Character Move" windows of game2/chartradewnd. The giving player
+// opens it from the player menu row 11 (Global label 240:11) (or /chartrade Name); the receiver answers
 // msgbox/ui_chartradeinvite; both then see ui_chartradewnd (character list + 556:16-29 stats, Details ->
 // ui_chartradeinfownd presets/counts, payment grid + DIL, Confirm / Approve / Cancel). The host
 // (server/world/char-trade.mjs) owns every rule; this module only displays network.charTrade.
 // Pure helpers: rules.js. ENGINE-CHOSEN values: src/config/engine-chosen-char-trade.js.
 import { installPcPop } from '../pvp/duel.js';
+import { partyPvpRunning } from '../pvp/pk-channel.js';
 import { needStrings } from '../hud-options/util.js';
 import { strings } from '../../ui/uiwin/strings.js';
 import { Container } from '../items/model.js';
@@ -13,7 +14,7 @@ import { buildTooltip } from '../items/tooltip.js';
 import { askAmount } from '../items/ui/dialogs.js';
 import { placeWithBag } from '../items/ui/craft.js';
 import { S } from '../items/equip.js';
-import { CHAR_TRADE_SCRIPTS as SCRIPTS, STRING_CATE, STRING_CODES, MENU, INVITE_TITLE, COMMAND, SLOT_IDS, CHAR_TRADE_ENGINE_CHOSEN as C,
+import { CHAR_TRADE_SCRIPTS as SCRIPTS, STRING_CATE, BUSY_PARTY_PVP, STRING_CODES, MENU, INVITE_TITLE, COMMAND, SLOT_IDS, CHAR_TRADE_ENGINE_CHOSEN as C,
   errorMsg, menuVisible, charTradeView, lockProgress, characterCaption, charInfoColumns, presetItem, eventMsg } from './rules.js';
 
 let API = null;
@@ -26,7 +27,7 @@ export async function install(game) {
   const net = () => game.network;
   const txt = (code, cate = STRING_CATE) => strings.get({ group: 'NORMAL', cate, code }) ?? '';
   void needStrings([...STRING_CODES.map(c => ['NORMAL', STRING_CATE, c]), ['NORMAL', 100, 37], ['NORMAL', 100, 38], ['NORMAL', 100, 84],
-    ['NORMAL', 100, 85], ['NORMAL', MENU.cate, MENU.label]]).catch(() => {});
+    ['NORMAL', 100, 85], ['NORMAL', MENU.cate, MENU.label], ['NORMAL', STRING_CATE, BUSY_PARTY_PVP]]).catch(() => {});
   const say = (code, kind = 'sys') => { const t = txt(code); if (t) game.chat?.system?.(t.replace(/\s*\n\s*/g, ' '), kind); return t; };
   const serverNow = () => { const n = net(), c = n?._serverClock; return c ? c.time + performance.now() - c.at : Date.now(); };
 
@@ -257,7 +258,7 @@ export async function install(game) {
   if (items?.rightClick) { const rc = items.rightClick.bind(items); items.rightClick = (item, where = 'bag') => (payer() && where === 'bag' && st.main?.isOpen ? add(item) : rc(item, where)); }
 
   try {
-    installPcPop(game).add({ code: MENU.order, cate: MENU.cate, label: MENU.label, visible: t => menuVisible(t, game.player, !!net()?.active), run: t => { void request(t); } });
+    installPcPop(game).add({ code: MENU.order, cate: MENU.cate, label: MENU.label, visible: t => menuVisible(t, game.player, !!net()?.active), run: t => { if (partyPvpRunning(net())) { say(BUSY_PARTY_PVP, 'err'); return; } void request(t); } });   // Global row 11: 556:38 while a Party PvP runs
   } catch (error) { console.warn('[chartrade] player menu', error); }
   game.chat?.registerCommand?.(COMMAND, (args) => {
     const name = String(args || '').trim().toLowerCase();

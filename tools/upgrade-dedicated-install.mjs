@@ -17,7 +17,31 @@ function files(root,relative=''){const full=path.join(root,relative);assertUnlin
 const serverState=rel=>rel.startsWith('server/')&&!/\.(?:mjs|ps1)$/i.test(rel)&&!/^server\/launcher-control(?:-\d+)?\.json$/i.test(rel);
 function managedRuntimeFiles(root){return [...new Set([...ROOT_CODE,...files(root,'tools'),...CODE_ROOTS.flatMap(n=>files(root,n))])].filter(n=>fs.existsSync(path.join(root,n))&&(!n.startsWith('server/')||/\.(?:mjs|ps1)$/.test(n))).sort();}
 const PACKAGE_PNGS=new Set(['client-assets/dk-engine-emblem-v1.png','client-assets/dk-engine-logo-v1.png','client-assets/launcher-background-v1.png','web/public/logo.png']);
-export function payloadFingerprint(root,names=managedRuntimeFiles(root),{sanitizeImages=false}={}){const h=createHash('sha256');for(const name of names){assertUnlinked(path.join(root,name));h.update(name+'\0');const bytes=fs.readFileSync(path.join(root,name));h.update(sanitizeImages&&PACKAGE_PNGS.has(name)?sanitizeReleasePng(bytes):bytes);h.update('\0');}return h.digest('hex');}
+export function payloadFingerprint(root,names=managedRuntimeFiles(root),{sanitizeImages=false,onProgress=()=>{}}={}){const h=createHash('sha256');let done=0;onProgress(done,names.length);for(const name of names){assertUnlinked(path.join(root,name));h.update(name+'\0');const bytes=fs.readFileSync(path.join(root,name));h.update(sanitizeImages&&PACKAGE_PNGS.has(name)?sanitizeReleasePng(bytes):bytes);h.update('\0');onProgress(++done,names.length);}return h.digest('hex');}
+// Same ordered digest and link checks as payloadFingerprint, with bounded parallel reads.
+// Re-check path identity after every read so a concurrent replacement fails closed.
+async function checkedRuntimeStat(target){
+ const paths=[];let current=path.resolve(target);for(;;){paths.push(current);const parent=path.dirname(current);if(parent===current)break;current=parent;}
+ const stats=await Promise.all(paths.map(async p=>{try{return await fsp.lstat(p);}catch(error){if(error.code==='ENOENT')return null;throw error;}}));
+ if(stats.some(st=>st?.isSymbolicLink()))throw Error('Linked installation paths are not supported.');
+ if(!stats[0]?.isFile())throw Error('Managed runtime file missing or not a file.');return stats[0];
+}
+export async function payloadFingerprintAsync(root,names=managedRuntimeFiles(root),{sanitizeImages=false,onProgress=()=>{},lanes=8,maxBatchBytes=32*1024*1024}={}){
+ if(!Number.isInteger(lanes)||lanes<1||lanes>16||!Number.isSafeInteger(maxBatchBytes)||maxBatchBytes<1)throw Error('Invalid runtime fingerprint limits.');
+ const h=createHash('sha256');let done=0;onProgress(done,names.length);
+ while(done<names.length){
+  const slice=names.slice(done,done+lanes),stats=await Promise.all(slice.map(n=>checkedRuntimeStat(path.join(root,n))));let count=0,total=0;
+  for(const st of stats){if(count&&total+st.size>maxBatchBytes)break;total+=st.size;count++;}
+  const checked=await Promise.all(slice.slice(0,count).map(async(name,i)=>{const full=path.join(root,name),before=stats[i],bytes=await fsp.readFile(full),after=await checkedRuntimeStat(full);
+   if(bytes.length!==before.size||after.size!==before.size||after.mtimeMs!==before.mtimeMs||after.ctimeMs!==before.ctimeMs||after.ino!==before.ino||after.dev!==before.dev)throw Error('Managed runtime file changed during fingerprint.');
+   return sanitizeImages&&PACKAGE_PNGS.has(name)?sanitizeReleasePng(bytes):bytes;}));
+  for(let i=0;i<count;i++){h.update(slice[i]+'\0');h.update(checked[i]);h.update('\0');onProgress(++done,names.length);}
+ }return h.digest('hex');
+}
+export async function inspectInstallOwnershipAsync(root,{target=root,onProgress=()=>{}}={}){
+ const marker=inspectInstallOwnership(root,{target,verifyPayload:false});
+ if(await payloadFingerprintAsync(root,marker.managedFiles,{sanitizeImages:marker.imageSanitization===1,onProgress})!==marker.payloadFingerprint)throw Error('Installed runtime files changed; automatic update refused.');return marker;
+}
 // A build may regenerate volatile metadata without changing its source fingerprint.
 // Bind warm receipts to the completed preparation snapshot, attested by this owned install.
 export function assetPreparationIdentity(active){
@@ -26,7 +50,7 @@ export function assetPreparationIdentity(active){
  return createHash('sha256').update(JSON.stringify({version:active.version,prepared,sourceFingerprint:active.manifest.sourceFingerprint||null})).digest('hex');
 }
 export async function writeInstallOwnership(root,target=root,{installationId=randomUUID()}={}){assertUnlinked(root);const managedFiles=managedRuntimeFiles(root);let preparationId=null;try{preparationId=assetPreparationIdentity(clientSource(root));}catch{/* Legacy runtime-only ownership cannot attest an asset preparation. */}const marker={version:1,product:PRODUCT,installationId,target:path.resolve(target),managedFiles,imageSanitization:1,...(preparationId?{assetPreparationId:preparationId}:{}),payloadFingerprint:payloadFingerprint(root,managedFiles,{sanitizeImages:true})};await fsp.writeFile(path.join(root,MARKER),JSON.stringify(marker,null,2)+'\n');return marker;}
-export function inspectInstallOwnership(root,{target=root,verifyPayload=true}={}){assertUnlinked(root);const marker=JSON.parse(fs.readFileSync(path.join(root,MARKER),'utf8'));if(marker.version!==1||marker.product!==PRODUCT||!/^[-a-f0-9]{36}$/i.test(marker.installationId)||!same(marker.target,target)||!/^[a-f0-9]{64}$/.test(marker.payloadFingerprint))throw Error('This folder is not an owned Dedicated installation.');if(marker.assetPreparationId!==undefined&&!/^[a-f0-9]{64}$/.test(marker.assetPreparationId))throw Error('Invalid owned asset preparation identity.');if(!Array.isArray(marker.managedFiles)||!marker.managedFiles.length||marker.managedFiles.some(n=>typeof n!=='string'||n.includes('\\')||n.split('/').some(p=>!p||p==='.'||p==='..')||path.isAbsolute(n)||n.includes(':')))throw Error('Invalid owned runtime inventory.');if(verifyPayload&&payloadFingerprint(root,marker.managedFiles,{sanitizeImages:marker.imageSanitization===1})!==marker.payloadFingerprint)throw Error('Installed runtime files changed; automatic update refused.');return marker;}
+export function inspectInstallOwnership(root,{target=root,verifyPayload=true,onProgress=()=>{}}={}){assertUnlinked(root);const marker=JSON.parse(fs.readFileSync(path.join(root,MARKER),'utf8'));if(marker.version!==1||marker.product!==PRODUCT||!/^[-a-f0-9]{36}$/i.test(marker.installationId)||!same(marker.target,target)||!/^[a-f0-9]{64}$/.test(marker.payloadFingerprint))throw Error('This folder is not an owned Dedicated installation.');if(marker.assetPreparationId!==undefined&&!/^[a-f0-9]{64}$/.test(marker.assetPreparationId))throw Error('Invalid owned asset preparation identity.');if(!Array.isArray(marker.managedFiles)||!marker.managedFiles.length||marker.managedFiles.some(n=>typeof n!=='string'||n.includes('\\')||n.split('/').some(p=>!p||p==='.'||p==='..')||path.isAbsolute(n)||n.includes(':')))throw Error('Invalid owned runtime inventory.');if(verifyPayload&&payloadFingerprint(root,marker.managedFiles,{sanitizeImages:marker.imageSanitization===1,onProgress})!==marker.payloadFingerprint)throw Error('Installed runtime files changed; automatic update refused.');return marker;}
 // Legacy receipts alone are deliberately insufficient to authorize replacing a folder.
 export function canAdoptLegacyInstall(root){
  try {
@@ -79,8 +103,20 @@ export function dashboardSqlInstanceFiles(root){
  if(!st.isFile()||st.nlink!==1||st.size>1024||value.length>200||!/^(?:\.|\(local\)|localhost|[A-Za-z0-9][A-Za-z0-9.-]*)(?:\\[A-Za-z0-9_][A-Za-z0-9_-]{0,63}|,[1-9][0-9]{0,4})?$/.test(value)||(/,/.test(value)&&Number(value.split(',')[1])>65535))throw Error('Saved SQL instance is invalid; update refused without replacing settings.');
  return [rel];
 }
-function stateFiles(root){return files(root,'server').filter(serverState).concat(files(root,'runtime/native-profiles'),['run/dashboard-storage.txt'].filter(n=>fs.existsSync(path.join(root,n))),assetPreloadReceipts(root),dashboardSqlInstanceFiles(root));}
-async function preserveState(from,to){for(const rel of stateFiles(from)){assertUnlinked(path.join(from,rel));assertUnlinked(path.join(to,rel));await fsp.mkdir(path.dirname(path.join(to,rel)),{recursive:true});await fsp.copyFile(path.join(from,rel),path.join(to,rel));}}
+// MIGRATION-4.1.x: run/ also holds user data the command center writes: account backups taken before SQL setup
+// (run/sql-setup-account-backup-*.json[.journal]) and the classic-launcher choice. hosting-setup/ holds the user's generated kits.
+const RUN_USER_STATE=/^(?:sql-setup-account-backup-[0-9A-Za-z-]{1,64}\.json(?:\.journal)?|classic-launcher\.flag)$/;
+export function runUserStateFiles(root){const run=path.join(root,'run');assertUnlinked(run);if(!fs.existsSync(run))return [];const out=[];for(const name of fs.readdirSync(run)){if(!RUN_USER_STATE.test(name))continue;const full=path.join(run,name);assertUnlinked(full);if(fs.lstatSync(full).isFile())out.push('run/'+name);}return out;}
+// NO_DELETE_USER_FILES 2026-10-30: anything in the install root that the engine does not own (game files or folders
+// the player added) is carried into every update, and recovered add-only from an older .rollback, before that
+// rollback is retired. Updates only add or replace engine-owned files.
+const ENGINE_TOP=new Set(['server','src','site','web','vendor','client-assets','tools','node_modules','runtime','docs','deploy','sql','hosting-setup','gamedata-overrides','global-prepared','.client-cache','run','gamedata','GameGuard','GameGuard.des','protect.msg','global-client.json',MARKER,'server.mjs','package.json','package-lock.json','index.html','join.html','launch.html','Dekaron.exe','Client.exe','GameWindow.exe','DekaronDashboard.exe','Setup-Dedicated.cmd','Setup-DK.cmd','START-HERE.txt','dedicated-source.json','install-sources.json','install-receipt.json',...ROOT_CODE].map(n=>n.toLowerCase()));
+export function userExtraFiles(root){assertUnlinked(root);if(!fs.existsSync(root))return [];return fs.readdirSync(root).filter(n=>!ENGINE_TOP.has(n.toLowerCase())).sort().flatMap(n=>files(root,n));}
+// Backups an older updater left only in <install>.rollback (it did not carry run/ backups) are copied back into the live install
+// (add-only, never overwrite) before preserveState, so they survive even if this update fails after the rollback is retired.
+async function recoverRollbackBackups(rollback,to){if(!fs.existsSync(rollback))return [];const got=[];for(const rel of [...runUserStateFiles(rollback).filter(r=>/^run\/sql-setup-account-backup-/.test(r)),...userExtraFiles(rollback)]){const dest=path.join(to,rel);assertUnlinked(dest);if(fs.existsSync(dest))continue;await fsp.mkdir(path.dirname(dest),{recursive:true});await fsp.copyFile(path.join(rollback,rel),dest);got.push(rel);}return got;}
+function stateFiles(root){return files(root,'server').filter(serverState).concat(files(root,'hosting-setup'),runUserStateFiles(root),files(root,'runtime/native-profiles'),files(root,'GameGuard'),['GameGuard.des','protect.msg','runtime/gameguard.enabled','runtime/server-gameguard.enabled','run/dashboard-storage.txt'].filter(n=>fs.existsSync(path.join(root,n))),assetPreloadReceipts(root),dashboardSqlInstanceFiles(root),['global-client.json'].filter(n=>fs.existsSync(path.join(root,n))),userExtraFiles(root));}
+async function preserveState(from,to){const addOnly=new Set(['global-client.json',...userExtraFiles(from)]);for(const rel of stateFiles(from)){if(addOnly.has(rel)&&fs.existsSync(path.join(to,rel)))continue;assertUnlinked(path.join(from,rel));assertUnlinked(path.join(to,rel));await fsp.mkdir(path.dirname(path.join(to,rel)),{recursive:true});await fsp.copyFile(path.join(from,rel),path.join(to,rel));}}
 export async function recoverInterruptedUpgrade(destination){
  destination=path.resolve(destination);assertUnlinked(destination);const rollback=destination+'.rollback',lock=destination+'.update-lock';
  if(fs.existsSync(lock)){
@@ -99,7 +135,7 @@ export async function upgradeDedicatedInstall({destination,buildCandidate,valida
  try{
   if(fs.existsSync(rollback))inspectInstallOwnership(rollback,{target:destination});
   await buildCandidate(candidate);await validateCandidate(candidate);await writeInstallOwnership(candidate,destination,{installationId:owner.installationId});
-  await activeGuard(destination);inspectInstallOwnership(destination);await preserveState(destination,candidate);inspectInstallOwnership(candidate,{target:destination});await fault('prepared');
+  await activeGuard(destination);inspectInstallOwnership(destination);if(fs.existsSync(rollback)){inspectInstallOwnership(rollback,{target:destination});await recoverRollbackBackups(rollback,destination);}await preserveState(destination,candidate);inspectInstallOwnership(candidate,{target:destination});await fault('prepared');
   // Only a verified previous rollback belonging to this exact install can be retired.
   if(fs.existsSync(rollback)){inspectInstallOwnership(rollback,{target:destination});await fsp.rm(rollback,{recursive:true});}
   await fsp.rename(destination,rollback);moved=true;await fault('old-renamed');await fsp.rename(candidate,destination);installed=true;await fault('new-renamed');

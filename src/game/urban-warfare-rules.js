@@ -2,8 +2,8 @@
 // On Global the factions are source servers (World_Index 1 / 2). This single-server engine has no source-world identity,
 // so it uses a disclosed, owner-directed single-server adaptation:
 // ZUTO_ADAPTATION below. The side is HOST-ASSIGNED and stored durably at registration; no client, profile or account
-// field ever chooses it. Phantom Castle 653 has a separate bounded host route;
-// its missing original issuer is replaced by the disclosed engine-chosen policy.
+// field ever chooses it. Phantom Castle 653 is closed:
+// Global data gives it no entrance, so lane 57 removed the engine-chosen Checkpoint 5913 entrance.
 //
 // AUTHENTICATED NATIVE SOURCES (data/unpacked/data; the Events lane hashed the same files against the Global packs):
 //   share/urbanwarfare/respawn.csv    650: PCCount 100, levels 150-250, World_Index_Red 1 / Ally_Red 1 at 97,258 dir 255,
@@ -87,17 +87,17 @@ export const ZUTO_ADAPTATION = Object.freeze({
 export const ZUTO_DEPENDENCIES = Object.freeze([
   'Trusted source-world identity (World_Index 1 = Helion / red, 2 = Arc / blue). The engine is one server; 6010:60000 "Server cannot be identified." is the original text for this condition. Replaced on this host only by the owner-directed ZUTO_ADAPTATION.',
   'Global per-PC / per-account Zuto entry rule: none in Zuto\'s own refusal set (650:10000-10008); 160:653 belongs to the Draco block and the host has no trusted machine identity.',
-  'Phantom Castle 653 has no recovered original entry issuer. The disclosed engine-chosen-phantom-castle policy uses native Checkpoint5913 for registered lobby participants, native6011 price200,000 DIL and one-hour4000862 admission ticket, or the reward ticket4000861. Daily quota and single native Fanatic encounter are explicit engine choices; generic/synthetic admission stays closed.',
+  'Phantom Castle 653 has no recovered original entry issuer. Global binds the quest6011 issuance dialogue (200,000 DIL, one-hour 4000862) to no NPC and no table issues 4000862 or the reward ticket 4000861, so the guessed issuer, price and daily quota were removed (lane 57). Global has no entrance to 653 either (no NPC job, warp, teleport or location targets it), so the engine-chosen Checkpoint5913 entrance was removed (lane 57 follow-up 3); all admission to 653 stays closed.',
   'Lobby routing: wincondition gives 651 for both sides while dungeonlist 653 exits to 651/652; level ranges conflict (respawn 150-250, map 170-250, teleport 133 level 185).',
   'Help art "every Saturday / 100 vs 100" versus time.csv Day 2 and Day 6.',
 ]);
 
-// Native multi-world origin remains unresolved. The separately documented,
+// Native multi-world origin: REMOVED (lane 71: no Global, older-server or online source). The separately documented,
 // owner-directed ZUTO_ADAPTATION uses one host's persisted balanced assignments;
 // it does not claim to recover the missing authenticated source-world resolver.
 export const ZUTO_FACTION_PROPOSAL = Object.freeze({
   enabled: false,
-  label: 'UNRESOLVED: authenticated native source-world membership is unavailable.',
+  label: 'REMOVED (no source): authenticated native source-world membership is unavailable, so this proposal stays disabled.',
   options: Object.freeze(['authenticated source-world membership supplied by the host account backend']),
 });
 

@@ -24,7 +24,8 @@ export function decodeRGBA(buf) {
 export async function loadRGBA(keys) {
   for (const k of keys) {
     if (!k) continue;
-    const buf = await tryFetchBuffer(k).catch(() => null);
+    // tryFetchBuffer already maps missing -> null and rethrows transient transport errors.
+    const buf = await tryFetchBuffer(k);
     if (!buf) continue;
     const img = decodeRGBA(new Uint8Array(buf));
     if (img) return img;
@@ -63,15 +64,26 @@ export async function loadTexture(game, keys, { repeat = true } = {}) {
       try {
         const t = await tc.load(k, { repeat, _quiet: true });
         if (t && t !== tc.placeholder) return fixTexture(t);
-      } catch { /* next candidate */ }
+      } catch (err) {
+        if (err?.transient) throw err;
+        /* next candidate */
+      }
     }
     return null;
   }
   const id = keys.join('|') + (repeat ? '' : '#clamp');
-  if (!localCache.has(id)) {
-    localCache.set(id, loadRGBA(keys).then(img => (img ? rgbaTexture(img, { repeat }) : null)));
+  let p = localCache.get(id);
+  if (!p) {
+    p = loadRGBA(keys).then(img => (img ? rgbaTexture(img, { repeat }) : null)).catch(err => {
+      if (err?.transient) {
+        if (localCache.get(id) === p) localCache.delete(id);
+        throw err;
+      }
+      return null;
+    });
+    localCache.set(id, p);
   }
-  return localCache.get(id);
+  return p;
 }
 
 function fixTexture(t) {

@@ -4,13 +4,34 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>DK Command Center</title>
-<link rel="icon" type="image/png" href="img/dk-logo-64.png">
+<link rel="icon" type="image/png" href="img/engine-logo-outline.png">
 <link rel="stylesheet" href="css/tokens.css">
 <link rel="stylesheet" href="css/app.css">
+<link rel="stylesheet" href="css/port.css">
 <link rel="modulepreload" href="js/main.js">
 <link rel="modulepreload" href="js/ui/components.js">
 <link rel="modulepreload" href="js/pages/home.js">
 <script type="module" src="js/main.js"></script>
 </head>
-<body></body>
+<body>
+<div id="splash" role="status" aria-live="polite" aria-busy="true">
+  <div class="splash-in">
+    <img class="splash-logo" src="img/engine-logo-outline.png" width="96" height="96" alt="">
+    <div class="splash-name">DK Command Center</div>
+    <div class="splash-phase" id="splash-phase">1 / 4  START</div>
+    <div class="splash-sub" id="splash-sub">Starting the launcher shell…</div>
+    <div class="splash-bars" aria-hidden="true">
+      <div class="splash-bar"><i id="splash-bar-overall" style="width:8%"></i></div>
+      <div class="splash-bar splash-bar-fine"><i id="splash-bar-fine" style="width:18%"></i></div>
+    </div>
+    <div class="splash-detail" id="splash-detail">Preparing UI</div>
+    <ol class="splash-steps" id="splash-steps">
+      <li class="now" data-step="start"><span class="mk">1</span>Start</li>
+      <li data-step="session"><span class="mk">2</span>Session</li>
+      <li data-step="backend"><span class="mk">3</span>Backend</li>
+      <li data-step="home"><span class="mk">4</span>Home</li>
+    </ol>
+  </div>
+</div>
+</body>
 </html>

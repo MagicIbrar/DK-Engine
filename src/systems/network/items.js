@@ -1,6 +1,6 @@
-/** Original inventory UI sends intents; only canonical snapshots mutate its arrays. */
+﻿/** Original inventory UI sends intents; only canonical snapshots mutate its arrays. */
 import {sharedItemCooldown} from '../../ui/cooldown.js';
-import {restoreCursor} from '../items/ui/common.js';
+import {restoreCursor,cursorPlaceSound} from '../items/ui/common.js';
 import {confirmItemUse} from '../items/use-confirm.js';
 export function installSharedItems(game, network) {
   const sys=game.items;if(!sys)return;
@@ -20,7 +20,7 @@ export function installSharedItems(game, network) {
   const send=(type,payload)=>network.action(type,payload).then(result=>!!result);
   const cursor=(operation,payload={})=>send('cursor',{operation,revision:game.save.itemCursor?.revision||0,...payload});
   sys.cursorPickup=source=>cursor('pickup',{container:source.from,uid:source.uid,...(source.slot==null?{}:{slot:source.slot}),...(source.preset==null?{}:{preset:source.preset}),...(source.parentUid==null?{}:{parentUid:source.parentUid})});
-  sys.cursorPlace=(container,point)=>cursor('place',{container,...point,uid:game.save.itemCursor?.item?.uid});
+  sys.cursorPlace=(container,point)=>{const def=sys.db.def?.(game.save.itemCursor?.item?.itemIndex);return cursor('place',{container,...point,uid:game.save.itemCursor?.item?.uid}).then(ok=>{if(ok)cursorPlaceSound(sys,container,def);return ok;});};
   sys.cursorCancel=()=>cursor('cancel',{uid:game.save.itemCursor?.item?.uid});
   sys.cursorDiscard=(uid,revision)=>cursor('discard',{uid,revision});
   const at=point=>point?{page:point.page,x:point.x,y:point.y}:{};
@@ -36,7 +36,18 @@ export function installSharedItems(game, network) {
   sys.unequipTo=(target,slot,preset,point)=>target===sys.bag?sys.unequip(slot,preset,point):target===sys.costumeBag?send('costume',{operation:'unequip',slot,...(preset==null?{}:{preset}),...at(point)}):Promise.resolve(network.unavailable('This equipment destination'));
   sys.equipFromDrag=(drag,slot,preset)=>drag.from==='equip'?drag.preset===preset?(drag.slot===slot?Promise.resolve(true):send('equipswap',{slot:drag.slot,targetSlot:slot,preset})):Promise.resolve(network.unavailable('Equipment slot move between presets')):sys.equipItem(drag.inst,slot,preset);
   sys.clonePreset=(item,slot,preset,targets)=>send('clonepreset',{slot,preset,...(Array.isArray(targets)?{targets}:{})});
-  sys.setPreset=preset=>send('preset',{preset});sys.swapWeaponTab=()=>send('weapontab',{});
+  sys.setPreset=preset=>{
+    // Optimistic display: all 5 presets already live in the server-owned save.equip snapshot.
+    // Paint the new sheet immediately; the server ack only confirms. Revert if the action fails.
+    const i=Number(preset);if(!Number.isInteger(i)||i<0||i>4)return Promise.resolve(false);
+    if(i===sys.equip?.data?.active)return Promise.resolve(true);
+    if(sys.game.player?.dead)return Promise.resolve(false);
+    const prev=sys.equip.data.active;sys.equip.data.active=i;sys.changed?.('preset');
+    return send('preset',{preset:i}).then(ok=>{
+      if(!ok&&sys.equip.data.active===i){sys.equip.data.active=prev;sys.changed?.('preset');}
+      return !!ok;
+    });
+  };sys.swapWeaponTab=()=>send('weapontab',{});
   sys.receiveCash=(item,point)=>send('cashclaim',{uid:item.uid,...at(point)});
   sys.stashDeposit=(item,point)=>{
     const tab=sys.storageTab?.();

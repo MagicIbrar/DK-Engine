@@ -44,6 +44,7 @@ export const UNLIMITED = 999999999;
 // is OPEN the pool is 4 (3 background + 1 visible); the visible page always has a slot (page-assets.js) and the shared preparation
 // queue (items/preview-queue.js) caps live bakes at 4. Closed (the idle prewarm during play) it stays at the 2.2.0 value of 2.
 const SHOP_ICON_CONCURRENCY_IDLE = 2, SHOP_ICON_CONCURRENCY_OPEN = 4;
+const WING_WARM_PAGES = 12;   // ICON-PRELOAD: Wings-tab pages kept ready at startup (prewarm below)
 const PER_PAGE = 9, COLS = 3, CELL_W = 242, CELL_H = 121, CELL_X = 15, CELL_Y = 338;
 const CART_COLS = 7, CART_ROWS = 4, CART_X = 753, CART_Y = 470, SLOT = 33;
 const NAME_RECT = [84, 32, 143, 14];                     // lbl_itemname in pan_goodsinfo
@@ -85,11 +86,13 @@ function makeCashShop(game, api, cfg) {
   };
   const decodedURLs = new Map();
   st.decodedURLs = decodedURLs;
-  const assets = new ShopPageAssets(async (i, { background = false } = {}) => {
+  // mode: 'foreground' | 'background' (prefetch bake) | 'disk' (ICON-PRELOAD: memory / persistent icon cache only, no bake)
+  const prepareProduct = async (i, mode = 'foreground') => {
     const generation = iconGeneration();
     await itemInfoFull(game, i);
     const icons = game.items?.icons;
-    const icon = await (background && icons?.background ? icons.background(() => itemIcon(game, i, 60, 60)) : itemIcon(game, i, 60, 60));
+    const request = () => itemIcon(game, i, 60, 60);
+    const icon = await (mode === 'disk' && icons?.diskOnly ? icons.diskOnly(request) : mode === 'background' && icons?.background ? icons.background(request) : request());
     if (generation !== iconGeneration()) return null;
     const release = borrowPreviewIcon(icon);
     try {
@@ -104,9 +107,11 @@ function makeCashShop(game, api, cfg) {
       } else { decodedURLs.delete(icon.url); decodedURLs.set(icon.url, decoded); }
       await decoded;
     }
-    return generation === iconGeneration() ? icon : null;
+    return generation === iconGeneration() && icon?.url ? icon : null;
     } finally { release(); }
-  }, { concurrency: SHOP_ICON_CONCURRENCY_IDLE, paused: () => game._loadingMap === true });   // 2.2.1: no prefetch bakes while a map loads (page-assets.js)
+  };
+  const assets = new ShopPageAssets((i, { background = false } = {}) => prepareProduct(i, background ? 'background' : 'foreground'),
+    { concurrency: SHOP_ICON_CONCURRENCY_IDLE, paused: () => game._loadingMap === true });   // 2.2.1: no prefetch bakes while a map loads (page-assets.js)
   st.iconCache = assets.cache; st.assets = assets;
   function syncIconGeneration() {
     const generation = iconGeneration();
@@ -230,6 +235,7 @@ function makeCashShop(game, api, cfg) {
       else selectTab(st.main ?? 0, st.sub ?? 0);
       renderCart();
       game.events?.emit?.('dshop:open', { vip: !!cfg.vip });
+      if (st.deepWarm) { const w = st.deepWarm; st.deepWarm = null; w(); }   // PERF-CROWD2: deferred deep-page prefetch
     },
     onClose() { assets.setConcurrency(SHOP_ICON_CONCURRENCY_IDLE); st.pageAbort?.abort(); st.prefetchAbort?.abort(); ++st.tok; game.uiwin.tooltips.hide(); if (st.preview) st.preview.auto = false; },
     update(win, dt) { if (st.preview && st.previewItem != null) { st.preview.auto = true; st.preview.tick(dt); } },
@@ -741,42 +747,66 @@ function makeCashShop(game, api, cfg) {
       const first = tabs()[0];
       if (!first) return;
       const sub = first.subs.find(s => !s.legacyOnly)?.sub ?? 0;
-      // Only the default visible page, never the whole cash catalogue.
+      // UI-PRELOAD-NOLAG: first tab pages 1-3 + first wings page join the loading barrier (priority 0).
       const ids = products().filter(p => p.main === first.main && (cfg.vip || p.sub === sub))
-        .slice(0, PER_PAGE).map(p => p.items[0]).filter(i => i != null);
-      // Native-only catalog: just the first visible Wings page at entry.
-      // The selected page later prepares its next two pages, never the catalog.
+        .slice(0, PER_PAGE * 3).map(p => p.items[0]).filter(i => i != null);
       const wings = cfg.vip ? [] : products().filter(p => p.main === WING_SHOP_MAIN && isNativeWing(p.items[0]))
-        .slice(0, PER_PAGE).map(p => p.items[0]);
+        .slice(0, PER_PAGE * 2).map(p => p.items[0]);
+      // Also barrier-warm page 1 of every other main tab so tab switches open hot.
+      const tabHomes = cfg.vip ? [] : tabs().slice(1).flatMap(t => {
+        const s = t.subs.find(x => !x.legacyOnly)?.sub ?? 0;
+        return products().filter(p => p.main === t.main && p.sub === s).slice(0, PER_PAGE).map(p => p.items[0]);
+      }).slice(0, PER_PAGE * 6);
       for (let attempt = 0; attempt < 3; attempt++) {
         syncIconGeneration();
         const generation = iconGeneration();
-        // Priority 0 (2.2.1, was 1): the loading screen waits for this page, so it is not a pausable prefetch.
-        await assets.page([...ids, ...wings], { priority: 0 });
+        await assets.page([...ids, ...wings, ...tabHomes], { priority: 0 });
         if (generation === iconGeneration()) break;
       }
-      // Bounded first-visible preparation: one page per main category (35 icons
-      // in the current D-Shop), not every subcategory, variant or catalogue item.
-      // This background work never extends the loading-screen prerequisite, and (2.2.1) it starts only once the world is
-      // shown: it used to share the main thread with the loading screen (engine/after-load.js).
-      if (!cfg.vip) {
-        const next = tabs().slice(1).flatMap(t => {
-          const sub = t.subs.find(s => !s.legacyOnly)?.sub ?? 0;
-          return products().filter(p => p.main === t.main && p.sub === sub).slice(0, PER_PAGE).map(p => p.items[0]);
-        }).slice(0, PER_PAGE * 4);
-        afterWorldReady(game, () => { void assets.page(next, { priority: 4 }).catch(() => {}); });
-        // Wings pages 2-3 are baked in the background too (its icons take 0.7-1.8 s each). Lowest priority and one background
-        // slot: it never delays a page the player is looking at. 2.2.1: bounded like the other tabs. The whole native catalog
-        // (9,421 wings x 0.7-1.8 s = 1.8-4.7 hours of icon renders on one slot) never finished, kept rendering during play, and cycled the
-        // 400-icon preview cache (ui/preview-cache.js) so the player's own bag icons were evicted and re-rendered on the next
-        // map load (3.7 s of "Preparing inventory and skill icons" back in Ardeca, measured).
-        const rest = products().filter(p => p.main === WING_SHOP_MAIN && isNativeWing(p.items[0])).map(p => p.items[0]).slice(PER_PAGE, PER_PAGE * 3);
-        // Then pages 2-3 of every other tab's default list (bounded: ~27 icons per tab, well inside the icon cache).
-        const more = tabs().slice(1).flatMap(t => {
-          const sub = t.subs.find(s => !s.legacyOnly)?.sub ?? 0;
-          return products().filter(p => p.main === t.main && p.main !== WING_SHOP_MAIN && p.sub === sub).slice(PER_PAGE, PER_PAGE * 3).map(p => p.items[0]);
-        });
-        afterWorldReady(game, () => { void assets.page([...rest, ...more], { priority: 5 }).catch(() => {}); }, { timeout: 6000 });
+      // ICON-PRELOAD (2026-10-30): EVERY product of every authored tab / sub-tab / page is retained (the pool used to keep 72).
+      // The source-native Wings tab lists ~9,400 original wings (1,000+ pages): its first WING_WARM_PAGES pages are
+      // warmed the same way; deeper Wings pages keep the existing page-ahead prefetch (baking all of them would cost
+      // ~1 hour of GPU time and hundreds of MB of disk and memory).
+      // Products whose icon an earlier session already baked (persistent icon cache, items/icon-disk-cache.js) are
+      // read from disk inside the loading barrier, so any page opens complete. The rest bake one at a time after the
+      // world is shown (paused while a map loads; PERF-CROWD2 burst concern) and are persisted for the next start.
+      // Kill switch for the disk pass: globalThis.__dekaronNoShopDiskWarm = true
+      // Per Wings sub-tab, in the order its pages list them (listNow).
+      const wingWarm = cfg.vip ? [] : tabs().filter(t => t.main === WING_SHOP_MAIN).flatMap(t => t.subs.filter(s => !s.legacyOnly)
+        .flatMap(s => products().filter(p => p.main === t.main && p.sub === s.sub).slice(0, PER_PAGE * WING_WARM_PAGES)));
+      const all = [...new Set([...products().filter(p => cfg.vip || p.main !== WING_SHOP_MAIN), ...wingWarm]
+        .map(p => p.items?.[0]).filter(i => i != null))];
+      assets.limit = Math.max(assets.limit, all.length + PER_PAGE * 2);
+      const report = { products: all.length, cached: 0, missing: 0, ms: 0 };
+      if (globalThis.__dekaronNoShopDiskWarm !== true && game.items?.icons?.diskOnly) {
+        const t0 = performance.now(), generation = iconGeneration(), todo = all.filter(i => !assets.now(i));
+        let cursor = 0;
+        const worker = async () => {
+          while (cursor < todo.length && generation === iconGeneration()) {
+            const i = todo[cursor++];
+            try { const icon = await prepareProduct(i, 'disk'); if (icon && !assets.now(i)) { assets.cache.set(i, icon); report.cached++; } } catch { /* idle bake below */ }
+          }
+        };
+        await Promise.all(Array.from({ length: 8 }, worker));
+        report.ms = Math.round(performance.now() - t0);
+      }
+      report.missing = all.filter(i => !assets.now(i)).length;
+      game[cfg.vip ? '_vipIconWarm' : '_dshopIconWarm'] = report;
+      if (!st.idleBake && report.missing) {
+        st.idleBake = true;
+        const idleBake = () => {
+          const missing = all.filter(i => !assets.now(i));
+          let k = 0;
+          const next = async () => {
+            if (k >= missing.length) { st.idleBake = false; return; }
+            if (game._loadingMap || !game._worldReady) { setTimeout(next, 250); return; }
+            const i = missing[k++];
+            if (!assets.now(i)) await assets.get(i, { priority: 4 }).catch(() => null);
+            setTimeout(next, 32);
+          };
+          void next();
+        };
+        afterWorldReady(game, idleBake, { timeout: 4000 });
       }
     },
     open: (arg) => game.uiwin.open(cfg.name, arg),
@@ -875,6 +905,7 @@ export function createBoxInfo(game) {
       if (!e) continue;
       const pct = e[2] != null ? `  ${e[2].toFixed(T.dshop?.randomBoxes?.showDigit?.[st.item] ?? 2)}%` : '';
       cb.setText(`${itemInfo(game, e[0]).name}${e[1] > 1 ? ` x${e[1]}` : ''}${pct}`);
+      cb.setEnabled(true);
       cb.setChecked(st.sel.has(i));
     }
     const sel = st.mode === 'select';

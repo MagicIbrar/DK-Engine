@@ -20,7 +20,7 @@ import { applyInvitationPreference } from '../hud-options/invitation-policy.js';
 import { DK_SQUARE_CHOSEN as C } from '../../config/engine-chosen-dk-square.js';
 import { DK_SQUARE_JOB, DK_SQUARE_SCRIPTS as W, DK_SQUARE_TEXT } from './dksquare-rules.js';
 import { SUNSTONE_JOB, fmtClock } from '../arena/arena-rules.js';
-import { arenaString, fillBattleInfo, fillBoard, teamLabel } from '../arena/arena.js';
+import { arenaRaw, arenaString, fillBattleInfo, fillBoard, presentArenaLine, teamLabel } from '../arena/arena.js';
 import { placeAlarmButton } from '../extras/alarm-slots.js';
 import {atlas} from '../../ui/atlas.js';
 import {repairDkSquareDownScroll} from '../../ui/native-scroll-art.js';
@@ -53,7 +53,8 @@ export function installSharedDkSquare(game, network) {
   const online = () => !!network?.active && game.save?.authority === 'server';
   const now = () => (network._serverClock ? network._serverClock.time + performance.now() - network._serverClock.at : Date.now());
   const report = e => { const m = plain(e?.message || String(e)); (game.chat?.system?.(m, 'err')) ?? game.hud?.log?.(m, 'err'); };
-  const say = m => { const s = plain(m); if (s) (game.chat?.system?.(s)) ?? game.hud?.log?.(s); };
+  const say = m => { const s = plain(m); presentArenaLine(game, m, s); if (s) (game.chat?.system?.(s)) ?? game.hud?.log?.(s); };
+  const sayCode = code => say(arenaRaw(game, 160, code));
   const send = async (operation, fields = {}) => {
     if (disposed || !network.active) return null;
     try { const r = await network.action('dksquare', { operation, ...fields }); return r?.dkSquareResult ?? null; } catch (e) { report(e); return null; }
@@ -100,7 +101,7 @@ export function installSharedDkSquare(game, network) {
   }
   const handlers = {
     [DK_SQUARE_JOB]: (n, info) => { if (!online()) return false; game.uiwin?.close?.('npc'); void openLobbyList(Number(info?.npcIndex ?? n?.npcIndex ?? n?.index ?? n?.def?.index)); return true; },
-    [SUNSTONE_JOB]: () => { if (!online() || !inBattle()) return false; game.uiwin?.close?.('npc'); void send('commune').then(r => { if (r?.communing) say(S(game, 206, '')); }); return true; },
+    [SUNSTONE_JOB]: () => { if (!online() || !inBattle()) return false; game.uiwin?.close?.('npc'); void send('commune').then(r => { if (r?.communing) sayCode(206); }); return true; },
   };
   let services = null;
   function register() {
@@ -195,7 +196,7 @@ export function installDkSquareWindows(game, network) {
   ui.registerWindow('dk_time', { script: W.time, hud: true, escClose: false, remember: false,
     update(win) {
       const b = bat(); if (!b?.inside) { win.close(); return; }
-      const t = now(), end = b.phase === 'over' ? b.finishAt : b.endsAt, total = b.phase === 'over' ? C.finishWaitSec * 1000 : Math.max(1, (b.endsAt || 0) - (b.startAt || 0));
+      const t = now(), end = b.phase === 'over' ? b.finishAt : b.endsAt, total = b.phase === 'over' ? 1 : Math.max(1, (b.endsAt || 0) - (b.startAt || 0));
       win.control('lbl_waittime').setText(fmtClock((end || 0) - t));
       win.control('processbar').setGauge?.(Math.max(0, Math.min(1, ((end || 0) - t) / total)));
     } });
@@ -255,8 +256,8 @@ export function installDkSquareWindows(game, network) {
       for (const code of b.missions || []) game.chat?.system?.(S(game, code, ''), 'sys');
     }
     if (b?.inside && b.phase === 'over' && pb?.phase === 'fight') open('dk_msgbox', '');
-    if (s.result && s.result.at !== last.result?.at) { open('dk_info'); game.chat?.system?.(s.result.winner < 0 ? S(game, 633, '') : `${teamLabel(game, s.result.winner)}: ${s.result.outcome === 'win' ? 'WIN' : 'LOSE'}`, 'sys'); }
-    if (s.notice && s.notice.at !== last.notice?.at) { const text = s.notice.reason === 'cancelled' ? S(game, 49, '') : s.notice.reason === 'someCancelled' ? S(game, 98, '') : ''; if (text) game.chat?.system?.(plain(text), 'sys'); }
+    if (s.result && s.result.at !== last.result?.at) { open('dk_info'); if (s.result.winner < 0) presentArenaLine(game, arenaRaw(game, 160, 633), S(game, 633, '')); game.chat?.system?.(s.result.winner < 0 ? S(game, 633, '') : `${teamLabel(game, s.result.winner)}: ${s.result.outcome === 'win' ? 'WIN' : 'LOSE'}`, 'sys'); }
+    if (s.notice && s.notice.at !== last.notice?.at) { const code = s.notice.reason === 'cancelled' ? 49 : s.notice.reason === 'someCancelled' ? 98 : 0, text = code ? S(game, code, '') : ''; if (code) presentArenaLine(game, arenaRaw(game, 160, code), plain(text)); if (text) game.chat?.system?.(plain(text), 'sys'); }
     if (s.open && s.rank && !l && !isOpen('dk_active')) open('dk_active');
     last = s; lastAuto = auto;
   });

@@ -8,6 +8,11 @@
 export const ENGINE_CHOSEN_TAG = 'ENGINE-CHOSEN (not in Global data)';
 export const CARNIVAL_CHOSEN = Object.freeze({
   tag: ENGINE_CHOSEN_TAG,
+  // Lane 71: CLOSED. Global has no entrance (no NPC carries job 123 MONSTER_CARNIVA, no lobby button in the data) and no Global,
+  // decompile, older-server or online source gives the team rules below (CP costs, skill effects / durations, result seconds), so
+  // registration is refused like Phantom Castle 653. The values below stay only as the record of what was chosen; flip this flag
+  // only when a source for the entrance and the rules is found.
+  closed: true,
   // ENGINE-CHOSEN (not in Global data): no Global NPC carries job 123 MONSTER_CARNIVA (jobtypeconfig.csv) and no lobby button is in the data; the chat command /carnival opens the lobby from any field map.
   opener: '/carnival',
   // ENGINE-CHOSEN (not in Global data): 161:216 "Only one character can apply for admission on one PC" is not enforced beyond the session layer (one live character per account): the host has no trusted machine identity.

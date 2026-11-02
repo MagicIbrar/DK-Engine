@@ -17,4 +17,4 @@ Statuses that had no effect before:
 
 The release package contains no Global game assets: supply your own Global folder when setup requests it. Existing installation state is preserved by the updater; keep your own backup before updating.
 
-Contributors: Franky, DEV ShadoW, CYBER, Magic Ibrar.
+Contributors: DEV ShadoW, CYBER, Magic Ibrar.

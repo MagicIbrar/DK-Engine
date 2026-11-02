@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { gfxB } from '../../config/gfx-b-switches.js'; // gfx-B2 round 3
 
 // ENGINE-CHOSEN blur/composite: Global supplies glow/upgrade textures, but the
 // original blurglow.fx weights and offsets are runtime values, absent from data.
@@ -60,6 +61,7 @@ export function previewGlowRGBA(pixels, output = new Uint8ClampedArray(pixels.le
 
 /** Composite each frame independently so a sprite-sheet neighbour cannot bleed. */
 export function compositePreviewGlow(base, glow, width, height, cols, rows, pixelScale = 2) {
+  if (gfxB('previewGlowHaloOff')) return base;   // gfx-B2 round 3: engine-chosen blur halo off; base already carries the emissive glow map
   const frame = document.createElement('canvas'); frame.width = width; frame.height = height;
   const output = document.createElement('canvas'); output.width = base.width; output.height = base.height;
   const f = frame.getContext('2d'), out = output.getContext('2d');

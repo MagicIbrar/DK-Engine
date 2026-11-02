@@ -1,8 +1,8 @@
 // Character transfer ("Character Move"): game2/chartradewnd (ui_chartradewnd "Transfer Character"
 // 100:85, ui_chartradeinfownd "Character Transfer Information" 100:84, ui_invitechartrade 100:37) and
 // msgbox/ui_chartradeinvite (100:38 + 556:58), strings stringtable_chartrade 556:0-60, player menu 240:103.
-// Values the shipped client data does not contain. Every value here is ENGINE-CHOSEN (not in Global data): the
-// original server and its web-site authorization (556:56) are not shipped. Shared by the host
+// Most values here are ENGINE-CHOSEN (not in Global data): the original server and its web-site
+// authorization (556:56) are not shipped. Exception: receiverMaxCharacters is Evidenced from Global UI/native. Shared by the host
 // (server/world/char-trade.mjs, server/accounts/char-transfer.mjs) and the client (src/systems/chartrade).
 export const ENGINE_CHOSEN_TAG = 'ENGINE-CHOSEN (not in Global data)';
 export const CHAR_TRADE_ENGINE_CHOSEN = Object.freeze({
@@ -16,7 +16,9 @@ export const CHAR_TRADE_ENGINE_CHOSEN = Object.freeze({
   // a character still referenced by shared records (guild roster, mail, listings, receipts ...) keeps those records
   // valid only on its account: it is refused with 556:50 "This character is restricted from transfer."
   refuseReferencedCharacters: true,
-  receiverMaxCharacters: 100,   // = the account character limit of character creation; full -> 556:49
+  receiverMaxCharacters: 18, // Global UI capacity (evidenced): ui_charselectwnd character_list_btn_0..8 (9/page) + btn_page_1/2 => 18; Global outranks older Login MAX_COUNT_CHARACTER=12
+  // Evidence: global-prepared prepared-client data/script/ui/game2/ui_charselectwnd.txt (btns 0-8, pages 1-2). stringtable MAX_COUNT_CHAR msgs have no number. Older Login Config.ini=12 demoted.
+  // Server/protocol cap only; approved UI layout (select.js ROWS_PER_PAGE/PAGES presentation) untouched.
   range: 12,                    // cells between the two players (= the item trade)
   inviteMs: 60000,              // invitation lifetime (= the item trade)
   sessionMs: 300000,            // open window lifetime, renewed by every change (= the item trade)

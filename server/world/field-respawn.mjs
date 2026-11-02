@@ -1,11 +1,12 @@
 import {serializeLife} from './life-transactions.mjs';
-import {forcedRespawnLocation} from './wanted.mjs';
+import {forcedRespawnLocation,noteSafeTime} from './wanted.mjs';
 import {travelLocation,boundReturnTarget} from './travel.mjs';
 import {reviveScene,isDkChannel} from './channels.mjs';
 import {publishProfileChanges,refreshConcurrentBuffStats,persistInterveningProgress} from './profile-publication.mjs';
 import {mergeRewardProgress} from './reward-progress.mjs';
 import {trackForcedDisplacement} from './movement-authority.mjs';
 import {initializePets} from './pets.mjs';
+import {applyRespawnVitals} from '../../src/game/progression.js';
 const fail=(message,status=409)=>{throw Object.assign(Error(message),{status});};
 
 // Ordinary field revival: original bound return point, native chaotic-band
@@ -40,7 +41,8 @@ export async function reviveNativeField(world,p,premiumAt,authorize){
   // ordinary shared skill refresh does, without persisting them as buffs.
   const passives=p._skills?.engine?.passiveEntries?.()||[];
   candidate.stats=world.data.stats({...profile,buffs:[...(profile.buffs||[]),...passives]},candidate,world.now());
-  candidate.maxHp=candidate.stats.maxHp;candidate.hp=candidate.maxHp;candidate.mp=candidate.stats.maxMp||0;
+  candidate.maxHp=candidate.stats.maxHp;
+  { const vitals=applyRespawnVitals(candidate, world.data); candidate.hp=vitals.hp; candidate.mp=vitals.mp; }
   candidate.maxShield=Math.max(0,Number(candidate.stats.maxShield)||0);candidate.shield=candidate.maxShield;
   world.changed(candidate);p.sceneTransition=true;
   try{
@@ -51,10 +53,16 @@ export async function reviveNativeField(world,p,premiumAt,authorize){
    for(const key of ['map','channel','x','z','yaw','path','attackTarget','smartWarp','mount','pet','dead'])p[key]=candidate[key];
    p.revision=candidate.revision+intervening;p.dirty=!!candidate.dirty||intervening!==0;p.saveError=candidate.saveError||null;
    refreshConcurrentBuffStats(world,p,before.profile);
-   p.hp=p.maxHp;p.mp=p.stats.maxMp||0;p.maxShield=Math.max(0,Number(p.stats.maxShield)||0);p.shield=p.maxShield;delete p.respawnReadyAt;
+   p.hp=candidate.hp;p.mp=candidate.mp;p.maxShield=Math.max(0,Number(p.stats.maxShield)||0);p.shield=p.maxShield;delete p.respawnReadyAt;
    trackForcedDisplacement(world,p);world.snapshotPublicRows?.delete(p);
    if(source!==p.map||channel!==p.channel){world.emit(source,{type:'leave',actorId:p.id,instanceId:null,channel});world.emit(p.map,{type:'join',actorId:p.id,instanceId:null,channel:p.channel});}
    for(const [map,event]of merged.notices)world.emit(map,event);
+   // Field-PK Safe Time on revive after a PK death (stringtable_pc 1003:10; formula.ini dwNonPKTime).
+   if(p.pkSafePending){
+     delete p.pkSafePending;
+     const ms=Number(world.data?.pvpRules?.nonPkTimeMs)||0;
+     if(ms>0){ noteSafeTime(world,p,ms); world.emit(p.map,{type:'pk',reason:'safetime',actorId:p.id,targetId:p.id,recipients:[p.id]}); }
+   }
    world.emit(p.map,{type:'revive',actorId:p.id,instanceId:null});await persistInterveningProgress(world,[p]);
   }finally{p.sceneTransition=transition;}
   return true;

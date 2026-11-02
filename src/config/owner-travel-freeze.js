@@ -6,3 +6,8 @@
 export const TRAVEL_FREEZE_MS = 10000;
 /** Cast kinds (p.smartWarp.kind) that freeze movement while they prepare. */
 export const TRAVEL_FREEZE_KINDS = Object.freeze(['channel', 'mapnpc', 'premium']);
+
+// Global ESC Exit Game / Character Select: ui_systemwaitwnd.txt purple Store-Game bar.
+// Packed client has no duration field; owner/Global feel is ~10-15s. Use midpoint.
+export const SYSTEM_LEAVE_WAIT_MS = 12000;
+

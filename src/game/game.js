@@ -10,7 +10,9 @@ import { prewarmEffectPrimitives } from '../systems/skills/effect-prewarm.js';
 import { applyDungeonArrivalView } from '../systems/network/dungeon-arrival.js';
 import { tickShaderPrewarm, settleShaderPrewarm, markProgramsTouched } from '../engine/shader-prewarm.js';
 import { prewarmDilPiles } from '../systems/items/drop-prewarm.js';
-import { prewarmGlobalPreload } from '../engine/global-preload-warm.js';
+import { collectOrderedPreload, warmOrderedPreload } from '../engine/global-startup-preload.js';
+import { MAP_CHANGE_HITCH } from '../engine/map-change-hitch.js';
+import { MAP_PACING, MAP_CATCH_UP_MS, MAP_FINISH_MS, MAP_MAX_STEP_MS } from '../config/engine-chosen-map-pacing.js';
 import { compileSceneInParts } from '../engine/scene-compile.js';
 // Game orchestrator: owns the renderer, the frame loop, map transfer and saving.
 // Module contracts: docs/ARCHITECTURE.md.
@@ -39,11 +41,44 @@ import { saveCharacter, loadSettings, saveSettings } from './save.js';
 import { UIManager } from '../ui/uiwin/index.js';
 import { installGlobalWindows } from '../ui/uiwin/global-windows.js';
 import { installSystems, updateSystems, preloadSystemModules } from '../systems/index.js';
+import { spawnCustomNpcs } from '../custom/party-rocker/party-rocker.js';   // CUSTOM party-rocker (not Global): remove with src/custom/party-rocker/
 
 const AUTOSAVE_SECONDS = 20;
 
 /** A FILE-frame position with finite x and z. */
 const validPos = p => !!p && p.x != null && p.z != null && Number.isFinite(Number(p.x)) && Number.isFinite(Number(p.z));
+
+// PERF-ACTORGPU helpers (see travel)
+const ACTOR_GROUP = /^(npc|monster|crowd)/;
+function gpuRefs(root, geoms, texs, attrs = null) {
+  root.traverse(o => {
+    if (o.geometry?.isBufferGeometry) {
+      geoms.add(o.geometry);
+      // GPU buffers belong to attributes, which other geometries can share (the crowd batches share the parts' attributes)
+      if (attrs) { for (const k in o.geometry.attributes) attrs.add(o.geometry.attributes[k]); if (o.geometry.index) attrs.add(o.geometry.index); }
+    }
+    const ms = Array.isArray(o.material) ? o.material : o.material ? [o.material] : [];
+    for (const m of ms) {
+      for (const k in m) { const v = m[k]; if (v && v.isTexture) texs.add(v); }
+      if (m.uniforms) for (const u of Object.values(m.uniforms)) if (u?.value?.isTexture) texs.add(u.value);
+    }
+  });
+}
+function collectActorGpu(game) {
+  const geoms = new Set(), texs = new Set(), root = game.worldRoot;
+  if (!root) return null;
+  for (const c of root.children) if (typeof c.name === 'string' && ACTOR_GROUP.test(c.name)) gpuRefs(c, geoms, texs);
+  return { geoms, texs };
+}
+function releaseActorGpu(game, { geoms, texs }) {
+  const keepG = new Set(), keepT = new Set(), keepA = new Set();
+  gpuRefs(game.scene, keepG, keepT, keepA);
+  const shared = x => (x.index && keepA.has(x.index)) || Object.values(x.attributes).some(a => keepA.has(a));
+  let g = 0, t = 0;
+  for (const x of geoms) if (!keepG.has(x) && !shared(x)) { x.dispose(); g++; }
+  for (const x of texs) if (!keepT.has(x)) { x.dispose(); t++; }
+  game._actorGpuReleased = { geometries: g, textures: t };
+}
 
 export class Game {
   constructor({ canvas, ui, character, initialChannel = undefined, renderer = null, textures = null, models = null, data = null }) {
@@ -72,7 +107,7 @@ export class Game {
     this._initRenderer();
     const loading = showLoading(this.ui, 'Dekaron');
     try {
-      loading.set(LOADING.tables[0], 'Reading game tables…');
+      loading.set(LOADING.tables[0], '');
       this.data = (await Promise.resolve(this._shared.data).catch(() => null))
         || await new GameData().load((f, what) => loading.set(phaseFraction(LOADING.tables, f), `Reading ${what}…`));
       this.classDef = this.data.classByIndex.get(Number(this.save.classIndex)) || this.data.classes[0];
@@ -90,14 +125,14 @@ export class Game {
       this.spawner = new Spawner(this);
       this.controller = new PlayerController(this);
       this._startupJSON = prefetchGameJSON(this.save);
-      loading.set(LOADING.systems[0], 'Starting systems…');
-      const systems = await installSystems(this, (done, total, name) => loading.set(phaseFraction(LOADING.systems, total ? done / total : 1), `Starting systems... ${done}/${total}${name ? ` (${name})` : ''}`));   // src/systems/index.js (one line per system)
+      loading.set(LOADING.systems[0], '');
+      const systems = await installSystems(this, (done, total, name) => loading.set(phaseFraction(LOADING.systems, total ? done / total : 1), ''));   // src/systems/index.js (one line per system)
       // Optional windows may fail independently, but an incomplete item/skill
       // engine (or missing online authority adapter) must not enter a live world.
       const required = ['items', 'skills', ...(this.save.authority === 'server' ? ['network'] : [])];
       const missing = required.filter(name => !systems.installed.includes(name));
       if (missing.length) {
-        const error = new Error('Required game data is not ready. Please retry loading.');
+        const error = (missing.includes('network') && this.systemInstallErrors?.get('network')?.name === 'TimeoutError' ? this.systemInstallErrors.get('network') : new Error('Required game data is not ready. Please retry loading.'));
         error.code = 'GAME-SYSTEMS-NOT-READY'; error.systems = missing;
         throw error;
       }
@@ -206,8 +241,10 @@ export class Game {
     const mapTimes=this._mapLoadTimes={map:requestedMap};
     const started=performance.now();let previous=started;
     const lap=name=>{const now=performance.now();mapTimes[name]=Math.round(now-previous);previous=now;};
-    let complete=false,entryWorld=null;
+    let complete=false,entryWorld=null,entryPlayer=null,entryPlayerInitialized=false;
     this._loadingMap = true;
+    // t104u: no map music until the map is ready (bar ~100% + warm done).
+    try { this.audio?.stopBGM?.(0); } catch { /* audio optional */ }
     this.textures?.uploads?.setPreloading(true);
     this._worldReady = false;
     this._launcherReadiness?.invalidate();
@@ -215,7 +252,7 @@ export class Game {
     const row = this.mapRow(mapIndex) || this.data.mapByIndex(0);
     mapIndex = Number(row.Index);
     const ownLoading = !loading;
-    loading = loading || showLoading(this.ui, row.Name || 'Dekaron');
+    loading = loading || showLoading(this.ui, row.Name || 'Dekaron', mapIndex, { pacing: MAP_PACING, catchUpMs: MAP_CATCH_UP_MS, finishMs: MAP_FINISH_MS, maxStepMs: MAP_MAX_STEP_MS, trackReal: true });
     loading.title(row.Name || 'Dekaron', mapIndex);
     this.paused = true;
     try {
@@ -223,11 +260,17 @@ export class Game {
         throw new Error('Shared network installation did not complete. Retry loading.');
       this._resetTravelState();
       this.windows?.closeAll();
+      // PERF-ACTORGPU (2026-10-30): NPC / monster / crowd actors leaving with the old map kept the GPU copies of their skinned part
+      // geometries and textures (the Model/TextureCache keep the CPU data; three.js frees GPU memory only on dispose()), so GPU memory
+      // grew with every travel. Collected here, released after the old map is gone unless something still in the scene uses them
+      // (three.js re-uploads from the cached CPU data if a later map draws them). Kill switch: globalThis.__dekaronNoActorGpuRelease = true.
+      const actorGpu = globalThis.__dekaronNoActorGpuRelease === true ? null : collectActorGpu(this);
       this.spawner?.clear();
       this.loot?.clear?.();
       for (const n of this.npcs) n.dispose();
       this.npcs = [];
       if (this.world) { this.world.dispose(); this.world = null; }
+      if (actorGpu) { try { releaseActorGpu(this, actorGpu); } catch (err) { console.warn('[game] actor GPU release skipped', err); } }
 
       const world = new World({ game: this });
       // objects load nearest-first around where the player will appear (e.g. a new character's Ardeca 203,247)
@@ -240,7 +283,7 @@ export class Game {
       this.cam.configure(row);
 
       if (!this.player) {
-        loading.set(LOADING.player, 'Summoning your character…');
+        loading.set(LOADING.player, '');
         // 2u: the starting equipment look (items-actions.json: animated weapons) is settled during loading, so no
         // body rebuild runs after spawn; the build below then records its look (items look.prime)
         try {
@@ -248,12 +291,14 @@ export class Game {
           if (acts) await Promise.race([acts, new Promise(r => setTimeout(r, 5000))]);
         } catch { /* items optional */ }
         this.player = new Player(this, this.save, this.classDef);
+        entryPlayer=this.player;
         await this.player.load();
         try { this.items?.look?.prime?.(); } catch { /* items optional */ }
         this.refreshPlayerStats(false);
         if (this.save.hp == null || this.save.hp <= 0) this.player.hp = this.player.maxHp;
         else this.player.hp = Math.min(this.save.hp, this.player.maxHp);
         this.player.mp = this.save.mp == null ? this.player.maxMp : Math.min(this.save.mp, this.player.maxMp);
+        entryPlayerInitialized=true;
       }
       const p = validPos(pos) && world.isWalkable(pos.x, pos.z) ? pos : world.startPoint(!!opts.respawn);
       // A new map has a new ground frame, even when its arrival X/Z is nearby.
@@ -266,20 +311,27 @@ export class Game {
       this.cam.snap();
       lap('player');
 
-      loading.set(LOADING.npcs, 'Placing townsfolk…');
+      loading.set(LOADING.npcs, '');
       // 2.2.1: the shared-world join (a server round trip + the first snapshot) runs while the townsfolk are placed; it only
       // needs the player and the world index, both set above (~250 ms off the loading screen, measured)
       const joined = this.network?.joinMap?.();
       await this._spawnNpcs(world);
       lap('npcs');
-      loading.set(LOADING.monsters, 'Waking the monsters…');
+      loading.set(LOADING.monsters, '');
       if (this.save.authority !== 'server') {
         this.spawner.start(world.spawns);
         try { await this.spawner.prewarm?.(6000); } catch { /* the spawner fills in during play */ }
       }
-      // lane-perf: everything Global's own preload list for this map names (maplist Preloading + common.pre), through the
-      // same model/texture caches the actors use; progress counts finished items (src/engine/global-preload-warm.js)
-      try { mapTimes.globalPreload = await prewarmGlobalPreload(this, row?.Preloading || '', { onProgress: (done, total) => loading.set(LOADING.monsters, `Loading map assets… ${done}/${total}`) }); }
+      // overnight 43.19: one hidden body of every monster kind of this map, drawn by _warmUp's warm draws and released there (game/spawner.js)
+      try { await this.spawner.prewarmKinds?.(world.spawns, 4000); } catch { /* the first kill / spawn of a kind builds it as before */ }
+      // 4.3.2 E: Global's preload list for this map (common.pre, common_effect.pre, then maplist Preloading), in .pre file
+      // order with includes expanded at their line (engine/global-startup-preload.js); meshes/tpacks/anims parse through
+      // the shared model cache, textures are fetched into the buffer cache. The bar advances per finished item.
+      try {
+        const set=await collectOrderedPreload(['common.pre','common_effect.pre',row?.Preloading||''].map(s=>String(s).trim()).filter(Boolean));
+        const ledger=await warmOrderedPreload(set.order,{models:this.models,textures:this.textures,lanes:8,onProgress:(done,total)=>loading.set(phaseFraction(LOADING.globalPreload,total?done/total:1),`Loading map assets… ${done}/${total}`)});
+        mapTimes.globalPreload={entry:row?.Preloading||'',items:ledger.items,failed:ledger.failed.length,missing:ledger.missing.length,absentIncludes:set.missing.map(m=>m.name),aliased:set.aliased,ms:ledger.ms};
+      }
       catch (error) { console.warn('[preload] Global preload list failed', error?.message || error); }
       lap('globalPreload');
       const admission=await joined;
@@ -306,23 +358,23 @@ export class Game {
       const initialActors=shared?network.captureInitialActors(admission):null;
 
       this.hud.setMinimap(world);
-      this.audio.playBGM(mapIndex);
+      // BGM deferred until map ready (after _warmUp / complete) — t104u early-music hang.
       this.save.map = mapIndex;
       this.events.emit('map', { index: mapIndex });
       this.hud.toast(row.Name || '');
       this.persist();
-      loading.set(LOADING.artwork[0], 'Preparing interface artwork…');
-      const interfaceReady=await finishInterfaceWarmup(this,{onArtworkProgress:(done,total)=>
-        loading.set(phaseFraction([LOADING.artwork[0],0.86],total?done/total:0),`Preparing interface artwork... ${done}/${total}`),
-        onPanelProgress:(done,total)=>loading.set(phaseFraction([0.86,LOADING.artwork[1]],total?done/total:0),`Preparing interface panels... ${done}/${total}`),
-        onIconProgress:(done,total)=>loading.set(phaseFraction(LOADING.artwork,total?done/total:0),`Preparing NPC shop images... ${done}/${total}`),
-        onWaiting:({pending})=>loading.set(LOADING.artwork[1],pending.includes('artwork')?'Preparing interface artwork…':'Preparing inventory and skill images…')});
+      loading.set(LOADING.artwork[0], '');
+      const interfaceReady=await finishInterfaceWarmup(this,{maxMs:MAP_CHANGE_HITCH.interfaceWarmupCapMs,onArtworkProgress:(done,total)=>
+        loading.set(phaseFraction([LOADING.artwork[0],0.86],total?done/total:0),''),
+        onPanelProgress:(done,total)=>loading.set(phaseFraction([0.86,LOADING.artwork[1]],total?done/total:0),''),
+        onIconProgress:(done,total)=>loading.set(phaseFraction(LOADING.artwork,total?done/total:0),''),
+        onWaiting:({pending})=>loading.set(LOADING.artwork[1],'')});
       for(const [name,ready]of Object.entries(interfaceReady))mapTimes[name+'Deferred']=!ready;
       mapTimes.interfaceTasks=this._interfaceWarmupTimings;
       lap('interface');
-      loading.set(LOADING.icons, 'Preparing inventory and skill icons…');
-      if(shared){loading.set(LOADING.scene,'Preparing nearby players and creatures…');await network.awaitInitialActors(initialActors,{onProgress:state=>
-        loading.set(LOADING.scene,state.phase==='warming'?`Preparing players on this map…${state.target?` ${state.active}/${state.target}`:''}`:'Preparing nearby players and creatures…')});}
+      loading.set(LOADING.icons, '');
+      if(shared){loading.set(LOADING.scene, '');await network.awaitInitialActors(initialActors,{onProgress:state=>
+        loading.set(LOADING.scene, '')});}
       lap('actors');
       await this._warmUp(loading,{current:currentEntry});
       lap('warm');
@@ -342,21 +394,38 @@ export class Game {
       this._worldReady = true;
       finishAssetRecording(mapIndex);
       loading.set(LOADING.complete, '');
+      // Map ready: start BGM only now (web + DX11 share this enterMap path).
+      try { this.audio?.playBGM?.(mapIndex); } catch { /* audio optional */ }
     } catch(err) {
       mapTimes.total=Math.round(performance.now()-started);
       mapTimes.error=String(err?.message||err);
-      if(shared&&!complete)loading.fail?.(err);
+      // lane02: surface failure in both local and shared modes (corpus EVIDENCE.md lifecycle).
+      if(!complete)loading.fail?.(err);
       throw err;
     } finally {
       if(entry===this._mapLoadGeneration)this.textures?.uploads?.setPreloading(false);
       if (assetRecordingActive()) finishAssetRecording(null);   // the load failed: keep the previous list
       if(entry===this._mapLoadGeneration){
-        if(!shared||complete){if(ownLoading||loading)loading.close();}
-        else {loading.fail?.();if(entryWorld&&this.world!==entryWorld)entryWorld.dispose();}
+        if(complete){if(ownLoading||loading){if(typeof loading.presentComplete==='function')await loading.presentComplete().catch(()=>{});loading.close();}}
+        else {
+          // lane02: corpus EVIDENCE — dispose partial scene in both modes; keep paused for reload UI.
+          // Does not invent in-place retry (lease/UI contract still open).
+          loading.fail?.();
+          if(entryPlayer&&!entryPlayerInitialized&&this.player===entryPlayer){this.player=null;try{entryPlayer.dispose();}catch{}}
+          if(entryWorld){
+            if(this.world===entryWorld)this.world=null;
+            try{this.spawner?.clear?.();}catch{}
+            try{this.loot?.clear?.();}catch{}
+            for(const npc of this.npcs||[])try{npc.dispose();}catch{}
+            this.npcs=[];
+            try{network?._clearActors?.();}catch{}
+            if(!entryWorld._disposed)entryWorld.dispose();
+          }
+        }
       }
       void prefetchGameJSON({ deferred: true });
       void this.uiwin?.prewarm().catch(error => console.warn('[ui] background artwork failed', error));
-      if(entry===this._mapLoadGeneration){this.paused=shared&&!complete;this._loadingMap=shared&&!complete;}
+      if(entry===this._mapLoadGeneration){this.paused=!complete;this._loadingMap=!complete;}
     }
   }
 
@@ -371,18 +440,18 @@ export class Game {
     let last = t;
     const lap = name => { const now = performance.now(); times[name] = Math.round(now - last); last = now; };
     try {
-      loading?.set?.(LOADING.scene, 'Preparing the scene…');
+      loading?.set?.(LOADING.scene, '');
       if (this.player) fileToThree(this.player.x, this.player.y, this.player.z, this.cam.target);
       this.cam.snap();
       this.cam.update(0);
       this.world?.update(0, this.camera.position);
       const dilWarm = prewarmDilPiles(this);   // 2.2.1 fix-4: started now, runs beside the scene compile below (GPU work in parallel), awaited before the pre-build queue settles (systems/items/drop-prewarm.js)
-      if (typeof this.renderer.compileAsync === 'function') await awaitLoadingStage(()=>compileSceneInParts(this.renderer,this.scene,this.camera,(done,total)=>loading?.set?.(LOADING.scene,`Preparing scene graphics (${done}/${total})…`)),{
+      if (typeof this.renderer.compileAsync === 'function') await awaitLoadingStage(()=>compileSceneInParts(this.renderer,this.scene,this.camera,(done,total)=>loading?.set?.(LOADING.scene, '')),{
         current:()=>current()&&!this.renderer.getContext?.()?.isContextLost?.(),stage:'Scene graphics'});
       lap('compile');
       // the first-person arm / body shader variants too, so the first switch to first person does not stall
       keepShaderPrograms(this.renderer);   // again after a lost / restored context (a new program list)
-      loading?.set?.(LOADING.scene,'Preparing first-person graphics…');
+      loading?.set?.(LOADING.scene, '');
       await prewarmFirstPersonBody(this,{draw:true,current:()=>current()&&!this.renderer.getContext?.()?.isContextLost?.()}).catch(err=>{
         if(err?.loadingStageFailure&&err.loadingStageReason==='changed')throw err;
         times.firstPersonDeferred=true;console.warn('[game] first-person shader pre-build deferred',err);
@@ -394,24 +463,25 @@ export class Game {
       await Promise.race([
         Promise.all([this.mounts?.system?.riding?.prewarmNow?.(), prewarmTransformLooks(this, { draw: true })])
           .catch(err => console.warn('[game] mount / Trans Up pre-load failed', err)),
-        new Promise(resolve => setTimeout(resolve, 6000)),
+        new Promise(resolve => setTimeout(resolve, MAP_CHANGE_HITCH.mountTransUpCapMs)),
       ]);
       lap('mountTransUp');
       times.effectPrimitives = await awaitLoadingStage(() => prewarmEffectPrimitives(this, {
         current,
-        onProgress: (done, total) => loading?.set?.(LOADING.scene, `Preparing effect graphics (${done}/${total})…`),
+        onProgress: (done, total) => loading?.set?.(LOADING.scene, ''),
       }), {current, stage: 'Effect graphics'});
       lap('effectGraphics');
       times.dilPiles = (await dilWarm).ms;   // the five Dil pile models (the first kill's drop) built under the loading screen, not at the first death (kill switch globalThis.__dekaronNoDropPrewarm)
-      await settleShaderPrewarm(this, 2500);   // the corpse-fade variants of the bodies loaded so far, still under the loading screen (engine/shader-prewarm.js; kill switch globalThis.__dekaronNoPrewarm)
+      await settleShaderPrewarm(this, MAP_CHANGE_HITCH.settleShaderMs);   // the corpse-fade variants of the bodies loaded so far, still under the loading screen (engine/shader-prewarm.js; kill switch globalThis.__dekaronNoPrewarm)
       touchPrograms(this.renderer);   // their first-use setup now, not when the object first comes into view
       markProgramsTouched(this);      // (the play-time first-use set-up of new programs, one per frame, starts from here: engine/shader-prewarm.js)
       // lane-perf: the one hidden-scene draw of a load (under the cover), so the first visible frame meets no first-draw stall
-      try { if (this.settings.bloom) (this.bloom ||= new Bloom(this.renderer)).render(this.scene, this.camera); else this.renderer.render(this.scene, this.camera); times.warmDraws = (times.warmDraws || 0) + 1; } catch (err) { console.warn('[game] warm draw failed', err); }
+      try { this._drawFrame(); times.warmDraws = (times.warmDraws || 0) + 1; } catch (err) { console.warn('[game] warm draw failed', err); }
       warmWholeScene(this);           // and one hidden draw of everything (texture uploads), the view-culled parts too
       this.renderer.render(this.scene, this.camera);
       flushWarmDraws(this);   // their first draw too, still under the loading screen
       tickShaderPrewarm(this, { all: true });   // and their first draws
+      this.spawner?.releaseKindWarm?.();      // the hidden monster-kind bodies have been drawn: release them (game/spawner.js prewarmKinds)
       lap('warmDraws');
     } catch (err) { if(err?.loadingStageFailure)throw err;console.warn('[game] warm-up render failed', err); }
     times.total = Math.round(performance.now() - t);
@@ -434,6 +504,7 @@ export class Game {
         if(distance2(pl)<=32*32)near.push(job);
       } catch (err) { console.warn('npc failed', pl.npcIndex, err); }
     }
+    near.push(...spawnCustomNpcs(this, world));   // CUSTOM party-rocker (not Global): Ardeca 410,446 dancing NPC
     // Nearby service bodies are prioritised; the rest keep streaming after
     // entry. All authored NPC identities are present for map/quest lookups.
     let timer;
@@ -643,13 +714,24 @@ export class Game {
       // its programs are compiled by _warmUp via compileAsync and drawn once there). Pre-build work below still runs.
       const covered = this._loadingMap === true && this._worldReady === false;
       if (covered) this._coveredFramesSkipped = (this._coveredFramesSkipped || 0) + 1;
-      else if (this.settings.bloom) (this.bloom ||= new Bloom(this.renderer)).render(this.scene, this.camera);
-      else this.renderer.render(this.scene, this.camera);
+      else this._drawFrame();
       flushWarmDraws(this);   // queued first draws of pre-built shaders, no pixels (engine/warm-draw.js)
       tickShaderPrewarm(this);   // background pre-builds (corpse fades, drops, status shells): one first draw per frame, no pixels (engine/shader-prewarm.js)
       this._launcherReadiness?.rendered();
     });
     inp.endFrame();
+  }
+
+
+  /**
+   * One scene draw. When game.gfx is installed it wraps renderer.render with the Global
+   * bloomeffect.fx port (systems/graphics/bloom.js). The legacy engine/bloom.js path is only
+   * the fallback when graphics has not installed yet (warm-up / early boot).
+   */
+  _drawFrame() {
+    if (this.gfx) { this.renderer.render(this.scene, this.camera); return; }
+    if (this.settings.bloom) (this.bloom ||= new Bloom(this.renderer)).render(this.scene, this.camera);
+    else this.renderer.render(this.scene, this.camera);
   }
 
   persist() {

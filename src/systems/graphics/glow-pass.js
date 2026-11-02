@@ -6,14 +6,15 @@
 //               (opaque, depth tested, so overlapping shells are one silhouette);
 //   2. BLUR     the bloomeffect.fx kernel, horizontal then vertical, PASSES times; the alpha channel is dilated with the same
 //               footprint (minimum distance of the taps) so the halo carries the depth of the source it spills from;
-//   3. ADD      a full-screen quad adds the blurred rgb onto the frame, ONE / ONE, with gl_FragDepth = that source distance, so the
-//               frame's real depth buffer hides the aura behind anything nearer than its source (walls, terrain, bodies).
+//   3. ADD      a full-screen quad adds the blurred rgb onto the frame, ONE / ONE, without depth testing, as in blurglow.fx.
+//               A screen-space glow can therefore be visible through nearer objects.
 // Cost: nothing when no source is on screen; otherwise one cheap draw of a few meshes, 2 x PASSES small blurs, one quad.
 import * as THREE from 'three';
 import { FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
 import { GLOW_COLOR } from '../../engine/material-constants.js';
 import { AURA } from '../../config/engine-chosen-aura.js';
 import { captureBakeRenderer, restoreBakeRenderer } from '../items/bake-slices.js';
+import { gfxB } from '../../config/gfx-b-switches.js'; // gfx-B2
 
 export const GLOW_LAYER = 5;
 
@@ -60,7 +61,34 @@ void main() {
   if (max(c.r, max(c.g, c.b)) < 0.002) discard;
   float z = max(0.05, d - bias);
   gl_FragColor = vec4(c, 1.0);
-  gl_FragDepth = ((e10 * -z + e14) / z) * 0.5 + 0.5;
+
+}`;
+
+// gfx-B2 auraBlurGlow: binary/blurglow.fx technique BlurGlow, its four passes p0..p3 summed in one draw (they are all ONE / ONE adds
+// onto the frame with ZEnable FALSE, so one 16-tap sum is the same image). Pass k samples uv + direction_k x uvoffset_0..3 with
+// weight_0..3; direction0..3 = (-0.75, 0), (0.75, 0), (0, -1), (0, 1) are the .fx constants (D3D v points down; GL v points up,
+// hence the y sign flip). uvoffset_i / weight_i are set by the packed exe and are in no data file; the only blur kernel Global
+// authors is bloomeffect.fx PS_BLUR_X/Y (offsets 0, 1.5, 3, 6 texels; weights 2.0 / 1.773 on the - side / 0.773 on the + side /
+// 0.358 / 0.1), which has exactly four distinct offsets per side - so its halves are used, in glow-buffer texels (uvoffset =
+// texels / buffer height, the 0.75 x factor makes the x taps the same texel count on Global's 1024x768). The sum is divided by the
+// total weight (14.924): unit gain, no extra multiplier. The source is glow.fx: colour x glowColor (0.4) x baseColor (1).
+const BLURGLOW_FRAG = /* glsl */`
+uniform sampler2D tGlow;
+uniform float texelV;
+varying vec2 vUv;
+const float O[4] = float[4](0.0, 1.5, 3.0, 6.0);
+const float WN[4] = float[4](2.0, 1.773, 0.358, 0.1);
+const float WP[4] = float[4](2.0, 0.773, 0.358, 0.1);
+void main() {
+  vec3 c = vec3(0.0);
+  for (int i = 0; i < 4; i++) {
+    float u = O[i] * texelV;
+    c += WN[i] * texture2D(tGlow, vUv + vec2(-0.75 * u, 0.0)).rgb;
+    c += WP[i] * texture2D(tGlow, vUv + vec2( 0.75 * u, 0.0)).rgb;
+    c += WN[i] * texture2D(tGlow, vUv + vec2(0.0,  u)).rgb;
+    c += WP[i] * texture2D(tGlow, vUv + vec2(0.0, -u)).rgb;
+  }
+  gl_FragColor = vec4(c / 14.924, 1.0);
 }`;
 
 function sourceMaterial() {
@@ -95,9 +123,13 @@ export class GlowPass {
     this.blurMat = new THREE.ShaderMaterial({ vertexShader: VERT, fragmentShader: BLUR_FRAG, depthTest: false, depthWrite: false, toneMapped: false,
       uniforms: { ...rt(), dir: { value: new THREE.Vector2() }, size: { value: new THREE.Vector2() }, tap: { value: 1 } } });
     this.addMat = new THREE.ShaderMaterial({ vertexShader: VERT, fragmentShader: ADD_FRAG, toneMapped: false,
-      depthTest: true, depthWrite: false, depthFunc: THREE.LessEqualDepth, transparent: true,
+      depthTest: false, depthWrite: false, transparent: true,
       blending: THREE.CustomBlending, blendEquation: THREE.AddEquation, blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor,
       uniforms: { tGlow: { value: null }, size: { value: new THREE.Vector2() }, gain: { value: 1 }, bias: { value: 0 }, e10: { value: 0 }, e14: { value: 0 } } });
+    this.blurGlowMat = new THREE.ShaderMaterial({ vertexShader: VERT, fragmentShader: BLURGLOW_FRAG, toneMapped: false,
+      depthTest: false, depthWrite: false, transparent: true,
+      blending: THREE.CustomBlending, blendEquation: THREE.AddEquation, blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor,
+      uniforms: { tGlow: { value: null }, texelV: { value: 0 } } });
     this.quad = new FullScreenQuad(this.blurMat);
   }
 
@@ -169,7 +201,8 @@ export class GlowPass {
       if (!(amount > 0.01)) continue;
       mesh.getWorldPosition(_v3);
       _sphere.set(_v3, 4);
-      if (!_frustum.intersectsSphere(_sphere) || _v3.distanceTo(camera.position) > AURA.MAX_DISTANCE) continue;
+      // gfx-B2 auraNoDistanceCap: Global has no glow distance rule; the frustum (camera far plane) is the only limit
+      if (!_frustum.intersectsSphere(_sphere) || (!gfxB('auraNoDistanceCap') && _v3.distanceTo(camera.position) > AURA.MAX_DISTANCE)) continue;
       live.push([mesh, s, amount]);
     }
     return live;
@@ -218,7 +251,15 @@ export class GlowPass {
       camera.layers.mask = mask; scene.background = bg; scene.overrideMaterial = override; scene.matrixWorldAutoUpdate = mwa;
       r.shadowMap.autoUpdate = shadowAuto; r.shadowMap.needsUpdate = needsUpdate;
     }
-    {
+    if (gfxB('auraBlurGlow')) {
+      // gfx-B2: blurglow.fx straight from the glow buffer onto the frame (see BLURGLOW_FRAG)
+      r.autoClear = false;
+      const gu = this.blurGlowMat.uniforms;
+      gu.tGlow.value = this.rtA.texture; gu.texelV.value = 1 / h;
+      this.quad.material = this.blurGlowMat;
+      r.setRenderTarget(null);
+      this.quad.render(r);
+    } else {
       r.autoClear = false;
       // 2. BLUR (bloomeffect.fx kernel), PASSES x (horizontal, vertical)
       const bu = this.blurMat.uniforms, unit = A.TAP_SCALE * (h / 225);
@@ -252,6 +293,6 @@ export class GlowPass {
     this.rtA = this.rtB = this.rtC = null;
     for (const s of this.sources.values()) s.material.dispose();
     this.sources.clear();
-    this.blurMat.dispose(); this.addMat.dispose();
+    this.blurMat.dispose(); this.addMat.dispose(); this.blurGlowMat.dispose();
   }
 }

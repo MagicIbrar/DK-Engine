@@ -10,7 +10,7 @@ import {ARENA_CHOSEN} from '../../src/config/engine-chosen-arena.js';
 // entry in the same write that adds the receipt. A host crash or a disconnect
 // between the two writes leaves the outcome in storage, and replayArenaOutcomes
 // pays it once at the participant's next presence (receipt = replay protection).
-const PENDING_CAP=ARENA_CHOSEN.pendingOutcomes||32;   // ENGINE-CHOSEN safety bound
+const PENDING_CAP=ARENA_CHOSEN.pendingOutcomes??Infinity;   // no cap (f pass: the engine bound 32 had no source)
 const sameBattle=reward=>r=>r?.battle===reward.battle;
 export async function journalArenaOutcome(world, player, reward) {
   return serializeLife(player, async () => {
@@ -18,7 +18,7 @@ export async function journalArenaOutcome(world, player, reward) {
     const rec0 = player.profile.arena;
     if (rec0?.receipts?.some(sameBattle(reward)) || rec0?.pending?.some(sameBattle(reward))) return true;
     const profile = structuredClone(player.profile), rec = profile.arena ||= {dp:0,rankScore:0,battles:0,wins:0};
-    rec.pending = [...(rec.pending||[]), structuredClone(reward)].slice(-PENDING_CAP);
+    rec.pending = [...(rec.pending||[]), structuredClone(reward)]; if (Number.isFinite(PENDING_CAP)) rec.pending = rec.pending.slice(-PENDING_CAP);
     await commitLife(world,player,profile,{});
     return true;
   });

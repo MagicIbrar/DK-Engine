@@ -44,6 +44,25 @@ export function leashRange(def) { return Math.max(0, num(def?.ai?.pursuit, C.def
 /** Wander radius: info.csv DwExploreRange. */
 export function exploreRange(def) { return Math.max(0, num(def?.ai?.explore, C.defaultExplore)); }
 /**
+ * info.csv DwAvoidRange (monsters.json ai.avoid). Present on every info row (hist: 6/0/3/5/4).
+ * Native client enum lists AVOID as a pattern MODE and EVENT, but shipped share/ai/pattern/*.csv
+ * never transitions to AVOID and has no AVOID event rows. Behavior that would consume this radius
+ * is UNRESOLVED — do not invent a flee formula. Accessor only exposes the data value.
+ */
+export function avoidRange(def) { return Math.max(0, num(def?.ai?.avoid, 0)); }
+/**
+ * info.csv delay quartet (ms), monsters.json ai.delays:
+ *   [0] DwExploreStandDelay — used by offline brain / server idle as the explore stand wait (with 0.6..1.4 jitter).
+ *   [1] DwExploreMoveDelay  — DATA present; no shipped pattern / brain consumption found (UNRESOLVED).
+ *   [2] DwStandDelay        — DATA present; UNRESOLVED for combat stand.
+ *   [3] DwMoveDelay         — DATA present; UNRESOLVED for combat move.
+ * Missing delays fall back to the monsters.json default [2000,2000,1200,1000] (build-monsters.mjs).
+ */
+export function exploreStandDelayMs(def) { return Math.max(0, num(def?.ai?.delays?.[0], 2000)); }
+export function exploreMoveDelayMs(def) { return Math.max(0, num(def?.ai?.delays?.[1], 2000)); }
+export function standDelayMs(def) { return Math.max(0, num(def?.ai?.delays?.[2], 1200)); }
+export function moveDelayMs(def) { return Math.max(0, num(def?.ai?.delays?.[3], 1000)); }
+/**
  * Does this monster roam in EXPLORE at all? DwExploreRange > 0 AND monster.dat WalkSpeed > 0 (the condition the idle code of both
  * sides always used). Only such a monster moves in EXPLORE; the others (explore range 0: 339 mobile rows, WalkSpeed 0: 421 combat
  * rows such as 116 Dark Avenger [0, 4.4]) stand still and get NO walk back after PERSUIT_OUT (no speed is borrowed from RunSpeed).
@@ -78,6 +97,17 @@ export const roamCentre = m => m.anchor || m.home;
 export function walkSpeed(def) { const sp = Array.isArray(def?.speed) ? def.speed : []; return Math.max(0, num(sp[0], 1)); }
 /** Chase speed = monster.dat RunSpeed (cells/s), never below the walk speed; missing -> walk x 2.5 (ENGINE-CHOSEN). */
 export function chaseSpeed(def) { const sp = Array.isArray(def?.speed) ? def.speed : [], walk = walkSpeed(def); return Math.max(walk, num(sp[1], walk * C.runFromWalk)); }
+/**
+ * Walk vs run gait from a measured cells/s speed vs monster.dat WalkSpeed/RunSpeed.
+ * Midpoint between walk and run is ENGINE-CHOSEN (tick jitter); returns 'walk' | 'run' | null.
+ * Used by remote monster clip selection when the host does not publish row.walk.
+ */
+export function gaitFromMeasuredSpeed(def, spd) {
+  const walk = walkSpeed(def), run = chaseSpeed(def);
+  if (!(walk > 0) || !Number.isFinite(spd) || spd < 0) return null;
+  const mid = walk + (run - walk) * 0.5;
+  return spd <= mid + 1e-6 ? 'walk' : 'run';
+}
 /** speed [0, 0]: fights without moving (plants, crystals, the Racoon). */
 export function isImmobile(def) { return walkSpeed(def) <= 0 && chaseSpeed(def) <= 0; }
 /** Body radius when no mesh is measured (src/actors/monster.js:84): max(0.4, Width x 0.45), else 0.5. */

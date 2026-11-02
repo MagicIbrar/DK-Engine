@@ -9,7 +9,11 @@ import { applyShade, applyShadeTree } from '../../../world/shade.js';
 import { GroundSurfaces } from '../../../world/groundsurf.js';
 
 async function firstExisting(keys) {
-  for (const k of keys || []) { if (!k) continue; const buf = await tryFetchBuffer(k).catch(() => null); if (buf) return k; }
+  for (const k of keys || []) {
+    if (!k) continue;
+    const buf = await tryFetchBuffer(k);
+    if (buf) return k;
+  }
   return null;
 }
 
@@ -51,7 +55,10 @@ export class ObjectsLayer {
         const model = await this.game.models.loadStatic(meshKey, opts);
         if (model) for (const p2 of model.parts) applyShade(p2.material);
         return model;
-      })();
+      })().catch(err => {
+        if (err?.transient && this._modelCache.get(name) === p) this._modelCache.delete(name);
+        throw err;
+      });
       this._modelCache.set(name, p);
     }
     return p;

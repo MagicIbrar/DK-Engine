@@ -1,4 +1,4 @@
-// Live Global update detection (lane L2). DETECT + PARSE ONLY: never swaps live gameplay data.
+﻿// Live Global update detection (lane L2). DETECT + PARSE ONLY: never swaps live gameplay data.
 // Watches the operator Global data root (DEKARON_DATA, else <engine>/../data - the same rule as tools/prepare-client.mjs
 // discoverSource). Cheap tick: fs.stat of share/version.ini, pack.hdr and pack.dNN (size+mtime); nothing is read or
 // hashed until a stat changes. A change must stay stable for debounceMs before analysis (copy/patch in progress).
@@ -110,15 +110,18 @@ export function createGlobalUpdateWatch({ root, appliedDataRoot = null, interval
       d.changed.sort();
     }
     const files = [...d.added, ...d.changed].slice(0, maxParse), results = [], failures = [], compat = [];
-    for (const k of files) {
+    // PING-FLAT: yield every 8 parses so move/command handlers are not stalled by a long analyze on the event loop.
+    for (let fi = 0; fi < files.length; fi++) {
+      const k = files[fi];
       const nb = await readEntry(state.root, newIdx, k);
       const ob = appliedDataRoot ? await fs.readFile(path.join(appliedDataRoot, k)).catch(() => null) : null;
-      if (ob && nb && ob.length === nb.length && sha(ob) === sha(nb) && d.changed.includes(k)) { results.push({ key: k, same: true }); continue; }
+      if (ob && nb && ob.length === nb.length && sha(ob) === sha(nb) && d.changed.includes(k)) { results.push({ key: k, same: true }); if ((fi & 7) === 7) await new Promise(r => setImmediate(r)); continue; }
       const oldR = detectAndParse(k, ob), newR = detectAndParse(k, nb);
       results.push({ key: k, old: oldR, new: newR });
       if (newR && !newR.ok) failures.push({ key: k, family: newR.family, version: newR.version, error: newR.error, oldVersion: oldR?.version ?? null });
       if (k.endsWith('.csv') && ob && nb) { const oc = csvHeader(ob), nc = new Set(csvHeader(nb)); const missing = oc.filter(c => c && !nc.has(c));
         if (missing.length) compat.push({ file: k, code: 'columns-missing', columns: missing.slice(0, 20) }); }
+      if ((fi & 7) === 7) await new Promise(r => setImmediate(r));
     }
     for (const k of d.removed) compat.push({ file: k, code: 'table-missing' });
     const cpu = process.cpuUsage(t0);
@@ -139,7 +142,7 @@ export function createGlobalUpdateWatch({ root, appliedDataRoot = null, interval
       if (s === ref) { pendSig = null; state.pendingSince = null; return; }
       if (s !== pendSig) { pendSig = s; state.pendingSince = now(); state.status = state.report ? state.status : 'change-pending'; return; } // restart debounce
       if (now() - state.pendingSince < debounceMs) return;
-      pendSig = null; state.pendingSince = null; await analyze(s);
+      pendSig = null; state.pendingSince = null; await new Promise(r => setImmediate(r)); await analyze(s); // PING-FLAT: leave watch interval before heavy parse
     } catch (e) { state.lastError = String(e.message || e); state.status = 'error'; } finally { busy = false; }
   }
   /** Operator action: accept the detected update. No live data is swapped; the login gate version follows. */

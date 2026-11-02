@@ -1,4 +1,4 @@
-import fs from 'node:fs';
+﻿import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 
@@ -14,7 +14,7 @@ function packedBody(file,etag,encoding){
  const task=fs.promises.readFile(file).then(raw=>new Promise((resolve,reject)=>{
   const done=(error,body)=>error?reject(error):resolve(body.length<raw.length?body:null);
   if(encoding==='br')zlib.brotliCompress(raw,{params:{[zlib.constants.BROTLI_PARAM_QUALITY]:4,[zlib.constants.BROTLI_PARAM_SIZE_HINT]:raw.length}},done);
-  else zlib.gzip(raw,{level:6},done);
+  else zlib.gzip(raw,{level:4},done); // PING-FLAT: faster first-encode; cache still serves subsequent hits
  }));
  packed.set(key,task);
  task.then(body=>{const size=body?body.length:0;packedSize.set(key,size);packedTotal+=size;for(const old of packed.keys()){if(packedTotal<=PACKED_LIMIT)break;if(old===key)continue;packedTotal-=packedSize.get(old)||0;packed.delete(old);packedSize.delete(old);}},()=>{packed.delete(key);});

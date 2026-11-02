@@ -19,7 +19,12 @@ try{
  try{
   if($zip.Entries.Count -gt 10000){throw 'Release archive has too many entries.'}
   $seen=New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
-  $total=[long]0;$files=0;$prefix='DK-'+$Version+'/Engine/'
+  $total=[long]0;$files=0
+  $wrapped='DK-'+$Version+'/Engine/';$flat='Engine/'
+  $hasWrapped=@($zip.Entries | Where-Object { -not $_.FullName.EndsWith('/') -and $_.FullName.StartsWith($wrapped,[StringComparison]::Ordinal) }).Count -gt 0
+  $hasFlat=@($zip.Entries | Where-Object { -not $_.FullName.EndsWith('/') -and $_.FullName.StartsWith($flat,[StringComparison]::Ordinal) }).Count -gt 0
+  if($hasWrapped -eq $hasFlat){throw 'Release archive must contain exactly one engine layout.'}
+  $prefix=if($hasWrapped){$wrapped}else{$flat}
   foreach($entry in $zip.Entries){
    $name=$entry.FullName
    if($name.Contains('\') -or $name.StartsWith('/') -or $name.Contains(':') -or $name.Contains([char]0)){throw 'Release archive contains an unsafe path.'}

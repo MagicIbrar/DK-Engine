@@ -254,10 +254,14 @@ function gateGreeting(ids) {
 }
 
 /** Can this dungeon be entered solo? {ok, code} (code = system text of the refusal). */
+function floorHasMapFile(m) {
+  // ABSENT_MAPLIST floors (Lane 25/23): loadData.enrichAbsentMaplistDungeonMaps sets files.map from synthesised stem.
+  return !!mapInfo(m)?.files?.map;
+}
 function playable(id) {
   const d = dungeonById(id);
   if (!d) return { ok: false, code: 3 };
-  if (d.missingFloors?.length || !(d.floors || []).every(m => mapInfo(m)?.files?.map)) return { ok: false, code: 8 };
+  if (d.missingFloors?.length || !(d.floors || []).every(floorHasMapFile)) return { ok: false, code: 8 };
   const f0 = mapInfo(d.floors?.[0])?.flags || {};
   // PvP arenas / DK-square battlefields need other players: "Due to a shortage of people, the dungeon can't be
   // created now." (no AI opponents, per the user)

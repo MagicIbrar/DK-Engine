@@ -331,7 +331,9 @@ export class UIControl {
 
   // ------------------------------------------------------------ state & paint
   get state() {
-    if (!this.enabled) return 'disable';
+    // Global checkbox art (etc_01 #303 none / #304 check): a disabled-but-checked box still shows the checkmark.
+    // IMAGE_CHAIN.disable falls through to `none`, which hid ticks on "all" lists and cashshop boxinfo rows.
+    if (!this.enabled) return this.checked ? 'check' : 'disable';
     if (this._blinkOn) return 'blink';
     if (this.checked) return this.pressed ? 'check_down' : this.hover && this.interactive ? 'check_over' : 'check';
     if (this.pressed) return 'down';

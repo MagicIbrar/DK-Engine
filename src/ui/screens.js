@@ -8,8 +8,8 @@
 //   pan_load1 + pan_bar1 / pan_loading / pro_loading / pan_loadend   the original progress bar (group Loading #1-#3
 //                  frame, #10 / #11 blue fill, process bar maxsize 547); the end cap (colour 00000000 in the script)
 //                  lights up when loading completes
-//   pan_info + lbl_infostr   the tip band (movemaptip#1) with a tip of script/loading_map_info.csv for the map
-//                  (Map_Index 65535 = any map)
+//   pan_info + lbl_infostr   the tip band (movemaptip#1) with ONLY Global tips from script/loading_map_info.csv
+//                  (Map_Index 65535 = any map). Never Engine-authored phase/progress copy.
 // The map is known before the tables load: setLoadingMap() (the front-end hand-off) or title(name, mapIndex).
 import { UIManager } from './uiwin/index.js';
 import { texts } from './frontend/texts.js';
@@ -17,6 +17,7 @@ import { atlas } from './atlas.js';
 import { fetchCSVObjects } from '../engine/assets.js';
 import { loadingArtGate } from './loading-art.js';
 import { startupDisplayProgress } from '../engine/startup-progress.js';
+import { paceStep } from '../engine/loading-pacer.js';
 
 const LOADWND = 'game2/ui_loadwnd.txt';
 let pendingMap = null;
@@ -69,8 +70,7 @@ export async function preloadLoading(mapIndex) {
 /** Client markup of a tip -> uiwin rich text. */
 const tipText = s => String(s || ' ').replace(/\\n/g, '\n').replace(/<\/?center>/gi, '');
 
-// ENGINE-CHOSEN loading guidance; no completion-time promise or raw error echo.
-const LOADING_WAIT='Preparing the game, map and nearby players. Please wait.';
+const TIP_ROTATE_MS=8000; // ENGINE-CHOSEN: rotate Global guide tips while the bar advances
 const LOADING_FAILED='Loading stopped unexpectedly. Retry once; if it stops again, report the loading stage.';
 const LOADING_ERRORS=new Map([
  ['Shared network installation did not complete. Retry loading.','Network installation did not finish. Retry loading.'],
@@ -93,7 +93,7 @@ function loadingFailureText(reason, phase){
  if([401,403].includes(reason?.status))return 'Your server sign-in expired or was denied. Sign in again, then retry. (SIGN-IN)';
  if([429,502,503,504].includes(reason?.status))return 'The game server is busy or unavailable. Wait a moment, then retry. (SERVER-BUSY)';
  if(reason?.status>=500)return 'The game server could not provide a required file. Retry shortly. (SERVER-ERROR)';
- if(reason?.name==='AbortError')return 'A loading request timed out or was cancelled. Retry loading. (TIMEOUT)';
+ if(reason?.name==='AbortError'||reason?.name==='TimeoutError')return 'A loading request timed out or was cancelled. Retry loading. (TIMEOUT)';
  if(reason?.networkCategory==='incompatible'||reason?.networkCategory==='protocol')return 'This server did not provide a valid game response. Check that the client and server versions match. (PROTOCOL)';
  if(reason?.networkCategory==='network')return 'The game could not reach the server. Check the connection and retry. (CONNECTION)';
  if(reason?.networkCategory==='client')return 'The game could not finish joining after the server answered. Retry loading. (CLIENT)';
@@ -102,43 +102,30 @@ function loadingFailureText(reason, phase){
  if(message.length<=256&&LOADING_ERRORS.has(message))return LOADING_ERRORS.get(message);
  if(reason?.transient||/^(?:Failed to fetch|NetworkError when attempting to fetch resource\.)$/.test(message))
   return 'A game file or server request was interrupted. Check the connection and retry. (CONNECTION)';
- const stage=typeof phase==='string'&&phase.length<=80?phase:'Loading';
- return stage+' '+LOADING_FAILED;
+ // t128u: never echo Engine phase/progress into the failure line.
+ return LOADING_FAILED;
 }
-const LOADING_SYSTEM_LABELS=Object.freeze({warpzones:'Warp zones',items:'Items',life:'Life skills',shops:'Shops',mounts:'Mounts',dungeons:'Dungeons',quests:'Quests',events:'Events',skills:'Skills',graphics:'Graphics',
- 'hud-options':'Interface',mapbuilder:'Map tools',itembuilder:'Item tools',charwin:'Character panel',gm:'GM panel',network:'World connection',extras:'Help panels',inspect:'Inspect panel',chartrade:'Character trade',skillmaster:'Skill learning'});
-function loadingPhaseText(what){
- const text=typeof what==='string'&&what.length<=256?what:'';
- const panels=/^Preparing interface panels\.\.\. (\d+)\/(\d+)$/.exec(text);
- if(panels&&Number(panels[1])<=Number(panels[2]))return `Preparing interface panels (${panels[1]}/${panels[2]}).`;
- const system=/^Starting systems\.\.\. (\d{1,2})\/(\d{1,2}) \(([a-z-]+)\)$/.exec(text);
- if(system&&Object.hasOwn(LOADING_SYSTEM_LABELS,system[3])){
-  const done=Number(system[1]),total=Number(system[2]);
-  if(done<=total&&total>0&&total<=20)return 'Starting game systems: '+LOADING_SYSTEM_LABELS[system[3]]+' ('+done+'/'+total+').';
- }
- if(['Reading the map','Placing objects','World ready'].includes(text))return 'Preparing map content.';
- if(['Ground tiles','Ground decals','Ground ready'].includes(text))return 'Preparing ground textures.';
- const objects=/^Objects (\d+)\/(\d+)$/.exec(text);
- if(objects&&Number(objects[1])<=Number(objects[2]))return 'Preparing nearby map objects ('+objects[1]+'/'+objects[2]+').';
- const phases=[['Reading ','Reading game tables.'],['Starting systems','Starting game systems.'],['Summoning your character','Preparing your character.'],['Placing townsfolk','Preparing townsfolk.'],['Waking the monsters','Preparing creatures.'],['Preparing interface artwork','Preparing interface artwork.'],['Preparing inventory and skill icons','Preparing inventory and skill icons.'],['Preparing nearby players and creatures','Preparing nearby players and creatures.'],['Preparing the scene','Preparing the scene.']];
- return phases.find(([prefix])=>text.startsWith(prefix))?.[1]||'Preparing game/map and players.';
-}
-
+// t128u: Engine loadingPhaseText / system labels removed. Progress what stays on dataset.what only;
+// lbl_infostr shows Global tip (REA / loading_map_info.csv) or failure text — never custom object-prep lines.
 /**
  * Show the loading screen. Returns { set(frac, what), title(name, mapIndex?), map(index), close() }.
  * @param {HTMLElement} root
  * @param {string} title       map name (only used to find the map when no index is known)
  * @param {number} [mapIndex]
  */
-export function showLoading(root, title = '', mapIndex = null, {artwork = null, startup = false} = {}) {
+export function showLoading(root, title = '', mapIndex = null, {artwork = null, startup = false, pacing = null, catchUpMs = undefined, finishMs = undefined, maxStepMs = undefined, onDisplay = null, trackReal = false} = {}) {
   ensureFrontCSS();
   const scr = document.createElement('div');
   scr.className = 'fe-loading';
   root.appendChild(scr);
-  const state = { frac: 0, map: mapIndex != null ? Number(mapIndex) : pendingMap, closed: false, win: null, shownMap: undefined, lit: null, phase: loadingPhaseText(''), failureText: null };
+  const state = { frac: 0, map: mapIndex != null ? Number(mapIndex) : pendingMap, closed: false, win: null, shownMap: undefined, lit: null, phase: '', tip: '', tipTimer: null, failureText: null };
   pendingMap = null;
   let mapRequest=0;
   let displayed=0,progressFrame=null,progressAt=null;
+  const paceOpts=()=>({table:pacing,...(catchUpMs!=null?{catchUpMs}:{}),...(finishMs!=null?{finishMs}:{}),...(maxStepMs!=null?{maxStepMs}:{})});
+  // t104u: map bar tracks REAL load. Launch (startup) may keep paced Global-feel display.
+  const showPaced = !!(pacing && startup && !trackReal);
+  const gaugeValue = () => (showPaced ? displayed : state.frac);
   const stopProgress=()=>{if(progressFrame!==null)globalThis.cancelAnimationFrame?.(progressFrame);progressFrame=null;progressAt=null;};
   const mgr = new UIManager(null, scr, { scale: 1 });
   mgr.layer.style.opacity='0';
@@ -149,6 +136,22 @@ export function showLoading(root, title = '', mapIndex = null, {artwork = null, 
     show:()=>{mgr.layer.style.opacity='';},
   });
 
+  const refreshTip = () => {
+    if (state.closed || state.failed) return;
+    // Prefer map-specific Global tips; tipFor already mixes any-map (65535) tips.
+    const next = tipText(texts.tipFor(state.map));
+    if (next && next.trim()) state.tip = next;
+    else if (!state.tip) state.tip = '';
+  };
+  const startTipRotation = () => {
+    if (state.tipTimer != null || typeof globalThis.setInterval !== 'function') return;
+    refreshTip();
+    state.tipTimer = globalThis.setInterval(() => { refreshTip(); apply(); }, TIP_ROTATE_MS);
+  };
+  const stopTipRotation = () => {
+    if (state.tipTimer != null) { try { globalThis.clearInterval(state.tipTimer); } catch {} state.tipTimer = null; }
+  };
+
   const apply = () => {
     const w = state.win;
     if (!w || state.closed) return;
@@ -156,10 +159,10 @@ export function showLoading(root, title = '', mapIndex = null, {artwork = null, 
       w.control('lbl_count').setText(`LOADING...${displayed===1?'100.0':(Math.floor(displayed*1000)/10).toFixed(1)}%`);
       // Native script contains an FMOD logo; this engine does not use FMOD.
       w.control('pan_fmod').hide();
-      if(state.shownMap!==state.map){state.shownMap=state.map;void artGate.select(state.map);}
+      if(state.shownMap!==state.map){state.shownMap=state.map;refreshTip();void artGate.select(state.map);}
       return;
     }
-    w.control('pro_loading').setGauge(state.frac);
+    w.control('pro_loading').setGauge(gaugeValue());
     // pan_loadend (Loading #3) is the RIGHT end of the bar frame (pan_load1 is the left end). The script's colour 00000000
     // reads as "no tint", not "invisible": without it the end of the loading bar goes missing. Always drawn.
     if (!state.lit) {
@@ -167,15 +170,28 @@ export function showLoading(root, title = '', mapIndex = null, {artwork = null, 
       w.control('pan_loadend').setImage('none', { screen: 'Loading', index: 3, color: 'ffffffff' });
     }
     // pan_map contains the bar/tip; cover the layer rather than hiding that panel.
-    if(state.shownMap!==state.map){state.shownMap=state.map;void artGate.select(state.map);}
-    w.control('lbl_infostr').setRichText(state.phase+'\n'+(state.failed?state.failureText.textContent:LOADING_WAIT));
+    if(state.shownMap!==state.map){state.shownMap=state.map;refreshTip();void artGate.select(state.map);}
+    // t128u: Global tip/status only — never Engine phase like "Preparing nearby map objects (n/n)".
+    w.control('lbl_infostr').setRichText(state.failed?(state.failureText?.textContent||' '):tipText(state.tip));
   };
 
   const animateProgress=at=>{
     progressFrame=null;
     if(state.closed||state.failed)return;
-    displayed=startupDisplayProgress(displayed,state.frac,progressAt===null?16:at-progressAt);
-    progressAt=at;apply();
+    const dt=progressAt===null?16:at-progressAt;
+    progressAt=at;
+    // Launch cover: LAUNCH_PACING via paceStep (displayed <= real). Legacy startup path
+    // without a pacing table keeps startupDisplayProgress so older callers stay unchanged.
+    if(showPaced){
+      displayed=paceStep(displayed,state.frac,dt,paceOpts());
+      onDisplay?.(displayed);
+    }else if(pacing){
+      // Map load: displayed tracks real immediately (t104u).
+      displayed=state.frac; onDisplay?.(displayed);
+    }else{
+      displayed=startupDisplayProgress(displayed,state.frac,dt);
+    }
+    apply();
     if(displayed<state.frac)progressFrame=globalThis.requestAnimationFrame(animateProgress);
     else progressAt=null;
   };
@@ -188,6 +204,7 @@ export function showLoading(root, title = '', mapIndex = null, {artwork = null, 
       if (state.closed) { win.dispose(); return; }
       state.win = win;
       mgr.openWindow(win);
+      if (!startup) startTipRotation();
       apply();
     })
     .catch(err => console.warn('[loading] window unavailable', err));
@@ -201,11 +218,16 @@ export function showLoading(root, title = '', mapIndex = null, {artwork = null, 
       const next = Math.max(0, Math.min(1, Number(frac) || 0));
       if (next < state.frac) return; // Late phase callbacks must never rewind the bar or label.
       state.frac = next;
-      if(startup){
-        if(next===1||typeof globalThis.requestAnimationFrame!=='function'){stopProgress();displayed=next;}
-        else if(progressFrame===null)progressFrame=globalThis.requestAnimationFrame(animateProgress);
+      if(startup||pacing){
+        // Launch (showPaced): never snap displayed to 1; presentComplete finishes.
+        // Map trackReal: displayed follows real every set() so the bar never sits behind work.
+        if(!showPaced){stopProgress();displayed=next;onDisplay?.(displayed);}
+        else if(!pacing&&(next===1||typeof globalThis.requestAnimationFrame!=='function')){stopProgress();displayed=next;}
+        else if(typeof globalThis.requestAnimationFrame!=='function'){
+          displayed=paceStep(displayed,next,16,paceOpts());onDisplay?.(displayed);
+        }else if(progressFrame===null)progressFrame=globalThis.requestAnimationFrame(animateProgress);
       }
-      state.phase=loadingPhaseText(what);
+      state.phase=typeof what==='string'&&what.length<=256?what:''; // debug/dataset only
       scr.dataset.what = state.phase;
       apply();
     },
@@ -216,12 +238,30 @@ export function showLoading(root, title = '', mapIndex = null, {artwork = null, 
     },
     map(index) { mapRequest++;state.map = Number(index); apply(); },
     async presentComplete() {
-      if(!startup||state.closed||state.failed||state.frac!==1)return;
+      if((!startup&&!pacing)||state.closed||state.failed||state.frac!==1)return;
+      // Paced launch: keep animating until the bar shows 100% (finishMs run), then two paint frames.
+      if(pacing&&displayed<1-1e-9&&typeof globalThis.requestAnimationFrame==='function'){
+        stopProgress();
+        await new Promise(resolve=>{
+          const tick=at=>{
+            if(state.closed||state.failed){progressFrame=null;progressAt=null;return resolve();}
+            const dt=progressAt===null?16:at-progressAt;
+            progressAt=at;
+            displayed=paceStep(displayed,1,dt,paceOpts());
+            onDisplay?.(displayed);
+            apply();
+            if(displayed<1-1e-9)progressFrame=globalThis.requestAnimationFrame(tick);
+            else{progressFrame=null;progressAt=null;resolve();}
+          };
+          progressFrame=globalThis.requestAnimationFrame(tick);
+        });
+      }else if(pacing){displayed=1;onDisplay?.(displayed);apply();}
       if(typeof globalThis.requestAnimationFrame==='function')await new Promise(resolve=>globalThis.requestAnimationFrame(()=>globalThis.requestAnimationFrame(resolve)));
     },
     fail(reason=null) {
       // ENGINE-CHOSEN fixed categories; never render arbitrary server details.
       if(state.closed)return;
+      stopTipRotation();
       stopProgress();
       const label=loadingFailureText(reason,state.phase);
       if(state.failed)return;
@@ -234,9 +274,10 @@ export function showLoading(root, title = '', mapIndex = null, {artwork = null, 
         retry.type='button';retry.textContent='Retry loading';retry.onclick=()=>globalThis.location?.reload();
         message.appendChild(document.createElement('br'));message.appendChild(retry);scr.appendChild(message);
       }
-      state.failureText.textContent=label;state.phase='Loading stopped.';apply();
+      state.failureText.textContent=label;state.phase='';apply();
     },
     close() {
+      stopTipRotation();
       stopProgress();
       state.closed = true;
       artGate.close();

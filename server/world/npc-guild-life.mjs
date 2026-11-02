@@ -40,7 +40,7 @@ export function npcGuildLifePlan(world,p,b={},options={}){
  const pref=npcGuildPreference(p.profile),g=memberGuild(world,p),ref=socialRef(p),now=world.now(),cfg=world.data.guild?.config;
  const others=[...world.players.values()].filter(q=>q!==p&&available(world,q,options.brainFor?.(q)||{},isNpc)&&sameScene(p,q)&&dist(p,q)<=12);
  if(!g){
-  const invitation=Object.values(world.socialState.guilds).filter(row=>allBots(row,isNpcRef)).flatMap(row=>(row.invites||[]).filter(i=>i.to===ref&&i.expiresAt>now&&others.some(q=>socialRef(q)===i.from)).map(i=>({row,i}))).sort((a,b)=>a.i.expiresAt-b.i.expiresAt)[0];
+  const invitation=Object.values(world.socialState.guilds).filter(row=>allBots(row,isNpcRef)).flatMap(row=>(row.invites||[]).filter(i=>i.to===ref&&others.some(q=>socialRef(q)===i.from)).map(i=>({row,i}))).sort((a,b)=>a.i.expiresAt-b.i.expiresAt)[0];
   if(invitation)return {action:{type:'guild',operation:'accept',id:invitation.i.id},policy:'ENGINE-CHOSEN'};
   if(!pref.founder||!cfg||Number(cfg.ADV)||Number(cfg.PEERAGE)||p.profile.level<Number(cfg.LEVEL)||!Number.isSafeInteger(Number(cfg.MONEY))||Number(cfg.MONEY)<0||p.profile.dil<Number(cfg.MONEY))return null;
   if(!options.socialProfileSupported)return blocked('atomic-npc-social-unavailable');
@@ -57,13 +57,13 @@ export function npcGuildLifePlan(world,p,b={},options={}){
  }
  const cap=Number(cfg?.[`LEVEL${g.level??1}_MEMBER`]);
  if(Number.isInteger(cap)&&g.members.length<cap){
-  const candidate=others.find(q=>!memberGuild(world,q)&&!(g.invites||[]).some(i=>i.to===socialRef(q)&&i.expiresAt>now));
+  const candidate=others.find(q=>!memberGuild(world,q)&&!(g.invites||[]).some(i=>i.to===socialRef(q)));   // invitations have no timeout (LANE-61: none in any source)
   if(candidate)return {action:{type:'guild',operation:'invite',targetId:candidate.id},policy:'ENGINE-CHOSEN'};
  }
  if(!pref.war||wars.some(w=>w.from===g.id||w.to===g.id))return null;
  const target=others.find(q=>{const other=memberGuild(world,q);return other&&other.id!==g.id&&other.master===socialRef(q)&&allBots(other,isNpcRef)&&npcGuildPreference(q.profile).war&&!Object.values(world.socialState.alliances||{}).some(a=>a.guilds?.includes(g.id)&&a.guilds.includes(other.id))&&!wars.some(w=>w.from===other.id||w.to===other.id);});
  if(!target)return null;
- const days=WAR_DAYS[0],needDil=W.COST_PER_DAY.dil*days,needPoints=W.COST_PER_DAY.guildPoints*days;
+ const days=WAR_DAYS[0],needDil=W.COST_BY_DAYS[days].dil,needPoints=W.COST_BY_DAYS[days].guildPoints;   // ONLINE cost table (LANE-61)
  if((g.dil||0)<needDil){
   const unit=Number(cfg?.DILTOCON),gap=needDil-(g.dil||0),amount=Math.ceil(gap/unit)*unit;
   if(!Number.isSafeInteger(unit)||unit<1||!Number.isSafeInteger(amount)||p.profile.dil-amount<Number(cfg.MONEY))return blocked('earned-guild-dil-insufficient');

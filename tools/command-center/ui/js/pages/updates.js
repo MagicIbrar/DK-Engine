@@ -11,7 +11,7 @@ export function create({navigate}) {
   const ids = ['updates', 'health', 'logs', 'files', 'timeline', 'performance'];
   const panels = Object.fromEntries(ids.map(i => [i, h('div', {class: 'tab-panel', id: 'panel-' + i, role: 'tabpanel', 'aria-labelledby': 'tab-' + i, hidden: i !== 'updates'})]));
   let active = 'updates'; const built = {};
-  const bar = tabs([{id: 'updates', label: 'Updates', ico: 'download'}, {id: 'health', label: 'Health', ico: 'shield'}, {id: 'logs', label: 'Live logs', ico: 'list'}, {id: 'files', label: 'Code & files', ico: 'search'}, {id: 'timeline', label: 'Timeline', ico: 'clock'}, {id: 'performance', label: 'Performance', ico: 'pulse'}], {current: 'updates', label: 'Diagnostics sections', onSelect: t => select(t)});
+  const bar = tabs([{id: 'updates', label: 'Updates', ico: 'download'}, {id: 'health', label: 'Health', ico: 'shield'}, {id: 'logs', label: 'Live logs', ico: 'list'}, {id: 'files', label: 'Code & files', ico: 'search'}, {id: 'timeline', label: 'Timeline', ico: 'clock'}, {id: 'performance', label: 'Performance', ico: 'pulse'}], {current: 'updates', label: 'Diagnostics categories', onSelect: t => select(t), onOverview: () => { for (const b of Object.values(built)) b.hide?.(); history.replaceState(null, '', '#/updates'); }});
   function select(t) { active = t; for (const [k, p] of Object.entries(panels)) p.hidden = k !== t; if (!built[t]) built[t] = ({updates, health, logs, files, timeline, performance})[t](); built[t].show?.(); for (const [k, b] of Object.entries(built)) if (k !== t) b.hide?.(); history.replaceState(null, '', `#/updates/${t}`); }
   const el = h('div', {class: 'stack loose'}, bar, ...Object.values(panels));
   window.addEventListener('dk-open-file', e => { select('files'); bar.select('files'); built.files?.open(e.detail); });
@@ -156,5 +156,5 @@ export function create({navigate}) {
     }
     return {show() { load(); }};
   }
-  return {el, show(tab) { bar.select(ids.includes(tab) ? tab : active); }, hide() { for (const b of Object.values(built)) b.hide?.(); }};
+  return {el, show(tab) { bar.show(tab); }, hide() { for (const b of Object.values(built)) b.hide?.(); }};
 }

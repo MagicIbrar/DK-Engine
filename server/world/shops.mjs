@@ -14,8 +14,14 @@ import {almightyOf} from '../../src/systems/shops/premium-rules.js';
 import {assertNieteService} from './niete-services.mjs';
 import {GIFT_ACTION_SCHEMAS,giftCommand} from './dshop-gifts.mjs';
 import {EXCHANGE_ACTION_SCHEMAS,exchangeAction} from './exchanges.mjs';
+import {canNpcSell} from './item-flags.mjs';
+import { dshopCurrencyKey, dshopVariantPrice, dshopPurchaseUnits, dshopPurchasePeriod, cashInventoryCanAccept, DSHOP_CART_MAX } from '../../src/systems/shops/dshop-rules.js';
 
 const NPC_SHOP_RANGE=6.2;
+// Guide stringtable_helper Shop Trade (Repurchase): Max 10; oldest dropped from top. UI grid 10x8 is layout only.
+const SHOP_REBUY_MAX=10;
+/** Session reset: guide Caution — close client / character select clears repurchase list. */
+export function clearShopRebuy(profile){if(profile&&Array.isArray(profile.shopRebuy)&&profile.shopRebuy.length)profile.shopRebuy=[];}
 
 export const SHOP_ACTION_SCHEMAS = {
   shopbuy: ['token','type','npcIndex','shop','tab','itemIndex','stockX','stockY','count'],
@@ -61,9 +67,9 @@ async function purchasePassword(world,p,password){
   if(checked.error==='enter')fail(PURCHASE_PASSWORD_TEXT.enter);
   if(checked.error||await world.verifyAccountPassword(p.account,checked.password)!==true)fail(PURCHASE_PASSWORD_TEXT.wrong,403);
 }
-function cost(profile,key,amount){if(!Number.isSafeInteger(amount)||amount<0)fail('Invalid catalog price.');if((Number(profile[key])||0)<amount)fail(`Not enough ${key==='dil'?'DIL':key==='dkc'?'DKC':'points'}.`);profile[key]=(Number(profile[key])||0)-amount;}
+function cost(profile,key,amount){if(!Number.isSafeInteger(amount)||amount<0)fail('Invalid catalog price.');if((Number(profile[key])||0)<amount)fail(key==='dil'?'You do not have enough dil.':`Not enough ${key==='dil'?'DIL':key==='dkc'?'DKC':'points'}.`);profile[key]=(Number(profile[key])||0)-amount;}
 function salePrice(def,inst,shop,data) {
-  if(inst.expiresAt||def.period>0||def.npcSell===0||inst.bound==='nosell')fail('This item cannot be sold.');
+  if(!canNpcSell(def,inst))fail(Number(def?.period)>0||inst?.expiresAt?'Limited-Time items cannot be sold to shops.':'Cannot sell items.'); // Global 340:8 / 340:9
   const sockets=Math.min(4,(inst.sockets||[]).filter(Boolean).length), grade=String(inst.grade||'normal').toUpperCase();
   const gradeKey=grade==='NOBLE'?'NORBLE':grade==='MAGIC'?(inst.rnd?.length>=2?'MAGIC2':'MAGIC1'):grade;
   const pct=data.shops.sellPriceTable?.[sockets]?.[gradeKey]??100;
@@ -86,7 +92,7 @@ export async function dispatchShopAction(world,p,input) {
   if(input.type==='dshopbuy') {
     const data=world.data.shopData||world.data, catalog=data.dshop;
     if(!catalog)fail('D-Shop catalog is unavailable.',503);
-    if(!Array.isArray(input.cart)||input.cart.length<1||input.cart.length>28||typeof input.vip!=='boolean')fail('Choose between one and 28 catalog products.');
+    if(!Array.isArray(input.cart)||input.cart.length<1||input.cart.length>DSHOP_CART_MAX||typeof input.vip!=='boolean')fail('Choose between one and 28 catalog products.');
     const products=input.vip?catalog.vipShop?.products:catalog.products;
     profile.dshopBought||={};profile.cashInv||=[];let total=0;
     const buys=input.cart.map(row=>{
@@ -98,16 +104,16 @@ export async function dispatchShopAction(world,p,input) {
       if((record.purchaseLimitLv||0)>(profile.level||1))fail('Your level cannot purchase this product.');
       const bought=profile.dshopBought[row.itemIndex]||0;
       if(record.purchaseLimit>0&&bought>=record.purchaseLimit)fail('The product purchase limit has been reached.');
-      const price=Number(product.nativeWing?nativeWingPurchasePrice(catalog.items?.[row.itemIndex]):input.vip?(record.vipCost||record.cash||0):(record.cash||0));integer(price,0,1000000000);
-      const units=integer(Number(catalog.items?.[row.itemIndex]?.stack??1),1,100000);
+      const price=dshopVariantPrice(record,{vip:input.vip,nativeWingPrice:product.nativeWing?nativeWingPurchasePrice(catalog.items?.[row.itemIndex]):null});integer(price,0,1000000000);
+      const units=integer(dshopPurchaseUnits(catalog.items?.[row.itemIndex]),1,100000);
       profile.dshopBought[row.itemIndex]=bought+1;total+=price;
-      return {itemIndex:row.itemIndex,price,units,period:Number(record.period)||0,product:row.product};
+      return {itemIndex:row.itemIndex,price,units,period:dshopPurchasePeriod(record),product:row.product};
     });
     const unlimited=!input.vip&&p.capabilities?.includes('gm:commands');
-    if(!unlimited)cost(profile,input.vip?'vipPoints':'dkc',total);
+    if(!unlimited)cost(profile,dshopCurrencyKey(input.vip),total);
     const cash=[];
     for(const buy of buys){if(almightyOf(catalog,buy.itemIndex)){if(buy.units!==1)fail('Choose one Premium Holy Water service.');checkPremiumItem(world,profile,buy.itemIndex);startPremium(world,profile,buy.itemIndex);}let left=buy.units;while(left>0){const count=Math.min(left,db.stackSize(db.def(buy.itemIndex)));const item=createItem(db,buy.itemIndex,{count,now:world.now(),rng:world.random});if(almightyOf(catalog,buy.itemIndex))item.premiumActivatedAt=world.now();if(buy.period>0)item.expiresAt=world.now()+buy.period*1000;Object.assign(item,{boughtAt:world.now(),purchaser:profile.name,shop:input.vip?'vip':'dshop'});delete item.page;delete item.x;delete item.y;cash.push(item);left-=count;}}
-    if(profile.cashInv.length+cash.length>1000)fail('Receive existing cash items before purchasing more.');
+    if(!cashInventoryCanAccept(profile.cashInv,cash.length))fail('Receive existing cash items before purchasing more.');
     profile.cashInv.push(...cash);const receipt={id:randomUUID(),at:world.now(),shop:input.vip?'vip':'dshop',total,items:buys};
     profile.purchaseReceipts=[...(profile.purchaseReceipts||[]),receipt].slice(-100);profile.dshopSpent=(profile.dshopSpent||0)+(input.vip?0:total);detail={receipt};
   } else if(input.type==='cashclaim') {
@@ -136,19 +142,22 @@ export async function dispatchShopAction(world,p,input) {
       if(!row||!def)fail('The requested item is not offered on this shop tab.');
       const count=integer(input.count,1,9999),units=count*Math.max(1,Number(row[1])||1);
       const materials=set.costs?.[input.itemIndex];
-      if(materials?.length){if(count!==1)fail('This item can only be purchased one at a time.');for(const [index,n]of materials){if(!inventory.remove(Number(index),Number(n)*count))fail('You do not have the required materials.');}}
+      if(materials?.length){if(count!==1)fail('This item can only be purchased one at a time.');for(const [index,n]of materials){if(!inventory.remove(Number(index),Number(n)*count))fail('[message] You do not have enough material items.');}}
       else if(shop.kind==='ARENA_SHOP'&&def.purchasePoint>0)cost(profile,'battlePoints',def.purchasePoint*count);
+      // Scan fix A: price 0 = free is Global data, not a bug: def.price is item.dat Price (offset 194, the client's compiled table).
+      // 289 shop items have Price 0 there (181 also 0 in share CSV, 103 have no CSV row). 5 differ (CSV Price>0, dat 0):
+      // 6231/6229/6170/4000521 (CSV 1) and 3200 Dice (CSV 100) -- left on item.dat for owner to decide.
       else if(def.price>0){const dil=Math.floor(def.price*(tab.buyRatio||10)/10)*count;cost(profile,'dil',dil);siegeTax={kind:'buy',amount:dil};}
-      if(!inventory.add(input.itemIndex,units,{period:def.period}))fail('Your inventory is full.');
+      if(!inventory.add(input.itemIndex,units,{period:def.period}))fail(materials?.length?'[message] You do not have enough space in your bag.':'You do not have enough Inventory space.'); // Global 340:37 (exchange) / 40:77
     } else if(input.type==='shopsell') {
       const entry=inventory.bag.list.find(item=>item.uid===input.uid),def=entry&&db.def(entry.itemIndex);
       if(!entry||!def)fail('That inventory item does not exist.');
-      const price=salePrice(def,entry,shop,data);if(inventory.dil+price>10000000000)fail('Your DIL balance is full.');
+      const price=salePrice(def,entry,shop,data);if(inventory.dil+price>10000000000)fail('Your dil is reaching the maximum limit; you cannot sell items.');
       inventory.bag.take(entry);inventory.addDil(price);siegeTax={kind:'sell',amount:price};
-      profile.shopRebuy=[...(profile.shopRebuy||[]),{id:randomUUID(),shop:input.shop,price,entry}].slice(-80);
+      profile.shopRebuy=[...(profile.shopRebuy||[]),{id:randomUUID(),shop:input.shop,price,entry}].slice(-SHOP_REBUY_MAX);
     } else {
-      const rows=profile.shopRebuy||[],at=rows.findIndex(row=>row.id===input.receipt&&row.shop===input.shop);if(at<0)fail('That repurchase receipt does not exist.');
-      const receipt=rows[at];cost(profile,'dil',receipt.price);if(!inventory.bag.add(structuredClone(receipt.entry)).ok)fail('Your inventory is full.');rows.splice(at,1);
+      const rows=profile.shopRebuy||[],at=rows.findIndex(row=>row.id===input.receipt&&row.shop===input.shop);if(at<0)fail('[message]There are no items to repurchase.');
+      const receipt=rows[at];if((Number(profile.dil)||0)<receipt.price)fail("[message]You don't have enough DIL");cost(profile,'dil',receipt.price); // Global 340:23if(!inventory.bag.add(structuredClone(receipt.entry)).ok)fail("[message]You don't have enough Inventory to repurchase.");rows.splice(at,1);
     }
   }
   // Keep uncommitted purchases/claims out of snapshots. A failed durable write

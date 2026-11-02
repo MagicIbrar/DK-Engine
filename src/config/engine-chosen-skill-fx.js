@@ -1,4 +1,4 @@
-// ENGINE-CHOSEN skill effect presentation policies (fx-units.js, fx-trails.js). The fields themselves are read from
+﻿// ENGINE-CHOSEN skill effect presentation policies (fx-units.js, fx-trails.js). The fields themselves are read from
 // Global data (property/effect/effectdata.*.txt via tools/build-skills.mjs); only the points marked here are
 // interpretations that no Global file states. Each one names its evidence. A quality setting changes cost only:
 // 'faithful' draws every authored layer; 'safe' keeps them but caps the work per unit.
@@ -11,7 +11,9 @@
 //   projectiles and are 0.01 .. 0.3, a plausible distance step. Native vertex format (binary/trace.fx): position, uv
 //   and per-vertex colour, texture modulated, fog. The copies use the unit's own texture, blend and size.
 //   [medium confidence: interval/spacing/fade reading not stated by any Global file]
+import { gfxB } from './gfx-b-switches.js'; // gfx-B2
 export const TRAIL = Object.freeze({
+  AUTHORED_MAX: 300,        // gfx-B2: largest authored tailstep count in effectdata.*.txt (611 enabled units; 6 above 128) - the cap never binds
   MAX_COPIES: 128,          // safety cap per unit (authored count max is 300, but emission is at most one copy per frame)
   FRAME_MS: 1000 / 60,      // ms used when a row authors ms = 0 (lifetime = count frames)
 });
@@ -34,12 +36,14 @@ export const DISTORT = Object.freeze({ MODE: 'off', STRENGTH: 0.03 });
 // Quality: 'faithful' (default) draws every authored trail copy and specular/glow map. 'safe' halves the trail copy
 // cap and skips specular maps on effect meshes, for software renderers or very busy scenes.
 export const SKILL_FX_QUALITY = { level: 'faithful' };
-export const trailCopyCap = () => SKILL_FX_QUALITY.level === 'safe' ? TRAIL.MAX_COPIES >> 1 : TRAIL.MAX_COPIES;
+export const trailCopyCap = () => { const cap = gfxB('trailAuthoredCount') ? TRAIL.AUTHORED_MAX : TRAIL.MAX_COPIES; return SKILL_FX_QUALITY.level === 'safe' ? cap >> 1 : cap; };
 
 // Bone-name aliases for VERIFIED authoring typos only. A name qualifies when (1) no Global skeleton (skel/character,
 // skel/effect, any bone name or alias) defines it and (2) it is one edit away from a virtual attach point the effect
 // player resolves itself ('', top, center, movement). Census of all 1,521 distinct effectscene bonename values:
 //   "movemevt" (1 use, 100:1013 scene 1 unit 1, Azure Knight) -> "movement".   ("top00" is 2 edits away: not aliased.)
-// Every other unresolved name (body_u on bar.skel, Dum1-5, eye01/02, Point00x, eff_fire0x ...) is a real bone of some
-// other skeleton (monster/servant/effect) or unknown; those keep the existing Spine1 -> Bip01 -> half-height fallback.
+// "body_u" is the skel *alias* of Bip01 Spine1 on 14/15 character skels (findBone resolves it). bar.skel (TRI) does
+// not carry that alias; TRI effects that author body_u (246 control hits) keep the Spine1 -> Bip01 -> half-height
+// fallback, which lands on the same Spine1 bone. Dum1-5, eye01/02, Point00x, eff_fire0x are real bones of other
+// skeletons (monster/servant/effect) or unknown; do not invent aliases for them.
 export const BONE_ALIASES = Object.freeze({ movemevt: 'movement' });

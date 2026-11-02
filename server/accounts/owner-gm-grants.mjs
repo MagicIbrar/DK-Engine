@@ -2,6 +2,7 @@
 // No browser/world command, client role, or delegated GM permission authorizes this service.
 import fs from 'node:fs/promises';
 import { accountPermissions, canonicalAccount, permissionFile, setAccountRole } from './permissions.mjs';
+import { STAFF_BRACKET_IDS } from './staff-brackets.mjs';
 import {sqliteAccountIds} from './sqlite-store.mjs';
 import {readDurableAccountStore} from './entity-journal.mjs';
 
@@ -13,7 +14,7 @@ export function ownerAccountForHost(config) {
 
 export function createOwnerGMGrants({ accountStore, file = permissionFile(accountStore), revokeLease, ownerAccount = 'admin', registeredAccounts = null }) {
   if (typeof revokeLease !== 'function') throw new Error('Owner GM management requires a live world lease revocation hook.');
-  const protectedAccounts = new Set(['admin', canonicalAccount(ownerAccount)]);
+  const protectedAccounts = new Set([...STAFF_BRACKET_IDS, canonicalAccount(ownerAccount)]); // ROLE-AUTOLOGIN: GM/DEV brackets are owner launches, not delegated grants
   let pending = Promise.resolve();
   return {
     async list() {

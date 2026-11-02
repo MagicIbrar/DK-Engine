@@ -291,7 +291,7 @@ export class FrontCharacter extends Player {
       if (_box.isEmpty() || _box.min.y < lo - 1 || _box.max.y > hi + h) continue;
       top = Math.max(top, _box.max.y);
     }
-    return { x: this.x, z: this.z, bottom: lo, top };
+    return { x: this.x, z: this.z, bottom: lo, top, bodyTop: hi };   // bodyTop: skinned body only (the card framing)
   }
 
   /**
@@ -309,7 +309,7 @@ export class FrontCharacter extends Player {
         a.time = (d * i) / samples;
         anim.mixer.update(0);
         const b = this.measureBody(2);
-        if (b) { out.bottom = Math.min(out.bottom, b.bottom); out.top = Math.max(out.top, b.top); }
+        if (b) { out.bottom = Math.min(out.bottom, b.bottom); out.top = Math.max(out.top, b.top); out.bodyTop = Math.max(out.bodyTop, b.bodyTop); }
       }
     } finally {
       a.time = t0;
@@ -362,6 +362,6 @@ export class FrontCharacter extends Player {
     const lift = floor - b.bottom;
     this.feetAdjust = Math.abs(lift) < 0.6 ? lift : 0;
     this._syncGroup();
-    return { ...b, bottom: b.bottom + this.feetAdjust, top: b.top + this.feetAdjust };
+    return { ...b, bottom: b.bottom + this.feetAdjust, top: b.top + this.feetAdjust, bodyTop: b.bodyTop + this.feetAdjust };
   }
 }

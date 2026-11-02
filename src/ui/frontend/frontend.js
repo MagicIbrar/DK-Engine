@@ -21,7 +21,10 @@ import { Audio } from '../../game/audio.js';
 import { GameData, ARDECA_MAP } from '../../game/data.js';
 import { setLoadingMap, ensureFrontCSS, preloadLoading, showLoading } from '../screens.js';
 import { prepareStartupCatalogs, prepareStartupScene, STARTUP_CATALOGS } from '../../engine/startup-preload.js';
-import { startupProgress } from '../../engine/startup-progress.js';
+import { runLaunchDataSync } from '../../engine/launch-data-sync.js';
+import { launchProgress } from '../../engine/loading-pacer.js';
+import { LAUNCH_PACING } from '../../config/engine-chosen-launch-pacing.js';
+import { collectOrderedPreload, warmOrderedPreload, GLOBAL_STARTUP_PRE } from '../../engine/global-startup-preload.js';
 import { prepareStartupUIScripts } from '../../engine/startup-ui.js';
 import { STARTUP_UI_SCRIPTS } from '../../config/engine-chosen-startup-ui.js';
 import { fetchText, soundURL } from '../../engine/assets.js';
@@ -31,6 +34,7 @@ import { atlas } from '../atlas.js';
 import { CREDENTIAL_KEY, returnToFrontEnd } from './return.js';
 import { flushCharacterSaves } from '../../game/save.js';
 import { phonePresentationRequested, verifiedSession, accountDestination } from '../../../web/public/connect.js';
+import { importWithNetRetry } from '../../engine/net-retry-import.js';
 
 const wait = ms => new Promise(r => setTimeout(r, ms));
 
@@ -86,26 +90,33 @@ export class FrontEnd {
   async boot() {
     ensureFrontCSS();
     this._startupLoadTimes={started:performance.now()};
-    // User-confirmed native credit_002 startup art and preload percentage. Progress advances only
-    // after real work in each of three phases; this is not a byte/time estimate.
-    this.preload = showLoading(this.ui, '', ARDECA_MAP, {startup:true});
+    // Always show native startup loading cover (Global ESC Character/Exit: purple systemwait then this bar).
+    // Do not invent skip-cover for return-to-character.
+    this.preload = showLoading(this.ui, '', ARDECA_MAP, {startup:true,pacing:LAUNCH_PACING,trackReal:true,onDisplay:d=>{if(globalThis.__dkStartupLoad)globalThis.__dkStartupLoad.displayed=d;}});
     // Native parent-owned preload continues in this same window through real GPU readiness.
-    globalThis.__dkStartupLoad={fraction:0,ready:false,failed:false};
+    globalThis.__dkStartupLoad={fraction:0,displayed:0,ready:false,failed:false,times:this._startupLoadTimes};
     const setStartup=this.preload.set.bind(this.preload),failStartup=this.preload.fail.bind(this.preload);
     this.preload.set=(fraction,label)=>{if(globalThis.__dkStartupLoad.failed)return;globalThis.__dkStartupLoad.fraction=fraction;return setStartup(fraction,label);};
     this.preload.fail=error=>{globalThis.__dkStartupLoad.failed=true;return failStartup(error);};
-    this._startupProgress=startupProgress((fraction,label)=>this.preload?.set(fraction,label));
+    // Work-weighted stages (config/engine-chosen-launch-pacing.js): datasync (server table sync hook), interface, preload (Global's startup .pre set),
+    // scene (MAL_Login), shaders. The bar is paced by that table and never runs ahead of this real fraction.
+    this._startupProgress=launchProgress(LAUNCH_PACING,(fraction,label)=>this.preload?.set(fraction,label));
     const preloadArt = atlas.sprite('preloading',1);
     // Count catalog preparation and script discovery in the existing first phase.
     // An absent optional panel completes discovery; its real boot consumer (if
     // any) still requires the window. No login/scene readiness is inferred here.
     // These are work units, not a byte percentage or an elapsed-time forecast.
     const startupWork={catalogs:0,scripts:0},startupTotal=STARTUP_CATALOGS.length+STARTUP_UI_SCRIPTS.length;
-    const prepared=(kind,done)=>{startupWork[kind]=done;this._startupProgress(0,(startupWork.catalogs+startupWork.scripts)/startupTotal,'Preparing client data and interface');};
+    const prepared=(kind,done)=>{startupWork[kind]=done;this._startupProgress('interface',(startupWork.catalogs+startupWork.scripts)/startupTotal,'Preparing client data and interface');};
     // Paint the native 0% before bulk JSON parsing can occupy the UI thread.
     const coverReady=Promise.resolve(this.preload.ready).then(()=>typeof globalThis.requestAnimationFrame==='function'
       ?new Promise(resolve=>globalThis.requestAnimationFrame(()=>globalThis.requestAnimationFrame(resolve))):undefined);
-    const catalogs = coverReady.then(()=>prepareStartupCatalogs({onProgress:(done,total)=>
+    // 'datasync' stage: the registered server table sync (engine/launch-data-sync.js) runs first; everything that reads
+    // /gamedata (catalogs, FrontData) waits for it. Nothing registered = completes at once.
+    const dataSynced=coverReady.then(()=>runLaunchDataSync({current:()=>!this.stage._disposed,
+      onProgress:fraction=>this._startupProgress('datasync',fraction,'Synchronising game data')}))
+      .then(report=>{this._startupDataSync=report;this._startupLoadTimes.dataSyncMs=report.ms;return report;});
+    const catalogs = dataSynced.then(()=>prepareStartupCatalogs({onProgress:(done,total)=>
       prepared('catalogs',done)}));
     this.fadeEl = document.createElement('div');
     this.fadeEl.className = 'fe-fade';
@@ -120,24 +131,36 @@ export class FrontEnd {
     // Start the front-end scene as soon as its dependencies are ready. Keep all
     // catalog/UI preparation in the final readiness barrier, overlapping scene
     // I/O instead of making the scene wait for every unrelated panel to parse.
-    this._startupPreparation=Promise.all([catalogs,scripts]).then(()=>{
+    // Global's startup .pre set, in .pre order, through the stage caches the login scene and the Game share
+    // (engine/global-startup-preload.js). Textures upload as tasks while the cover is up.
+    const preloadStarted=performance.now();
+    const startupSet=coverReady.then(()=>collectOrderedPreload(GLOBAL_STARTUP_PRE)).then(set=>{
+      this._startupSet=set;this.stage.textures?.uploads?.setPreloading?.(true);
+      return warmOrderedPreload(set.order,{models:this.stage.models,textures:this.stage.textures,current:()=>!this.stage._disposed,
+        onProgress:(done,total)=>this._startupProgress('preload',total?done/total:1,'Loading game data')});
+    }).then(ledger=>{this._startupLedger=ledger;if(ledger.failed.length)console.warn('[preload] startup asset failures',{count:ledger.failed.length,examples:ledger.failed.slice(0,10)});},error=>{this._startupLedger={error:String(error?.message||error)};console.warn('[preload] startup .pre set',error);})
+      .finally(()=>{this._startupLoadTimes.preloadMs=Math.round(performance.now()-preloadStarted);this._startupProgress('preload',1,'Loading game data');});
+    this._startupPreparation=Promise.all([catalogs,scripts,startupSet]).then(()=>{
       this._startupLoadTimes.catalogsAndInterfaceMs=Math.round(performance.now()-this._startupLoadTimes.started);
     }).catch(error=>{this._startupError=error;this.preload?.fail(error);});
-    try { await Promise.all([this.data.load(), texts.load(), this.uim.ready, preloadArt]); }
+    try { await Promise.all([dataSynced.then(()=>this.data.load()), texts.load(), this.uim.ready, preloadArt]); }
     catch(error){this.preload?.fail(error);throw error;}
     if(this._startupError)throw this._startupError;
-    this._startupProgress(1,0,'Preparing the login scene');
+    this._startupProgress('scene',0,'Preparing the login scene');
     // Additional reusable UI/map requests may warm while the player signs in.
     globalThis.addEventListener?.('dekaron:login-ready', () => this.warmTables(), { once: true });
     this.audio = new Audio({ data: this.data, settings: this.settings, events: null, player: null });
     this.audio.setVolumes({ music: this.settings.musicVolume, sfx: this.settings.sfxVolume });
+    // The opaque startup cover hides the canvas until finishPreload: advance frames without drawing (stage.holdRender).
+    // Skip-cover return-to-char leaves the canvas free so select can paint as soon as its scene is ready.
+    if(this.preload)this.stage.holdRender?.(true);
     this.stage.start();
     return this;
   }
 
   startupSceneProgress(fraction,label) {
     const times=this._startupLoadTimes;if(times){times.sceneStarted??=performance.now();if(fraction>=1)times.sceneMs=Math.round(performance.now()-times.sceneStarted);}
-    this._startupProgress?.(1,fraction,label);
+    this._startupProgress?.('scene',fraction,label);
   }
 
   async finishPreload() {
@@ -146,15 +169,21 @@ export class FrontEnd {
     await this._startupPreparation;
     if(this._startupError)throw this._startupError;
     const graphicsStarted=performance.now();
-    this._startupProgress(2,0,'Preparing startup graphics');
-    try { await prepareStartupScene(this.stage,{onProgress:(fraction,label)=>this._startupProgress(2,fraction,label)}); }
+    this._startupProgress('shaders',0,'Preparing startup graphics');
+    try { await prepareStartupScene(this.stage,{onProgress:(fraction,label)=>this._startupProgress('shaders',fraction,label)}); }
     catch(error){panel.fail(error);throw error;}
+    this.stage.holdRender?.(false); // drawn once by prepareStartupScene; draw every frame again before the cover lifts
     if(this._startupLoadTimes){this._startupLoadTimes.graphicsMs=Math.round(performance.now()-graphicsStarted);this._startupLoadTimes.totalMs=Math.round(performance.now()-this._startupLoadTimes.started);}
     panel.set(1,'');
     // Give the completed label a paint before releasing the cover, including a
     // cached startup that finishes within a frame. No artificial seconds added.
     await panel.presentComplete?.();
     panel.close();
+    this.stage.textures?.uploads?.setPreloading?.(false);
+    const ledger=this._startupLedger,set=this._startupSet;
+    Object.assign(globalThis.__dkStartupLoad,{startupSet:set?{roots:[...GLOBAL_STARTUP_PRE],files:set.files.length,assets:set.order.length,missingIncludes:set.missing.length,unparsedEntries:set.unparsed.length,keys:set.order.map(o=>o.kind+':'+o.path)}:null,
+      ledger:ledger?{done:ledger.done,missing:ledger.missing,failed:ledger.failed,ms:ledger.ms,error:ledger.error}:null,
+      programsAtReady:this.stage.renderer?.info?.programs?.length??null,readyAt:performance.now()});
     globalThis.__dkStartupLoad.ready=true;
     if(this.preload===panel)this.preload=null;
   }
@@ -287,9 +316,10 @@ export class FrontEnd {
    * @returns {Promise<{character:object, renderer, textures, models, data}>}
    */
   async run({ startAt = 'login' } = {}) {
-    const { LoginScreen } = await import('./login.js');
-    const { SelectScreen } = await import('./select.js');
-    const { CreateScreen } = await import('./create.js');
+    // A dropped module request rejects import() with a TypeError; fetch it again (engine/net-retry-import.js).
+    const { LoginScreen } = await importWithNetRetry(() => import('./login.js'));
+    const { SelectScreen } = await importWithNetRetry(() => import('./select.js'));
+    const { CreateScreen } = await importWithNetRetry(() => import('./create.js'));
     let next = startAt;
     // Restore the account before select/create reads character slots, including a return from the game.
     try { this.account = await this.restoreAccount(); }

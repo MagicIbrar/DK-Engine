@@ -197,7 +197,10 @@ const bgmByMapIndex = {};
     };
     const sub = Number(r[col('SubTypeIndex')] || 0);
     if (sub) e.subType = sub;
-    if (!p) e.missing = true;
+    // Scan fix A: a missing BGM is a Global data gap, not an extraction miss. Verified 2026-10-29 for the only two
+    // (map 46 BGM\Field_13_1.mp3, bgsound.csv:207; map 546 BGM\bgm_dungeon01.mp3, :745): the raw Global client
+    // data/sound/bgm ships neither (only field_13.mp3). The playlist skips missing entries.
+    if (!p) { e.missing = true; e.globalDataGap = true; }
     (bgmByMapIndex[mi] ||= []).push(e);
   }
 }

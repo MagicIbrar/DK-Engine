@@ -34,13 +34,15 @@
 // Rebirth (share/rebirth/changeoption.csv + itemoption_{armor,weapon}.csv, gamedata/life_rebirth.json): the
 // "Dynamic Option" re-roll table for old (pre-rebirth) equipment. Exposed as plain data lookups (`rebirthOptions`,
 // `changeOption`) for the item-upgrade system to call; no window of ours uses it directly.
-import { str, strNow, msg, msgRef, state, itemInfo, canGive, giveItem, randInt, rebirthData } from './common.js';
+import { str, strNow, msg, msgRef, state, itemInfo, canGive, giveItem, randInt, rebirthData, itemsLegacyData } from './common.js';
+import { rebirthOptionsAt, changeOptionType, REBIRTH_UNRESOLVED } from './rebirth-rules.js';
+import { dynamicOptionCost } from '../items/dynamic-option-rules.js';
 import { titleProgress, ownsTitle } from './title-rules.js';
 import { FIELD_PK } from '../../config/engine-chosen-pk.js';
 import { chaoticDecayPerSec } from '../../game/chaotic-decay.js';
 import {claimEligibleGradeRewards} from '../../game/grade-rewards.js';
 
-const DECAY_PER_SEC = FIELD_PK.decayPerSec; // fallback only; the native rate is per map (maplist wChaoticDecrease / dwChaoticDecreasePeriod)
+const DECAY_PER_SEC = 0; // no engine fallback (f pass); the rate is per map only (maplist wChaoticDecrease / dwChaoticDecreasePeriod)
 
 export class Grade {
   constructor(game, life) {
@@ -182,19 +184,24 @@ export class Grade {
   titleBonus() { const t = this.title(); return t ? { statIndex: t.Option_Index1, value: t.Option_Value1, desc: t.Option_info } : null; }
 
   // ------------------------------------------------------------------------------------------- rebirth (dynamic option re-roll)
+  // Data lookups via rebirth-rules.js. Material costs / dedicated Dynamic Option window: REBIRTH_UNRESOLVED.
   async _rebirth() { if (!this.REB) this.REB = await rebirthData(); return this.REB; }
   /** Possible dynamic options at an item's level for a weapon/armor re-roll (share/rebirth/itemoption_*.csv). */
   async rebirthOptions(isWeapon, level) {
-    const r = await this._rebirth();
-    const grp = (isWeapon ? r?.weapon : r?.armor) || {};
-    return (grp[level] || []).map(([index, type, desc, min, max]) => ({ index, type, desc, min, max }));
+    return rebirthOptionsAt(await this._rebirth(), isWeapon, level);
   }
   /** The "Change Option" text a legacy option type maps to for a class (share/rebirth/changeoption.csv). */
   async changeOption(fromType, job) {
-    const r = await this._rebirth();
-    const row = (r?.change || []).find((c) => c.from === fromType && (c.job === job || c.job === 0));
-    return row?.to || null;
+    return changeOptionType(await this._rebirth(), fromType, job);
   }
+  /** Required materials to change an item's dynamic options: Global share/item/optionchange/optionchange.csv row for the
+   *  item (dynamic-option-rules.js dynamicOptionCost). { ok:false } when Global has no row for it (ENGINE-DEFAULT). */
+  async rebirthCost(itemIndex) {
+    const legacy = await itemsLegacyData();
+    return dynamicOptionCost(legacy?.optionChange?.rows || [], itemIndex);
+  }
+  /** Documented gaps (no invented costs). */
+  rebirthUnresolved() { return REBIRTH_UNRESOLVED; }
 
   // ------------------------------------------------------------------------------------------- lifecycle
   async install() {

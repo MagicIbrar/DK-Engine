@@ -23,6 +23,7 @@
 // Format notes: docs/formats/items.md. The binary parsers are exported (pure functions, no file system access).
 
 import fs from 'node:fs';
+import { isUtf8 } from 'node:buffer';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseCSV, decodeText } from '../src/formats/binreader.js';
@@ -202,12 +203,12 @@ export function parseItemOptionDat(buf) {
  */
 export function parseStringTable(text) {
   const out = new Map();
-  let cate = null, code = null, comment = '', buf = null;
+  let cate = null, code = null, comment = '', hashless = false, buf = null;
   for (const raw of String(text).split(/\r?\n/)) {
     let line = raw.replace(/^﻿/, '');
     if (buf) {
       if (/^\s*\}/.test(line)) {
-        cate.set(code, { text: buf.join('\n'), comment }); buf = null; code = null;
+        cate.set(code, hashless ? { text: buf.join('\n'), comment, hashless } : { text: buf.join('\n'), comment }); buf = null; code = null;
         line = line.replace(/^\s*\}/, '');
         if (!/^\s*code\s+\d+/.test(line)) continue;
       } else { buf.push(line.replace(/\s+$/, '')); continue; }
@@ -216,7 +217,9 @@ export function parseStringTable(text) {
     let m;
     if ((m = /^<cate>\s*(\d+)/.exec(t))) { const id = +m[1]; if (!out.has(id)) out.set(id, new Map()); cate = out.get(id); continue; }
     if (/^<\/cate>/.test(t)) { cate = null; continue; }
-    if (cate && (m = /^code\s+(\d+)\s*(?:#(.*))?$/.exec(t))) { code = +m[1]; comment = (m[2] || '').trim(); continue; }
+    // scan fix A (W1): Global itemdesc cate 502 writes some labels with no '#' ("code 307 DAMAGE_TRANSITION_ENEMY_MUL",
+    // "code 337 PVP Attack Increase" .. 341); the old '#'-only pattern dropped those blocks. Trailing text is the comment either way.
+    if (cate && (m = /^code\s+(\d+)\b\s*(#?)\s*(.*)$/.exec(t))) { code = +m[1]; comment = (m[3] || '').trim(); hashless = !m[2] && !!comment; continue; }
     if (cate && code !== null && t === '{') { buf = []; continue; }
   }
   return out;
@@ -408,6 +411,7 @@ export function categoryOf(type, code) {
 }
 /** Character bone that carries wings (inferred: every class skeleton has 'weaponW', a child of Bip01 Spine1, that no weapon uses). */
 export const WING_BONE = 'weaponW';
+let WING_EFFECT_INFO = null; // scan fix A: filled from script/effect/wingeffect.csv while building items
 /** items-raw.json columns (values kept verbatim; meanings unknown or only relevant for tooling). */
 export const RAW_COLUMN_NOTES = {
   row: 'data row of the source table in the lines_eu name key (item#<table>.csv#1|<row>)',
@@ -468,6 +472,16 @@ export async function build({ dataRoot, verbose = false } = {}) {
   const has = (k) => !!k && FILES.has(normPath(k));
   const read = (k) => { const a = FILES.get(normPath(k)); if (!a) throw new Error(`missing ${k}`); return fs.readFileSync(a); };
   const readText = (k, korean = true) => decodeText(read(k), korean);
+  // scan fix A (W2): Global stringtable_item.txt mixes EUC-KR lines with lines saved as UTF-8 (45 lines, e.g. the en dash
+  // in "0–3" of codes 1172/1173 that decode to U+FFFD under EUC-KR). Decode per line: valid UTF-8 first, EUC-KR fallback.
+  // A file with a BOM keeps decodeText's explicit-encoding path.
+  const readTextMixed = (k) => {
+    const b = read(k);
+    if ((b[0] === 0xef && b[1] === 0xbb && b[2] === 0xbf) || (b[0] === 0xff && b[1] === 0xfe) || (b[0] === 0xfe && b[1] === 0xff)) return decodeText(b, true);
+    const out = []; let s = 0;
+    for (let i = 0; i <= b.length; i++) if (i === b.length || b[i] === 0x0a) { const seg = b.subarray(s, i); out.push(isUtf8(seg) ? seg.toString('utf8') : decodeText(seg, true)); s = i + 1; }
+    return out.join('\n');
+  };
   const csvRows = (k) => parseCSV(readText(k)).filter(r => r.some(x => String(x).trim() !== ''));
   const csvObjects = (k, headerRows = 1) => {
     const rows = csvRows(k);
@@ -482,7 +496,7 @@ export async function build({ dataRoot, verbose = false } = {}) {
   if (L.trailingBytes) problems.push(`lines_eu: ${L.trailingBytes} trailing bytes`);
   const loc = (key) => { const id = L.csvKeys.get(key); return id === undefined ? null : (L.strings.get(id) ?? null); };
   const itemDescTable = parseStringTable(readText('script/string/item/stringtable_itemdesc.txt'));
-  const itemTextTable = parseStringTable(readText('script/string/item/stringtable_item.txt'));
+  const itemTextTable = parseStringTable(readTextMixed('script/string/item/stringtable_item.txt'));
   const kindNames = {};
   for (const [code, v] of itemDescTable.get(104) || []) kindNames[code] = plainText(v.text);
   const rankNames = {};
@@ -585,7 +599,9 @@ export async function build({ dataRoot, verbose = false } = {}) {
   for (const f of ['itemoption_accessory.csv', 'itemoption_armor.csv', 'itemoption_weapon.csv']) optionCsv[f] = csvRows(`share/item/${f}`);
   const optionTypes = {}; // code -> {name, label, text}
   for (const [code, v] of itemDescTable.get(502) || []) {
-    const name = (v.comment || '').split(/\s+/)[0] || null;
+    // hashless labels ("PVP Attack Increase") are prose, not an option identifier - only take an UPPER_SNAKE token as the name
+    const tok = (v.comment || '').split(/\s+/)[0] || null;
+    const name = v.hashless && !/^[A-Z][A-Z0-9]*_[A-Z0-9_]+$/.test(tok || '') ? null : tok;
     const text = plainText(v.text).replace(/\n/g, ' ');
     optionTypes[code] = { name, label: text.replace(/\s*<VALUE>.*$/, '').replace(/[:\s]+$/, '').trim(), text };
   }
@@ -607,6 +623,19 @@ export async function build({ dataRoot, verbose = false } = {}) {
     (optionPools[o.level] ||= []).push([o.index, o.type, o.min, o.max, o.limit, table]);
   }
   if (optJoined !== optDat.length || optAgree !== optDat.length) problems.push(`itemoption.dat vs csv: joined ${optJoined}, agree ${optAgree} of ${optDat.length}`);
+  // option codes Global's cate 502 has no line for (e.g. 337 / 339 PVP damage): the same code's line in Global
+  // stringtable_com cate 200 (the option-code keyed table) is the text, so the tooltip never shows "Option <code>"
+  if (has('script/string/stringtable_com.txt')) {
+    const com200 = parseStringTable(readText('script/string/stringtable_com.txt')).get(200) || new Map();
+    for (const [code, ot] of Object.entries(optionTypes)) {
+      const v = ot.text ? null : com200.get(Number(code));
+      if (!v) continue;
+      const text = plainText(v.text).replace(/\n/g, ' ').trim();
+      if (!text || /^[A-Z0-9_]+ <VALUE>$/.test(text)) continue;
+      ot.text = text; ot.textSource = 'stringtable_com 200';
+      if (!ot.label) ot.label = text.replace(/<VALUE>%?/g, '').replace(/^[\s+\-]+/, '').replace(/\s+/g, ' ').trim();
+    }
+  }
 
   // ---- itemstatus (buff / status consumables), itempackage, random box tables (pointer only)
   const itemStatus = {};
@@ -739,8 +768,12 @@ export async function build({ dataRoot, verbose = false } = {}) {
   const HDR = new Map();
   for (const [, t, name, hdr] of ITEM_DAT_FIELDS) if (hdr) for (const h of (Array.isArray(hdr) ? hdr : [hdr])) HDR.set(h, [name, t]);
   let csvOnlyDup = 0;
+  const retiredWeaponsDropped = [];
   for (const c of csvOnly) {
     if (full.has(c.index)) { csvOnlyDup++; continue; }
+    // a retired weapon row (itemweapon.csv only, no item.dat record) that no Global share/script table references
+    // (packages, shops, drops, boxes) cannot appear in Global, e.g. the "N Million / Billion Cecil +9" rows
+    if (c.retired && c.src === 'weapon') { retiredWeaponsDropped.push(c.index); continue; }
     const f = { index: c.index };
     for (const [h, [name]] of HDR) if (c.o[h] !== undefined && name !== 'job' && f[name] === undefined) { const v = num(c.o[h]); if (v !== null) f[name] = v; }
     f.classMask = classMaskFromCsvJob(c.o.Job);
@@ -752,6 +785,7 @@ export async function build({ dataRoot, verbose = false } = {}) {
     if (c.retired) full.get(c.index).retired = 1;
   }
   if (csvOnlyDup) notes.push(`${csvOnlyDup} CSV-only rows share an index with an earlier item and were skipped`);
+  if (retiredWeaponsDropped.length) notes.push(`${retiredWeaponsDropped.length} retired weapon rows not in item.dat dropped: ${retiredWeaponsDropped.join(', ')}`);
 
   // ---- defaults (mode of each field) and sparse items
   const NEVER_DEFAULT = new Set(['name', 'src', 'type', 'code', 'slot', 'use', 'retired']);
@@ -781,6 +815,23 @@ export async function build({ dataRoot, verbose = false } = {}) {
   };
   const items = {};
   for (const [i, it] of [...full].sort((a, b) => a[0] - b[0])) items[i] = sparse(it, itemDefaults);
+  // Scan fix A: script/effect/wingeffect.csv (one ItemIndex column). Global Ghost::DriverKernel::Table::WingEffect
+  // (64-bit decompile FUN_7ff6708a7740) is a lookup by item index; the wing render paths (decompile L266017, L345084,
+  // L369704) ask it whether the item is listed and only take their default attach/effect path when it is NOT listed.
+  // Carried as items[i].wingEffect = 1 (Global data). The alternate path's string literal is not in the decompile text,
+  // so the runtime branch is not wired here.
+  {
+    const key = 'script/effect/wingeffect.csv';
+    const info = { file: key, rows: 0, matched: 0, notInItems: [] };
+    if (has(key)) {
+      for (const line of read(key).toString('latin1').split(/\r?\n/).slice(1)) {
+        const v = Number(line.split(',')[0].trim()); if (!Number.isInteger(v) || v <= 0) continue;
+        info.rows++;
+        if (items[v]) { items[v].wingEffect = 1; info.matched++; } else if (info.notInItems.length < 50) info.notInItems.push(v);
+      }
+    }
+    WING_EFFECT_INFO = info;
+  }
   const rawDefaults = modeOf(rawFull.values(), new Set());
   const rawItems = {};
   for (const [i, r] of [...rawFull].sort((a, b) => a[0] - b[0])) { const s = sparse(r, rawDefaults); if (Object.keys(s).length) rawItems[i] = s; }
@@ -1714,7 +1765,7 @@ async function main() {
     equipment: {
       slots: EQUIP_SLOTS, slotGroups: SLOT_GROUPS, reserveSetOffset: 100,
       weaponRules: R.weaponRules, classStyles: R.classStyles, weaponBones: R.weaponBones, weaponLeft: R.weaponLeft,
-      wingBone: WING_BONE, costypeParts: COSTYPE_PARTS, riderCodes: R.riderCodes, formula: R.itemFormula,
+      wingBone: WING_BONE, wingEffectTable: WING_EFFECT_INFO, costypeParts: COSTYPE_PARTS, riderCodes: R.riderCodes, formula: R.itemFormula,
       upgrade: { categoryByKind: UPGRADE_CATEGORY, gradeByRank: UPGRADE_GRADE, penalties: UPGRADE_PENALTY, table: 'items-tables.json itemUpgrade (key: itemCode|rank|level)' },
       unionSets: R.unionSets,
     },

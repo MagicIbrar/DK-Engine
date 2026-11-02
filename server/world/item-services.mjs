@@ -1,4 +1,4 @@
-import {AuthoritativeInventory,inventoryDestination,receiveAt} from './inventory.mjs';
+﻿import {AuthoritativeInventory,inventoryDestination,receiveAt} from './inventory.mjs';
 import {nearbyNpc} from './npc-services.mjs';
 import {serializeLife,validateLife,lifeError as fail} from './life-transactions.mjs';
 import {Container,createItem} from '../../src/systems/items/model.js';
@@ -9,6 +9,7 @@ import {crestRule,CREST_SUPPORTED_EFFECTS,crestInsertPrice,crestExtractDil,CREST
 import {progressDekaPass} from './dekapass.mjs';
 import {optionNameMap,optionCodeByName,rollCostumeOptions,sewingSucceeds} from '../../src/systems/mounts/costume-rules.js';
 import {wingVisual,wingUpgradeRow,wingUpgradeSucceeds,wingChangeCost,wingChangeCandidates,wingExchangeGroup} from '../../src/systems/mounts/wing-rules.js';
+import {bindsOnPickup} from './item-flags.mjs';
 
 export const ITEM_SERVICE_SCHEMAS={
   crest:['token','type','operation','uid','crests','slots','plier'],
@@ -189,7 +190,7 @@ function costume(world,p,inv,input) {
     fields(input,['uid','slot','preset']);const item=wardrobe.byUid(input.uid);if(!item||item.expiresAt&&item.expiresAt<=world.now())fail('Choose an owned, unexpired wardrobe costume.');
     const slot=input.slot==null?equip.autoSlot(inv.db.def(item.itemIndex),preset):integer(input.slot,0,114);
     if(![S.costume,S.costume2].includes(slot)||!equip.check(item,slot,p.stats).ok)fail('This costume does not meet the slot, class or level requirements.');
-    wardrobe.take(item);delete item.page;delete item.x;delete item.y;if(inv.db.def(item.itemIndex).belong===1)item.bound=true;
+    wardrobe.take(item);delete item.page;delete item.x;delete item.y;if(bindsOnPickup(inv.db.def(item.itemIndex)))item.bound=true;
     const result=equip.place(item,slot,preset);for(const old of result.displaced)if(!inv.bag.add(old).ok)fail('Your inventory cannot fit the replaced costume.');return {uid:item.uid};
   }
   fields(input,['slot','preset','page','x','y']);const slot=integer(input.slot,0,114);
@@ -380,3 +381,4 @@ export function itemServiceCommand(world,p,input) {return serializeLife(p,async(
   world.emit(p.map,{type:'itemservice',actorId:p.id,service:input.type,operation:input.operation,...result});
   return result;
 });}
+

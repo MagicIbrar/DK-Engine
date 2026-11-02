@@ -14,6 +14,7 @@
 //     3000 costume); Help button: the chat command list (com_help, item data = chat type) which prefills the input.
 //   * Save Chat writes the log to a text file (230:66); Settings opens the chat option window; the clock button opens
 //     the contents time table.
+import { gfxC } from '../../ui/gfx-parity-c.js';
 import { fetchText, fetchCSVObjects } from '../../engine/assets.js';
 import { applyFont, fontOf } from '../../ui/uiwin/fonts.js';
 import { playOnce, playLoop } from '../../game/combat.js';
@@ -29,7 +30,7 @@ export const CHAT_TYPES = {
   normal: { id: 0, color: 'ffffffff', filter: 'chatNormal', tab: 'btn_normal', label: '' },
   shout: { id: 1, color: 'ffffa040', filter: 'chatShout', label: 'Shout' },
   whisper: { id: 3, color: 'ffff8cf0', filter: 'chatWhisper', label: 'Whisper' },
-  party: { id: 4, color: 'ff6ed2ff', filter: 'chatParty', tab: 'btn_party', label: 'Party' },
+  party: { id: 4, color: gfxC('chatcolor') ? 'ff6495ed' : 'ff6ed2ff', /* Global 43.19 screenshot: party chat #6495ED */ filter: 'chatParty', tab: 'btn_party', label: 'Party' },
   guild: { id: 7, color: 'ff7cff7c', filter: 'chatGuild', tab: 'btn_guild', label: 'Guild' },
   officer: { id: 10, color: 'ff3cf0c8', filter: 'chatOfficer', tab: 'btn_guildmember', label: 'Officer' },
   alliance: { id: 16, color: 'ffffd264', filter: 'chatAlliance', tab: 'btn_alliance', label: 'Alliance' },
@@ -46,9 +47,15 @@ const TABS = { btn_normal: null, btn_worldchat: 'matching', btn_party: 'party', 
 export const COLOR_TYPES = ['normal', 'party', 'guild', 'officer', 'alliance', 'matching', 'world'];
 // Only the base system color is authored by the active HUD. Per-kind overrides
 // remain ENGINE-CHOSEN until the original dispatch colors can be established.
-const SYS_COLORS = { sys: NATIVE_SYSTEM_COLOR, err: 'ffff5a45', exp: 'ffa0d2ff', item: 'ffffffff', dmg: 'ffc8c8c8', chat: 'ffffffff', gm: 'ffffedfc' };
-const CHAT_HEIGHTS = [64, 96, 144, 192, 240, 288];
-const SYS_HEIGHTS = [48, 80, 125, 160, 200, 240];
+const SYS_COLORS = { sys: NATIVE_SYSTEM_COLOR, err: 'ffff5a45', exp: 'ffa0d2ff', item: 'ffffffff', dmg: 'ffc8c8c8', chat: 'ffffffff', gm: 'ffffedfc',
+  // gfxC: measured on Global 43.19 screenshots - stringtable_pc 40:56 = #00FF00 (stringtable_color green1), party formed 70:59 = #6495ED
+  warn: gfxC('chatcolor') ? 'ff00ff00' : 'ffff5a45', party: gfxC('chatcolor') ? 'ff6495ed' : NATIVE_SYSTEM_COLOR };
+// gfxC4 [chatgeom]: the default step (3) is Global's default box: genchatsize 8 -> 120 px, syschatsize 6 -> 96 px
+// (FRESH COPY bin/option.txt; recording global-gfx-session2 median frames: super 276-323, sys 324-419, gen 420-539,
+// tabs from 540). The other steps stay ENGINE-CHOSEN.
+const CHAT_GEOM = gfxC('chatgeom');
+const CHAT_HEIGHTS = CHAT_GEOM ? [64, 96, 120, 192, 240, 288] : [64, 96, 144, 192, 240, 288];
+const SYS_HEIGHTS = CHAT_GEOM ? [48, 80, 96, 160, 200, 240] : [48, 80, 125, 160, 200, 240];
 const CHAT_FONTS = [1, 2, 3, 4, 5];   // font.csv index for the Font Size steps (Tahoma 8..12)
 const MAX_LINES = 300;
 
@@ -231,7 +238,7 @@ export class Chat {
         if (!args) { this.inputType = t || 'normal'; return; }
         return this._out(t || 'normal', args);
       }
-      if (cmd === '/help' || cmd === '/?') { this._help(); return; }
+      return; // chat ignores every command: no echo, no help/system lines
     }
     const tabType = TABS[this.tab] || this.inputType || 'normal';
     return this._out(tabType, text);
@@ -404,26 +411,31 @@ export function registerChatWindows(game, ctx) {
     // replacing its empty 64px gap with the same 1px separator as the lower boxes.
     // Limit displayed heights only when the scaled viewport cannot fit the saved sizes.
     const scr = game.uiwin.screen;
-    const available = Math.max(50, Math.floor(scr.h) - (hasWorld ? 98 : 49));
+    const available = Math.max(50, Math.floor(scr.h) - (hasWorld || CHAT_GEOM ? 98 : 49));
     if (gh + sh > available) {
       const extra = gh + sh - 50;
       gh = 34 + Math.floor((available - 50) * (gh - 34) / extra);
       sh = available - gh;
     }
-    const P = win.control('pan_chatwindow').box.h || 200;
-    const genTop = P - 18 - gh, sysTop = genTop - 1 - sh, supTop = sysTop - 1 - 48;
-    win.control('pan_gencolor').setRect(0, genTop, 386, gh);
+    // gfxC4 [chatgeom]: Global stacks top-down from the window top (chatwnd_pos): buttons 26 + 1, super 48 (always
+    // shown, empty), sys, gen, then the tab row (pan_back, bottom -36) and input (pan_text, bottom -18) BELOW the gen
+    // box; boxes are 380 wide (recording x 0-379) and touch (their 1 px pan_top1/pan_bottom1 lines separate them).
+    const BW = CHAT_GEOM ? 380 : 386;
+    let P = win.control('pan_chatwindow').box.h || 200;
+    let genTop = P - 18 - gh, sysTop = genTop - 1 - sh, supTop = sysTop - 1 - 48;
+    if (CHAT_GEOM) { supTop = 27; sysTop = supTop + 48; genTop = sysTop + sh; P = genTop + gh + 36; }
+    win.control('pan_gencolor').setRect(0, genTop, BW, gh);
     // the dark general box runs behind the channel tab row (pan_back, 18 px at its bottom); the text lines end above
     // it, else the text box (layer 100) covers the tabs (layer 90) and swallows their clicks
-    win.control('text_general').setRect(0, genTop, 386, Math.max(16, gh - 18));
-    win.control('pan_syscolor').setRect(0, sysTop, 386, sh);
-    win.control('text_system').setRect(0, sysTop, 386, sh);
-    win.control('pan_superchatcolor').setRect(0, supTop, 386, 48);
-    win.control('text_superchat').setRect(0, supTop, 386, 48);
-    win.control('pan_superchatcolor').setVisible(hasWorld); win.control('text_superchat').setVisible(hasWorld);
+    win.control('text_general').setRect(0, genTop, BW, CHAT_GEOM ? gh : Math.max(16, gh - 18));
+    win.control('pan_syscolor').setRect(0, sysTop, BW, sh);
+    win.control('text_system').setRect(0, sysTop, BW, sh);
+    win.control('pan_superchatcolor').setRect(0, supTop, BW, 48);
+    win.control('text_superchat').setRect(0, supTop, BW, 48);
+    win.control('pan_superchatcolor').setVisible(hasWorld || CHAT_GEOM); win.control('text_superchat').setVisible(hasWorld || CHAT_GEOM);
     // The button row (contents view / log save / option / mail / messenger / receipt, 26x26 at the panel top)
     // was drawn INSIDE the system box. In the client it floats just above the topmost chat box, lined up.
-    const topBox = Math.min(genTop, sh > 0 ? sysTop : genTop, hasWorld ? supTop : Infinity);
+    const topBox = Math.min(genTop, sh > 0 ? sysTop : genTop, hasWorld || CHAT_GEOM ? supTop : Infinity);
     const btnY = topBox - 27;
     [['btn_contentsview', 0], ['btn_logsave', 26], ['btn_option', 52], ['btn_mail', 78], ['btn_messenger', 104], ['btn_receipt', 130]]
       .forEach(([id, x]) => { try { win.control(id)?.setRect?.(x, btnY, 26, 26); } catch { /* control absent in this script */ } });

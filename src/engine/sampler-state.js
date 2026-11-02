@@ -23,6 +23,22 @@ export const MIP_BIAS = { value: 0 };
 /** No map loaded (front-end, tools, tests): the engine default (material-constants.js SAMPLER_DEFAULT). */
 export const DEFAULT_SAMPLER = Object.freeze({ source: 'default', mag: D3DTEXF.LINEAR, min: D3DTEXF.LINEAR, mip: D3DTEXF.LINEAR, bias: 0, anisotropy: null });
 
+/**
+ * OptionStore `triFilter` (Global option.txt tri_filter / decompile +0x11). When true, force trilinear mip
+ * sampling and enable anisotropy on TextureCache 2D textures (shadow.txt anisotropy_filtering is the install
+ * default bool; option.txt tri_filter is the runtime preference). Maplist MipMapFilter=NONE (no mips) is kept.
+ * DERIVED path: native ANDs +0x11 with a capability bit into an effective filter enable (FUN_00a28080).
+ * Anisotropy level 4 = ENGINE-CHOSEN (TextureCache no-map default), not an authored numeric in option.txt.
+ */
+let optionTriFilter = false;
+/** @returns {boolean} */
+export function getOptionTriFilter() { return optionTriFilter; }
+/** @param {boolean} on */
+export function setOptionTriFilter(on) { optionTriFilter = !!on; }
+/** ENGINE-CHOSEN anisotropy when triFilter is on (TextureCache constructor default). */
+export const TRI_FILTER_ANISOTROPY = 4;
+
+
 const num = v => (v === '' || v == null ? NaN : Number(v));
 
 /** Magnification / minification filter: NONE samples as POINT, out of range as LINEAR (SAMPLER_NONE_FILTER). */
@@ -63,12 +79,20 @@ export function samplerFromMapRow(row) {
 export function threeFilters(s, hasMips) {
   const st = s || DEFAULT_SAMPLER;
   const magFilter = st.mag === D3DTEXF.POINT ? THREE.NearestFilter : THREE.LinearFilter;
-  const lin = st.min !== D3DTEXF.POINT;
+  let lin = st.min !== D3DTEXF.POINT;
+  let mip = st.mip;
+  let aniso = st.anisotropy;
+  // tri_filter on: trilinear (linear mips) + anisotropy, unless the map authored no mips.
+  if (optionTriFilter) {
+    lin = true;
+    if (hasMips && mip !== D3DTEXF.NONE) mip = D3DTEXF.LINEAR;
+    aniso = TRI_FILTER_ANISOTROPY;
+  }
   let minFilter;
-  if (!hasMips || st.mip === D3DTEXF.NONE) minFilter = lin ? THREE.LinearFilter : THREE.NearestFilter;
-  else if (st.mip === D3DTEXF.POINT) minFilter = lin ? THREE.LinearMipmapNearestFilter : THREE.NearestMipmapNearestFilter;
+  if (!hasMips || mip === D3DTEXF.NONE) minFilter = lin ? THREE.LinearFilter : THREE.NearestFilter;
+  else if (mip === D3DTEXF.POINT) minFilter = lin ? THREE.LinearMipmapNearestFilter : THREE.NearestMipmapNearestFilter;
   else minFilter = lin ? THREE.LinearMipmapLinearFilter : THREE.NearestMipmapLinearFilter;
-  return { magFilter, minFilter, anisotropy: st.anisotropy };
+  return { magFilter: optionTriFilter ? THREE.LinearFilter : magFilter, minFilter, anisotropy: aniso };
 }
 
 /** The texture carries (or will generate) a mip chain. */

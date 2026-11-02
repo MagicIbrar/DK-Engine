@@ -11,6 +11,12 @@ export function lifeData() {
   if (!DATA) DATA = fetchJSON('/gamedata/life.json').catch((err) => { console.error('[life] life.json failed', err); return null; });
   return DATA;
 }
+let ITEMS_LEGACY = null;
+/** gamedata/items-legacy.json (tools/build-items.mjs): raw Global item tables, incl. optionChange (optionchange.csv). */
+export function itemsLegacyData() {
+  if (!ITEMS_LEGACY) ITEMS_LEGACY = fetchJSON('/gamedata/items-legacy.json').catch(() => null);
+  return ITEMS_LEGACY;
+}
 let REBIRTH = null;
 export function rebirthData() {
   if (!REBIRTH) REBIRTH = fetchJSON('/gamedata/life_rebirth.json').catch(() => null);

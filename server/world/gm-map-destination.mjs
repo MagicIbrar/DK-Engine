@@ -10,5 +10,5 @@ export async function teleportGM(world,user,input,{revalidate}={}){
   if(world.lease(user.id,input.token)!==p||p.instanceId||p.dead||p.sceneTransition||p.tradeId||p.tradeCommitting)fail(409,'The GM character changed while the map loaded.');
   if(input.x<0||input.z<0||input.x>=map.width||input.z>=map.height||!map.isWalkable(input.x,input.z))fail(400,'Mark a walkable location inside the map.');
   await commitFieldTravel(world,p,{map:input.map,x:input.x,z:input.z});
-  return {ok:true,message:`Teleported to Map ${p.map} (${p.x.toFixed(1)}, ${p.z.toFixed(1)}).`,destination:{map:p.map,x:p.x,z:p.z},state:world.snapshot(p)};
+  return {ok:true,destination:{map:p.map,x:p.x,z:p.z},state:world.snapshot(p)};
 }

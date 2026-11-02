@@ -8,6 +8,7 @@
 // guardian stones #142-146), the move-target flag (#32) and markers added by other systems
 // (game.minimap.setMarker). The day/night dial scrolls the two 512 px time strips (#90/#91) with the time of day.
 // A click on the minimap walks there.
+import { gfxC } from '../../ui/gfx-parity-c.js';
 import { paintIcon } from '../../ui/uiwin/controls.js';
 import { npcDef } from '../../ui/gameinfo.js';
 import { loadStringTable, NPC_JOB, npcJobNameTitle } from '../../ui/strings.js';
@@ -148,7 +149,7 @@ export function registerMinimap(game, ctx) {
       // authority: whoever resets them (zoom, onOpen, map change) still forces the rewrite.
       const fx = Math.floor(p.x), fz = Math.floor(p.z);
       if (!(d.posX === fx && d.posZ === fz && d.pos === d.posStr)) {
-        const pos = `${fx}, ${fz}`;
+        const pos = gfxC('hudfmt') ? `${fx} : ${fz}` : `${fx}, ${fz}`; // Global 43.19 recording '206 : 243'
         d.posX = fx; d.posZ = fz; d.posStr = pos;
         if (d.pos !== pos) { d.pos = pos; win.control('lbl_position').setText(pos); }
       }
@@ -365,17 +366,19 @@ export function registerWorldMap(game, ctx) {
       d.setAlpha = setAlpha; d.sld = sld;
       // lists
       const npcList = win.control('list_npclist');
+      npcList.el.classList.add('uw-map-npc-list');
+      // No backdrop of its own: Global's listbox has no image, the panel art behind it is pan_bg (bigmap #1).
       npcList.on('select', (i, it) => selectNpc(it?.data));
       npcList.on('dblclick', () => moveToNpc());
-      // The buttons live on the NPC's own row (hovered or selected; every NPC of every map, the list is rebuilt per map), right next
-      // to the name, instead of at a fixed spot above the list: [Add / Del favorite] [Move] and, for an admin / GM, [TP] (teleport
-      // to that NPC). Event-placed NPCs carry an EVENT tag and no favorite button, like the original script's disabled event icon.
+      // Keep the event badge and ordinary NPC actions on their own row as it scrolls.
+      // Premium teleport remains in the Select Warp list.
       const gmTp = () => !!game.gm?._ctrlTeleport && hasGMPanelPermission(game);
+      const ordinaryNpc = it => !!it?.data && !it.data.placement?.isEvent;
       npcList.rowActions = [
-        { badge: true, label: 'EVENT', show: (i, it) => !!it?.data?.placement?.isEvent },
-        { label: (i, it) => (it?.data && isFav(it.data) ? 'Del' : 'Add'), show: (i, it) => !!it?.data && !it.data.placement?.isEvent, onClick: (i, it) => { if (it?.data) setFav(it.data, !isFav(it.data)); } },
-        { label: 'Move', onClick: (i, it) => { if (it?.data) { selectNpc(it.data); moveToNpc(); } } },
-        { label: 'TP', show: gmTp, onClick: (i, it) => { if (it?.data && gmTp()) { game.gm._ctrlTeleport(it.data.x, it.data.z); win.close('tp'); } } },
+        { badge: true, label: 'EVENT', sprite: ['bigmap', 84], show: (i, it) => !!it?.data?.placement?.isEvent },
+        { label: 'Add', show: (i, it) => ordinaryNpc(it) && !isFav(it.data), onClick: (i, it) => setFav(it.data, true) },
+        { label: 'Del', show: (i, it) => ordinaryNpc(it) && isFav(it.data), onClick: (i, it) => setFav(it.data, false) },
+        { label: 'Move', show: (i, it) => ordinaryNpc(it), onClick: () => moveToNpc() },
       ];
       win.control('btn_npc_move').onClick(() => moveToNpc());
       win.control('btn_npc_add_favorite').onClick(() => { if (d.selNpc) setFav(d.selNpc, true); });
@@ -393,7 +396,7 @@ export function registerWorldMap(game, ctx) {
       retList.on('dblclick', () => { const it = retList.items[retList.getSelected()]; if (it?.data) setReturn(it.data); });
       retList.on('select', (i, it) => { d.selRet = it?.data; });
       // click on the map walks there - ADMIN / GM accounts (and only those) teleport there instead, no Ctrl and no GM panel needed;
-      // hovering an NPC mark shows its name balloon, clicking one selects that NPC (its row buttons Move / TP act on it)
+      // hovering an NPC mark shows its name balloon, clicking one selects that NPC (Global fixed Move / EVENT controls act on it)
       d.map.el.classList.add('uw-hit');
       d.map.on('click', (e) => {
         const r = d.map.el.getBoundingClientRect(), sc = game.uiwin.scale;
@@ -426,12 +429,13 @@ export function registerWorldMap(game, ctx) {
       function setFav(n, on) {
         d.favs.delete(legacyKey(n));
         if (on) d.favs.add(favKey(n)); else d.favs.delete(favKey(n));
-        LS.save(LS_FAV, [...d.favs]); fillNpcs(); paintFavButtons();
+        // Re-select by identity after favorite sorting; the old row index may now name a different NPC.
+        LS.save(LS_FAV, [...d.favs]); fillNpcs(); selectNpc(n);
       }
       function paintFavButtons() {
-        // The original script puts Add / Del favorite, Move and the event icon in one fixed spot above the list. They now sit on the
-        // NPC's own row (npcList.rowActions), so the fixed ones stay hidden; only the row's buttons need a refresh.
-        for (const id of ['btn_npc_add_favorite', 'btn_npc_del_favorite', 'btn_npc_move', 'btn_event_npc']) win.control(id).setVisible(false).setEnabled(false);
+        // Fixed-position controls overlap the first list rows; row actions replace them.
+        for (const id of ['btn_npc_move','btn_event_npc','btn_npc_add_favorite','btn_npc_del_favorite'])
+          win.control(id).setVisible(false).setEnabled(false);
         npcList.render?.();
       }
       function selectNpc(n) {
@@ -506,17 +510,23 @@ export function registerWorldMap(game, ctx) {
         d.ringT = 0;
       }
       async function fillNpcs() {
-        const list = [];
-        for (const n of game.npcs || []) {
-          if (Number(npcDef(game, n).mapVisible) === 0) continue;
-          const { name, title } = npcNameTitle(game, n);
-          if (!name) continue;
-          list.push({ n, name, title, fav: isFav(n) });
-        }
-        list.sort((a, b) => (b.fav - a.fav) || a.name.localeCompare(b.name));
-        npcList.setItems(list.map(it => ({ text: `${it.fav ? '★ ' : ''}${it.name}${it.title ? ` ${it.title}` : ''}`, data: it.n, color: it.fav ? 'ffffd200' : null })));
-      }
-      async function fillMonsters() {
+    const list = [];
+    for (const n of game.npcs || []) {
+      if (Number(npcDef(game, n).mapVisible) === 0) continue;
+      const { name, title } = npcNameTitle(game, n);
+      if (!name) continue;
+      const event = !!n.placement?.isEvent;
+      list.push({ n, name, title, fav: isFav(n), event });
+    }
+    // C5 SCREENSHOT-SOURCED: event NPCs first in #FFFF00, then favorites, then A-Z
+    list.sort((a, b) => (b.event - a.event) || (b.fav - a.fav) || a.name.localeCompare(b.name));
+    npcList.setItems(list.map(it => ({
+      text: `${it.fav ? '★ ' : ''}${it.name}${it.title ? ` ${it.title}` : ''}`,
+      data: it.n,
+      color: it.event ? 'ffffff00' : (it.fav ? 'ffffd200' : null),
+    })));
+  }
+  async function fillMonsters() {
         const map = game.world?.info?.index;
         const rows = (await loadMonsterPositions()).filter(r => Number(r.Map_Index) === map);
         if (game.world?.info?.index !== map) return;

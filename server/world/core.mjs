@@ -3,12 +3,14 @@ import {claimEligibleGradeRewards} from '../../src/game/grade-rewards.js';
 import {durableQuestCommand,durableItemBoxFacade} from './quest-transactions.mjs';
 import {randomUUID} from 'node:crypto';
 import {npcSlotsAvailable} from './npc-human-slots.mjs';
-import {publicNameplate} from './nameplates.mjs';
+import {publicNameplate, publicCharacterName} from './nameplates.mjs';
+import {stripStaffNameTag} from '../../src/game/character-name.js';
 import {ORDINARY_RESPAWN_WAIT_MS} from '../../src/config/engine-chosen-respawn.js';
 import {reviveNativeDungeon} from './dungeon-respawn.mjs';
 import {reviveWithLifeBead,lifeBeadReviveAllowed} from './life-bead-revive.mjs';
 import {reviveNativeField} from './field-respawn.mjs';
 import {DUNGEON_SCHEMAS,dispatchDungeon,tickDungeons,dungeonSnapshot} from './dungeons.mjs';
+import {MAP_EVENT_SCHEMAS,dispatchMapEvent,startMapEvent} from './map-event.mjs';
 import {TRAVEL_SCHEMAS,travelCommand,smartWarpState,tickTravel,commitFieldTravel,travelFrozen} from './travel.mjs';
 import {objectHitPoint} from './object-combat.mjs';
 import {isEventObject,eventObjectActive,eventObjectDamage,rewardEventObject} from './event-object-combat.mjs';
@@ -21,10 +23,9 @@ import {SIEGE_RENEW_SCHEMAS,siegeRenewCommand,tickSiegeRenew,siegeRenewSnapshot,
 import {stepEventMarch} from './event-march.mjs';
 import {isSiegeRenewGuard,siegeRenewGuardActive,siegeRenewGuardCanTarget,rewardSiegeRenewGuard,tickSiegeRenewGuardDeath} from './siege-renew-sentries.mjs';
 import {attackSiegeRenewGuard,tickSiegeRenewGuardCombat} from './siege-renew-sentry-combat.mjs';
-import {raceSnapshot} from './race.mjs';
 import {Collision} from '../../src/world/collision.js';
 import {PathFinder} from '../../src/world/pathfind.js';
-import {regenStep} from '../../src/game/progression.js';
+import {regenStep, applyRespawnVitals, applyDeathPenaltyToProfile} from '../../src/game/progression.js';
 import {playerDefeatReaction} from '../../src/game/hit-reaction.js';
 import {restoreInstance,disposeEmptyInstances,exitInstance,enterTrustedScene} from './instances.mjs';
 import {restoreDeadIslandRun} from './dead-island.mjs';
@@ -43,8 +44,8 @@ import { PARTY_SCHEMAS, partyCommand, partySnapshot, leaveParty, nearbyPartyMemb
 import { EXPEDITION_SCHEMAS, expeditionCommand, expeditionSnapshot } from './expedition.mjs';
 import { initializeProgression, questCommand, boxCommand, questKill, itemBoxFacade, questInventoryChanged } from './quests.mjs';
 import { ITEM_ACTION_SCHEMAS, dispatchItemAction, expireItemEffects } from './items.mjs';
-import { SHOP_ACTION_SCHEMAS, dispatchShopAction } from './shops.mjs';
-import { initializeStarterSkills, SKILL_SCHEMAS, skillCommand, tickSkills, skillControls, itemSkillFacade, summonSnapshot, incomingSkillDamage, skillStatusVisuals, skillTransformVisual, activeRemaining } from './skills.mjs';
+import { SHOP_ACTION_SCHEMAS, dispatchShopAction, clearShopRebuy } from './shops.mjs';
+import { basicHitBlow, initializeStarterSkills, SKILL_SCHEMAS, skillCommand, tickSkills, skillControls, interruptSkillByHit, itemSkillFacade, summonSnapshot, incomingSkillDamage, skillStatusVisuals, skillTransformVisual, activeRemaining } from './skills.mjs';
 import {resurrectionSnapshot} from './resurrection-offer.mjs';
 import {sharedTargetSnapshot,noteSharedTargetIntent} from './shared-target.mjs';
 import {captureRejoinRecovery,restoreRejoinRecovery} from './rejoin-recovery.mjs';
@@ -63,8 +64,9 @@ import {SUPPLY_SCHEMAS,supplyCommand} from './supply.mjs';
 import {EMOTE_SCHEMAS,emoteCommand,endSitting} from './emotes.mjs';
 import {SUPPORT_REWARD_SCHEMAS,supportRewardCommand,tickSupportRewards,recordSupportRewardKill} from './support-rewards.mjs';
 import {levelCapRate} from './level-caps.mjs';
-import {applyAbilityCap} from '../../src/game/ability-cap.js';
-import {combatOptionValue,penetratedDefense,criticalChance,criticalDamageMultiplier,modifyHitDamage,blockChance,guardChance,guardEfficiency} from '../../src/game/combat.js';
+import {applyAbilityCap,abilityCapFor,immuneHit} from '../../src/game/ability-cap.js';
+import { chaoticDeath } from './wanted.mjs';
+import {combatOptionValue,penetratedDefense,criticalChance,criticalDamageMultiplier,modifyHitDamage,blockChance,guardChance,guardEfficiency,characterAvoidance,hitInterrupts} from '../../src/game/combat.js';
 import {SOCIAL_SCHEMAS,socialChat} from './social.mjs';
 import {TRADE_SCHEMAS,tradeCommand,tradeSnapshot,cancelTrade,tickTrades} from './trade.mjs';
 import {CHAR_TRADE_SCHEMAS,charTradeCommand,charTradeSnapshot,cancelCharTrade,tickCharTrades} from './char-trade.mjs';
@@ -76,7 +78,6 @@ import {PVP_SCHEMAS,pvpCommand,pvpAttack,tickPvp,pvpSnapshot,noteForcedIntent,is
 import {pkRefusalText} from './field-pk.mjs';   // FIELD-PK: registers the forced-attack PvP mode
 import {furyHit,furyHurt,tickFury,furyOf} from './fury.mjs';   // Half Bagi fury gauge (without it every fury skill is refused online)
 import {PARTY_PVP_SCHEMAS,PARTY_PVP_TEXT,partyPvpCommand,partyPvpGuard,tickPartyPvp,partyPvpSnapshot,partyPvpBlocksRevive} from './party-pvp.mjs';
-import {TRAINING_CAMP_SCHEMAS,TRAINING_CAMP_TEXT,trainingCampCommand,tickTrainingCamp,trainingCampSnapshot,trainingCampBlocksRevive} from './training-camp.mjs';
 import {DK_SQUARE_SCHEMAS,dkSquareCommand,tickDkSquare,dkSquareSnapshot} from './dk-square.mjs';
 import {COLOSSEUM_SCHEMAS,COLOSSEUM_REVIVE_TEXT,colosseumCommand,colosseumSnapshot,tickColosseum,colosseumBlocksRevive} from './colosseum.mjs';
 import {tickSiege} from './siege.mjs';
@@ -90,7 +91,7 @@ import {PREMIUM_SCHEMAS,premiumCommand,premiumRespawn} from './premium.mjs';
 import {NAME_CHANGE_SCHEMAS,charNameCommand} from './name-change.mjs';
 import {MEGAPHONE_SCHEMAS,megaphoneCommand,tickMegaphone} from './megaphone.mjs';
 import {premiumExpPercent,premiumPartyBonus,syncPremiumBuffs} from './premium-service.mjs';
-import {playerRewardBonus} from '../../src/game/reward-bonus.js';
+import {playerRewardBonus, rewardBonusPercent} from '../../src/game/reward-bonus.js';
 import {flushInstanceProgress} from './instance-progress.mjs';
 import {itemCooldownState,itemCooldownEntries} from './item-cooldowns.mjs';
 import {idleMonster} from './monster-idle.mjs';
@@ -103,6 +104,7 @@ import {PCSHOP_SCHEMAS,pcshopCommand,pcshopGuard,publicPcShop,pcshopSnapshot,isS
 import {PARTY_FINDER_SCHEMAS,partyFinderCommand,partyFinderGuard,withPartyFinder} from './party-finder.mjs';
 import {MESSENGER_SCHEMAS,messengerCommand} from './messenger.mjs';
 import {BLACKLIST_SCHEMAS,blacklistCommand} from './blacklist.mjs';
+import {AUTO_REPORT_SCHEMAS,autoReportCommand} from './auto-report.mjs';   // lane 62: pcpop 240:12 Report (validated pair, host log only)
 import {BATTLE_SUPPORT_SCHEMAS,battleSupportCommand,tickBattleSupport,battleSupportSnapshot} from './battle-support.mjs';
 import {NPC_FRIEND_SCHEMAS,npcFriendCommand} from './npc-friends.mjs';
 import {FRIEND_REQUEST_SCHEMAS,friendRequestCommand} from './friend-requests.mjs';
@@ -114,11 +116,18 @@ import {SERVER_LOAD_ENGINE_CHOSEN as SERVER_LOAD} from '../../src/config/engine-
 // Per-monster AI rules shared with the offline brain (src/game/ai.js): sight / pursuit / speeds / reach / attack choice /
 // call-team / statuses from monsters.json, the engine-chosen fallbacks from src/config/engine-chosen-monster-ai.js.
 import {aggroRadius,leashRange,chaseSpeed,isImmobile,bodyRadius,isNonCombatant,canAttack,preferredReach,canAcquire,shouldLeash,chooseAttack,attackKind,attackVariant,statusSpeedMul,statusFlags,respawnDelayMs,persuitOutRule,REST_STATE,rehomes,roamCentre} from '../../src/game/monster-rules.js';
+import {monsterRowGait,tagMonsterChaseGait} from './monster-gait.mjs';
 import {pickTarget,clearHate,plainHitHate} from '../../src/game/hate.js';
 import {monsterHit} from './monster-hit.mjs';
 import {FollowBook,followLimit,hatedAlternatives} from '../../src/game/follow-cap.js';
 import {MONSTER_AI_ENGINE_CHOSEN as MONSTER_AI} from '../../src/config/engine-chosen-monster-ai.js';
+// >>> MIND hook (opt-in DK_MIND=1; off = this tick unchanged): mob target acquisition from the Mind worker, server/pipeline/services/mind.mjs
+import {mindFor} from '../pipeline/services/mind.mjs';
+// <<< MIND hook
 
+// HIT-MOVE-INTERRUPT: Global drops MOVE/MOVETO/STAND while the PC's action is a running skill (0x647b10 -> Provider
+// IsChangeableTo 0x7d3790 -> Skill state 0x7861c0 admits only 7/8/10/12/13/14 until 0x786040), besides status roots.
+function skillHoldsMove(p){const c=skillControls(p);return !!(c.move||c.skillMotion);}
 export class WorldError extends Error { constructor(status, message) { super(message); this.status = status; } }
 const distance = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
 const clone = value => JSON.parse(JSON.stringify(value));
@@ -126,6 +135,24 @@ const finite = value => typeof value === 'number' && Number.isFinite(value);
 const VIEW_CELLS = SERVER_LOAD.viewCells, SNAPSHOT_MONSTER_CAP = SERVER_LOAD.snapshotMonsterCap;
 // placeholder of the monster rows inside a broadcast snapshot's JSON (snapshotText); a random string never present in game data
 const ROWS_TOKEN = `__dekaronMonsterRows_${randomUUID()}`, PLAYER_ROWS_TOKEN = `__dekaronPlayerRows_${randomUUID()}`, PLAYER_ROW_TEXT = new WeakMap();
+const NET_RBRACKET = Buffer.from(']');   // NET-REALM (snapshotText asBuffer)
+// NET-REALM opt-in player area of interest: DK_PLAYER_AOI=<cells> lists only players within that range (kept until 1.25x);
+// 0/unset = every player of the scene, as always. OFF by default: the client draws every human of the scene (visual-interest.js),
+// so this changes who a far player can see/select. ENGINE-CHOSEN.
+const NET_PLAYER_AOI = Number(process.env.DK_PLAYER_AOI) > 0 ? Number(process.env.DK_PLAYER_AOI) : 0;
+// >>> NETX (docs/overnight-43.19/NET-EVERY-ANGLE.md) - every flag OFF by default
+// DK_NETX_SHARED_ROWS=1: the players / monsters array of a broadcast snapshot is encoded once per snapshot scope and shared by every
+// viewer whose row texts are identical (checked row by row), and an SSE frame goes to the socket as parts (one writev, no per-viewer
+// concat). Payload bytes are identical.
+const NETX_SHARED_ROWS = process.env.DK_NETX_SHARED_ROWS === '1';
+// DK_NETX_FIELD_DELTA=1 (needs DK_ROWS_DELTA=1, only for a stream opened with rd=2): a changed row is sent as {"$p":id, changed keys,
+// "$d":[removed keys]} against the row this stream got last frame (src/systems/network/rows-delta.js merges it).
+const NETX_FIELD_DELTA = process.env.DK_NETX_FIELD_DELTA === '1';
+// NETX2: DK_NETX_ROSTER=1 - party.connected (every online player, identical for all viewers) is serialized once per broadcast and spliced;
+// on rd=2 delta streams an unchanged roster is sent as "$s" (client rows-delta.js restores it; full every 50 frames). DK_NETX_POS_Q=1 - public player x/z/yaw to 1e-3.
+const NETX_ROSTER = process.env.DK_NETX_ROSTER === '1', NETX_POS_Q = process.env.DK_NETX_POS_Q === '1', ROSTER_TOKEN = `__dekaronRoster_${randomUUID()}`;
+const netxQ = v => (typeof v === 'number' && Number.isFinite(v)) ? Math.round(v * 1000) / 1000 : v;
+// <<< NETX
 // event ring / per-snapshot cap (ENGINE-CHOSEN, src/config/engine-chosen-server-load.js)
 const EVENT_RING = SERVER_LOAD.eventRing, EVENT_TRIM = SERVER_LOAD.eventRingTrim, EVENT_SNAPSHOT_CAP = SERVER_LOAD.eventSnapshotCap;
 
@@ -226,9 +253,9 @@ export class SharedWorld {
     void result.finally(() => { if (this.accountQueues.get(account) === result) this.accountQueues.delete(account); }).catch(() => {});
     return result;
   }
-  join(account, characterId, admissionObserver=null, channel=undefined, cursorVersion=undefined) {const release=this.acquireSceneLease(null);return this.serializeAccount(account,()=>this._join(account,characterId,false,admissionObserver,channel,cursorVersion)).finally(release);}
+  join(account, characterId, admissionObserver=null, channel=undefined, cursorVersion=undefined) {const release=this.acquireSceneLease(null);return Promise.resolve(this.serializeAccount(account,()=>this._join(account,characterId,false,admissionObserver,channel,cursorVersion))).finally(release);}
   // Trusted bot lifecycle only. Human admission retains its complete snapshot.
-  joinNpc(account,characterId) {if(!/^npc_[a-f0-9]{32}$/.test(account))throw new WorldError(403,"Bot admission requires a canonical NPC account.");const release=this.acquireSceneLease(null);return this.serializeAccount(account,()=>this._join(account,characterId,true)).finally(release);}
+  joinNpc(account,characterId) {if(!/^npc_[a-f0-9]{32}$/.test(account))throw new WorldError(403,"Bot admission requires a canonical NPC account.");const release=this.acquireSceneLease(null);return Promise.resolve(this.serializeAccount(account,()=>this._join(account,characterId,true))).finally(release);}
   async _join(account, characterId, npcReceipt = false, admissionObserver=null, requestedChannel=undefined, cursorVersion=undefined) {
     validateLoginChannel(this,requestedChannel);
     if(cursorVersion!==undefined&&cursorVersion!==1)throw new WorldError(400,'Unsupported inventory cursor protocol.');
@@ -236,7 +263,7 @@ export class SharedWorld {
     if (typeof characterId !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(characterId)) throw new WorldError(400, 'Choose a server character.');
     const old = this.players.get(account);
     if(old)observe('replacementCleanup');
-    if (old) { await battleSupportCommand(this,old,{type:'battlesupport',operation:'stop',token:old.token});await flushInstanceProgress(this,old); old.leaving = true; try { await this.persist(old); } catch (err) { if(!old.revoked)old.leaving = false; throw err; } (cancelTrade(this,old,'rejoined'),cancelCharTrade(this,old,'rejoined'));leaveParty(this,old); if(this.players.get(account)===old)this.players.delete(account); }
+    if (old) { await battleSupportCommand(this,old,{type:'battlesupport',operation:'stop',token:old.token});await flushInstanceProgress(this,old); old.leaving = true; clearShopRebuy(old.profile); try { await this.persist(old); } catch (err) { if(!old.revoked)old.leaving = false; throw err; } (cancelTrade(this,old,'rejoined'),cancelCharTrade(this,old,'rejoined'));leaveParty(this,old); if(this.players.get(account)===old)this.players.delete(account); }
     observe('getProfile');
     const profile = await this.getProfile(account, characterId);
     if((profile?.itemCursor?.item||profile?.itemCursor?.pending?.length)&&cursorVersion!==1)throw new WorldError(409,'This character has a held item. Update your client to restore and place it safely.');
@@ -259,6 +286,8 @@ export class SharedWorld {
     if(npcReceipt&&(!/^npc_[a-f0-9]{32}$/.test(account)||profile.npcPlayer!==true))throw new WorldError(403,'Bot admission requires a canonical NPC character.');
     if (!this.data.classDef(profile.classIndex)) throw new WorldError(400, 'Unknown class.');
     let p = clone(profile);
+    // Guide Shop Trade (Repurchase) Caution: list resets on client close / character select — never carry prior session receipts into a new join.
+    clearShopRebuy(p);
     p.itemCooldowns=itemCooldownState(p.itemCooldowns,this.now());
     // Only the verified server profile is used; join/action body has no save import path.
     p.level = Math.max(1, Math.min(this.data.maxLevel || 250, Math.floor(p.level || 1)));
@@ -357,6 +386,14 @@ export class SharedWorld {
     p.lastSeen = this.now(); return p;
   }
   emit(map, event) {
+    // A legacy unauthorized character may still have a saved bracket. Do not let it impersonate staff in chat.
+    if(event.type==='chat'){
+      for(const [idKey,nameKey] of [['actorId','name'],['targetId','targetName']]){
+        if(typeof event[nameKey]!=='string'||!/^ *\[(?:ADMIN|GM|DEV)\]/i.test(event[nameKey]))continue;
+        const owner=[...this.players.values()].find(q=>q.id===event[idKey]);
+        if(owner&&(owner.gmAuthorized!==true||owner.npcPlayer===true))event={...event,[nameKey]:stripStaffNameTag(event[nameKey])};
+      }
+    }
     const pending=this._npcAdmissionEvents?.get(event.actorId);
     if(pending){if(pending.length>=256)throw new WorldError(503,'NPC initialization event bound exceeded.');pending.push({map,event:{...event}});return;}
     this.snapshotPublicRows?.clear();
@@ -366,6 +403,10 @@ export class SharedWorld {
       for(const p of this.players.values())if(p.id===event.targetId && p.map===map && (event.instanceId===undefined || (p.instanceId||null)===(event.instanceId||null))){target=p;break;}
       damageTarget=target;
       if(target&&Number.isFinite(event.amount)&&event.amount>0)target.hitRevision=(target.hitRevision||0)+1;
+      // HIT-MOVE-INTERRUPT: a landed hit (damage, block or guard - not a miss / zero-damage result, Global 0x5858b0 case 0
+      // 0x594720) cuts the target's running skill to Idle without cooldown before its reaction is chosen (0x593900 /
+      // 0x593e20 / 0x594880 / 0x595e80 call the skill Provider vt+0x2c(time, 0) when the action type is SKILL 10).
+      if(target&&!target.dead&&!event.dead&&event.interrupt===undefined&&hitInterrupts(event,event.amount,{noCancel:!!target._skills?.engine?.hitImmune})){const cut=interruptSkillByHit(target);if(cut!=null)event={...event,interrupt:cut};}
       // The host picks a player's hit reaction once (src/game/hit-reaction.js), so the victim and every observer play the same DEFEAT row.
       if(target&&event.amount>0&&event.defeat===undefined){
         let casting=false;try{casting=!!skillControls(target).casting;}catch{}
@@ -399,13 +440,15 @@ export class SharedWorld {
     if (rows.length > EVENT_SNAPSHOT_CAP) { let others = rows.filter(e => !mine(e)).length - Math.max(0, EVENT_SNAPSHOT_CAP - rows.filter(mine).length); rows = rows.filter(e => mine(e) || others-- <= 0); }
     return rows;
   }
-  changed(p) { if(p.dead){if(!Number.isFinite(p.respawnReadyAt))p.respawnReadyAt=this.now()+ORDINARY_RESPAWN_WAIT_MS;}else delete p.respawnReadyAt;this.snapshotPublicRows?.delete(p); p.dirty = true; p.revision++; }
+  changed(p) { if(p.dead){if(!Number.isFinite(p.respawnReadyAt))p.respawnReadyAt=this.now()+ORDINARY_RESPAWN_WAIT_MS;}else { delete p.respawnReadyAt; delete p._deathPenaltyApplied; }this.snapshotPublicRows?.delete(p); p.dirty = true; p.revision++; }
+  // MOVE-NO-SQL: pose/snapshot invalidate only. Movement reports and host path steps must not set dirty (no per-step / move-coupled SQL). Durable saves stay on inventory/combat/map/leave (and explicit changed()).
+  poseChanged(p) { this.snapshotPublicRows?.delete(p); }
   canonical(p, shallow = false) {
     // shallow: only for a snapshot that is serialized at once (snapshotText) - the same JSON without deep-copying the profile
     return { ...(shallow ? p.profile : clone(p.profile)), map: p.map, pos: { x: p.x, z: p.z, dirDeg: p.yaw * 180 / Math.PI }, hp: p.dead ? 0 : Math.max(1, Math.round(p.hp)), mp: Math.round(p.mp || 0), shield: Math.round(Math.max(0, Math.min(Number(p.stats.maxShield) || 0, Number(p.shield) || 0))), combatRecovery:captureRejoinRecovery(this,p,activeRemaining(p._skills?.engine)), stats: shallow ? p.profile.stats : clone(p.profile.stats), authority: 'server' };
   }
   publicPlayer(p, self = false) {
-    const result = { id: p.id, characterId: p.characterId, instanceId:p.instanceId||null, channel:p.channel??0, name: p.profile.name, classIndex: p.profile.classIndex, map: p.map, x: p.x, z: p.z, yaw: p.yaw, hp: p.hp, maxHp: p.maxHp, mp: p.mp, maxMp: p.stats.maxMp || 0, shield: Math.round(p.shield || 0), maxShield: Math.round(Number(p.stats.maxShield) || 0), level: p.profile.level, exp: p.profile.exp || 0, dil: p.profile.dil || 0, dead: p.dead, mount:mountState(p,this.now()), moving: p.path.length > 0 };
+    const result = { id: p.id, characterId: p.characterId, instanceId:p.instanceId||null, channel:p.channel??0, name: publicCharacterName(p), classIndex: p.profile.classIndex, map: p.map, x: NETX_POS_Q ? netxQ(p.x) : p.x, z: NETX_POS_Q ? netxQ(p.z) : p.z, yaw: NETX_POS_Q ? netxQ(p.yaw) : p.yaw, hp: p.hp, maxHp: p.maxHp, mp: p.mp, maxMp: p.stats.maxMp || 0, shield: Math.round(p.shield || 0), maxShield: Math.round(Number(p.stats.maxShield) || 0), level: p.profile.level, exp: p.profile.exp || 0, dil: p.profile.dil || 0, dead: p.dead, mount:mountState(p,this.now()), moving: p.path.length > 0 };
     if(p.npcPlayer)result.npcPlayer=true;
     if(p.walk&&p.path.length&&p.mount?.phase!=='on')result.walk=p.walk;
     if(p.sitting)result.sitting=true;
@@ -413,7 +456,7 @@ export class SharedWorld {
     const pcShop=publicPcShop(this,p);if(pcShop)result.pcShop=pcShop;if(self)result.pcShopState=pcshopSnapshot(this,p);
     result.statusVisuals=skillStatusVisuals(this,p);result.transUp=skillTransformVisual(this,p);
     result.nameplate=publicNameplate(this,p);result.nameColor=result.nameplate.nameColor;result.fishing=fishingPose(p);result.appearance = battleAppearance(this,p,publicAppearance(p.profile));result.pet=petState(p,this.now());
-    if(self){result.gmSpeed=authorizedGMSpeed(p);result.moveSpeed=canonicalMovementSpeed(this,p);Object.assign(result,movementSelf(this,p));result.moveBlocked=!!(skillControls(p).move||mountBusy(p)||travelFrozen(this,p));}
+    if(self){result.gmSpeed=authorizedGMSpeed(p);result.moveSpeed=canonicalMovementSpeed(this,p);Object.assign(result,movementSelf(this,p));result.moveBlocked=!!(skillHoldsMove(p)||mountBusy(p)||travelFrozen(this,p));}
     {const motion=movementPublic(p);if(motion)Object.assign(result,motion);}
     if (self) { result.itemCooldowns=itemCooldownState(p.itemCooldownState??p.profile.itemCooldowns,this.now());result.fishing=fishingState(p);result.battleSupport=battleSupportSnapshot(this,p);result.smartWarp=smartWarpState(p);{const shallow=this._snapshotTextBuild===p;result.profile = this.canonical(p,shallow);result.profile.itemCooldowns=shallow?result.itemCooldowns:structuredClone(result.itemCooldowns);} result.saveError = p.saveError || null; result.permissions = p.permissions || { role: 'player', capabilities: [] }; result.attackReadyAt = p.attackAt || 0; result.attackCooldownMs = playerAttackLimit(this.data, p).spacingMs; }
     return result;
@@ -461,38 +504,124 @@ export class SharedWorld {
     for (let i = 0; i < near.length; i++) { const b = Math.floor(dists[i]); if (b < edge || (b === edge && room-- > 0)) rows.push(near[i]); }
     return rows;
   }
-  monsterRow(m) { return { id: m.id, monsterIndex: m.monsterIndex, name: m.name, map: m.map, x: m.x, z: m.z, hp: m.hp, maxHp: m.maxHp, dead: m.dead, ...(m.renewGuard?{renewGuard:true,guardGuild:m.guardGuild,instanceId:m.instanceId,channel:m.channel??0}:{}),statusVisuals:skillStatusVisuals(this,m) }; }
+  monsterRow(m) { return { id: m.id, monsterIndex: m.monsterIndex, name: m.name, map: m.map, x: m.x, z: m.z, hp: m.hp, maxHp: m.maxHp, dead: m.dead, ...(m.renewGuard?{renewGuard:true,guardGuild:m.guardGuild,instanceId:m.instanceId,channel:m.channel??0}:{}),...monsterRowGait(m),statusVisuals:skillStatusVisuals(this,m) }; }
   /** The broadcast snapshot as JSON text (api.mjs stream): the same bytes as JSON.stringify(snapshot(p)), with each monster row
    *  serialized once per broadcast instead of once per viewer. */
   /** rowCache (optional, one per SSE stream: {key, rows:{players:Map,monsters:Map}}): a row whose JSON equals the one
    *  this stream got last frame is sent as its id only (src/systems/network/rows-delta.js expands it). */
-  snapshotText(p, rowCache = null) {
+  snapshotText(p, rowCache = null, { cursor = true, asBuffer = false, prefix = '', suffix = '', parts = false } = {}) {   // NET-REALM: cursor:false = an HTTP /state reply (api.mjs coalesced state), the stream cursor stays
     // the viewer's own profile row is serialized right here, so it is read in place instead of deep-copied (canonical shallow)
     let snap; this._snapshotTextBuild = p;
     try { snap = this.snapshot(p, { monsterRecords: true }); } finally { this._snapshotTextBuild = null; }
     // the stream's event cursor: its next snapshot (and replies meanwhile) carry every event after this one (snapshotEvents)
-    p._streamEventSeq = snap.sequence; p._streamEventAt = this.now();
+    if (cursor) { p._streamEventSeq = snap.sequence; p._streamEventAt = this.now(); }
+    this._netxRosterText = null;   // NETX2
+    if (NETX_ROSTER && snap.party && Array.isArray(snap.party.connected)) {
+      const memo = this._netxRosterMemo ??= new WeakMap(); let rt = memo.get(snap.party.connected);
+      if (rt === undefined) { rt = JSON.stringify(snap.party.connected); memo.set(snap.party.connected, rt); }
+      if (rowCache && rowCache.patch === true) { if (rowCache.roster === rt && ++rowCache.rosterN < 50) rt = '"$s"'; else { rowCache.roster = rt; rowCache.rosterN = 0; } }
+      this._netxRosterText = rt; snap.party = { ...snap.party, connected: ROSTER_TOKEN };
+    }
     const cache = this.snapshotMonsterText, records = snap.monsters;
     snap.monsters = ROWS_TOKEN;
     const rows = records.map(m => { let t = cache?.get(m); if (t === undefined) { t = JSON.stringify(this.monsterRow(m)); cache?.set(m, t); } return t; });
     // equivalence test hook: the original serialization, built before any splicing (tools/lane-perf/server-tick.mjs LP_AUDIT)
-    const audit = this._rowsDeltaAudit ? JSON.stringify(snap).replace(`"${ROWS_TOKEN}"`, () => `[${rows.join(',')}]`) : null;
+    const audit = this._rowsDeltaAudit ? this._netxJson(snap).replace(`"${ROWS_TOKEN}"`, () => `[${rows.join(',')}]`) : null;
     // public player rows are shared objects within one broadcast (snapshotPublicRows): serialize each once per broadcast
     let playerTexts = null;
     if (Array.isArray(snap.players)) { playerTexts = snap.players.map(r => { if (!r || typeof r !== 'object') return JSON.stringify(r); let t = PLAYER_ROW_TEXT.get(r); if (t === undefined || !this.snapshotPublicRows) { t = JSON.stringify(r); if (this.snapshotPublicRows) PLAYER_ROW_TEXT.set(r, t); } return t; }); }
     let monsterRows = rows, playerRows = playerTexts;
     if (rowCache) {
-      const delta = (field, ids, texts) => { const prior = rowCache.rows[field], next = new Map(); const out = texts.map((t, i) => { const id = ids[i]; if (typeof id !== 'string' && typeof id !== 'number') return t; next.set(id, t); return prior.get(id) === t ? JSON.stringify(id) : t; }); rowCache.rows[field] = next; return out; };
+      const delta = (field, ids, texts) => { const prior = rowCache.rows[field], next = new Map(); const out = texts.map((t, i) => { const id = ids[i]; if (typeof id !== 'string' && typeof id !== 'number') return t; next.set(id, t); const was = prior.get(id); return was === t ? JSON.stringify(id) : (NETX_FIELD_DELTA && rowCache.patch === true && was !== undefined) ? this._netxPatch(field, id, was, t) : t; }); rowCache.rows[field] = next; return out; };
       monsterRows = delta('monsters', records.map(m => m.id), rows);
       if (playerTexts) playerRows = delta('players', snap.players.map(r => r?.id), playerTexts);
       snap.rowsDelta = rowCache.key;
     }
     if (playerRows) snap.players = PLAYER_ROWS_TOKEN;
-    let text = JSON.stringify(snap).replace(`"${ROWS_TOKEN}"`, () => `[${monsterRows.join(',')}]`);
+    if (asBuffer) return this._snapshotBufferOut(snap, monsterRows, playerRows, audit, p, prefix, suffix, parts && NETX_SHARED_ROWS);   // NET-REALM hook
+    let text = this._netxJson(snap).replace(`"${ROWS_TOKEN}"`, () => `[${monsterRows.join(',')}]`);
     if (playerRows) text = text.replace(`"${PLAYER_ROWS_TOKEN}"`, () => `[${playerRows.join(',')}]`);
     if (audit !== null) this._rowsDeltaAudit(p, audit, text);
     return text;
   }
+  // --- NET-REALM begin: the same bytes as Buffer.from(prefix + snapshotText(...) + suffix), assembled from row buffers that
+  // are UTF-8 encoded once per snapshot scope and shared by every viewer (was: 3 string copies + 1 encode per viewer).
+  _snapshotBufferOut(snap, monsterRows, playerRows, audit, p, prefix, suffix, asParts = false) {
+    const scope = this.snapshotMonsterText; let bufs = null;
+    if (scope) { if (this._netRowBufs?.scope !== scope) this._netRowBufs = { scope, map: new Map(), shared: [] }; bufs = this._netRowBufs.map; }
+    if (NETX_SHARED_ROWS && scope && snap.rowsDelta === undefined) return this._netxSharedOut(snap, monsterRows, playerRows, audit, p, prefix, suffix, asParts);
+    const rowBuf = t => { let b = bufs?.get(t); if (b === undefined) { b = Buffer.from(',' + t); bufs?.set(t, b); } return b; };
+    const json = this._netxJson(snap), marks = [], parts = []; let total = 0;
+    const push = b => { parts.push(b); total += b.length; };
+    const mi = json.indexOf(`"${ROWS_TOKEN}"`); if (mi >= 0) marks.push([mi, ROWS_TOKEN.length + 2, monsterRows]);
+    if (playerRows) { const pi = json.indexOf(`"${PLAYER_ROWS_TOKEN}"`); if (pi >= 0) marks.push([pi, PLAYER_ROWS_TOKEN.length + 2, playerRows]); }
+    marks.sort((a, b) => a[0] - b[0]);
+    let at = 0;
+    if (prefix) push(Buffer.from(prefix));
+    for (const [i, len, rows] of marks) { push(Buffer.from(json.slice(at, i) + '[')); for (let k = 0; k < rows.length; k++) { const b = rowBuf(rows[k]); push(k === 0 ? b.subarray(1) : b); } push(NET_RBRACKET); at = i + len; }
+    push(Buffer.from(json.slice(at) + suffix));
+    const out = Buffer.concat(parts, total);
+    if (audit !== null) this._rowsDeltaAudit(p, audit, out.toString('utf8', Buffer.byteLength(prefix), out.length - Buffer.byteLength(suffix)));
+    return out;
+  }
+  // >>> NETX: the shared-row variant of _snapshotBufferOut (DK_NETX_SHARED_ROWS=1); same bytes.
+  _netxSharedOut(snap, monsterRows, playerRows, audit, p, prefix, suffix, asParts) {
+    const shared = this._netRowBufs.shared;
+    const section = rows => {
+      for (let s = shared.length - 1; s >= 0; s--) { const e = shared[s]; if (e.rows.length !== rows.length) continue; let k = 0; while (k < rows.length && e.rows[k] === rows[k]) k++; if (k === rows.length) return e.buf; }
+      const buf = Buffer.from('[' + rows.join(',') + ']'); shared.push({ rows, buf }); if (shared.length > 32) shared.shift(); return buf;
+    };
+    const json = this._netxJson(snap), marks = [], out = []; let total = 0;
+    const push = b => { out.push(b); total += b.length; };
+    const mi = json.indexOf(`"${ROWS_TOKEN}"`); if (mi >= 0) marks.push([mi, ROWS_TOKEN.length + 2, monsterRows]);
+    if (playerRows) { const pi = json.indexOf(`"${PLAYER_ROWS_TOKEN}"`); if (pi >= 0) marks.push([pi, PLAYER_ROWS_TOKEN.length + 2, playerRows]); }
+    marks.sort((a, b) => a[0] - b[0]);
+    let at = 0, head = prefix;
+    for (const [i, len, rows] of marks) { push(Buffer.from(head + json.slice(at, i))); head = ''; push(section(rows)); at = i + len; }
+    push(Buffer.from(head + json.slice(at) + suffix));
+    if (!asParts || audit !== null) { const one = Buffer.concat(out, total); if (audit !== null) this._rowsDeltaAudit(p, audit, one.toString('utf8', Buffer.byteLength(prefix), one.length - Buffer.byteLength(suffix))); if (!asParts) return one; }
+    return out;
+  }
+  // NETX2: JSON.stringify(snap) with the spliced roster text (DK_NETX_ROSTER); plain stringify when off
+  _netxJson(snap) { const j = JSON.stringify(snap), r = this._netxRosterText; return (r === null || r === undefined) ? j : j.replace(`"${ROSTER_TOKEN}"`, () => r); }
+  // DK_NETX_FIELD_DELTA: one patch per (row id, previous text, new text), shared by every stream that had the same previous text.
+  _netxPatch(field, id, from, to) {   // NETX3: per (row id): the current text's patches by previous text, parsed rows reused
+    const cache = this._netxPatches ??= new Map(), key = field + '\u0000' + id; let e = cache.get(key);
+    if (e === undefined) { if (cache.size > 50000) cache.clear(); e = { to: null, outs: new Map(), parsed: new Map() }; cache.set(key, e); }
+    if (e.to !== to) { e.to = to; e.outs = new Map(); }
+    let out = e.outs.get(from); if (out !== undefined) return out;
+    const parse = t => { let v = e.parsed.get(t); if (v === undefined) { v = null; try { const o = JSON.parse(t); if (o && typeof o === 'object' && !Array.isArray(o)) v = { o, vals: new Map(Object.keys(o).map(k => [k, JSON.stringify(o[k])])) }; } catch {} if (e.parsed.size >= 8) e.parsed.delete(e.parsed.keys().next().value); e.parsed.set(t, v); } return v; };
+    out = to;
+    const A = parse(from), B = parse(to);
+    if (A && B && !B.vals.has('$p') && !B.vals.has('$d')) {
+      const patch = { $p: id }, gone = [];
+      for (const [k, v] of B.vals) if (A.vals.get(k) !== v) patch[k] = B.o[k];
+      for (const k of A.vals.keys()) if (!B.vals.has(k)) gone.push(k);
+      if (gone.length) patch.$d = gone;
+      const text = JSON.stringify(patch); if (text.length < to.length) out = text;
+    }
+    if (e.outs.size >= 16) e.outs.clear();
+    e.outs.set(from, out); return out;
+  }
+  // DK_PLAYER_AOI: players the client always keeps (client.js 'required': party members, anyone in an event with the viewer) stay
+  // listed at any range, so the area of interest never drops a party member or an attacker / target.
+  _netAoiRequired(p) {
+    const party = p.partyId ? this.parties?.get(p.partyId) : null, members = party?.members || [];
+    const key = this.sequence + ':' + (p.partyId || '') + ':' + members.join(',') + ':' + (p._streamEventSeq ?? '');
+    const c = p._netAoiReq; if (c && c.key === key) return c.set;
+    const set = new Set(members), ev = this.events || [], since = p._streamEventSeq; let lo = Math.max(0, ev.length - 200);
+    if (since != null) { lo = 0; let hi = ev.length; while (lo < hi) { const mid = (lo + hi) >> 1; if (ev[mid].sequence <= since) lo = mid + 1; else hi = mid; } }
+    for (let i = lo; i < ev.length; i++) { const e = ev[i]; if (e.actorId === p.id || e.targetId === p.id || e.sourceId === p.id) { if (e.actorId) set.add(e.actorId); if (e.targetId) set.add(e.targetId); if (e.sourceId) set.add(e.sourceId); } }
+    p._netAoiReq = { key, set }; return set;
+  }
+  // <<< NETX
+  _netAoiKeep(p, q) {
+    if (this._netAoiRequired(p).has(q.id)) { (p._netAoi ??= new Set()).add(q.id); return true; }
+    const d = Math.hypot(q.x - p.x, q.z - p.z), kept = p._netAoi ??= new Set();
+    if (d <= NET_PLAYER_AOI || (kept.has(q.id) && d <= NET_PLAYER_AOI * 1.25)) { kept.add(q.id); return true; }
+    kept.delete(q.id); return false;
+  }
+  // --- NET-REALM end
   snapshotPublicPlayer(p) {
     const rows=this.snapshotPublicRows;
     // These rows contain live countdowns or an expiry test. Preserve their
@@ -501,7 +630,7 @@ export class SharedWorld {
     if(!rows.has(p))rows.set(p,this.publicPlayer(p));
     return rows.get(p);
   }
-  snapshot(p, { monsterRecords = false, npcReceipt = false, since = this.sequence } = {}) {
+  snapshot(p, { monsterRecords = false, npcReceipt = false, receiptOnly = false, since = this.sequence } = {}) {
     if(npcReceipt&&(this.players.get(p?.account)!==p||!/^npc_[a-f0-9]{32}$/.test(p.account)||p.profile?.authority!=='server'||p.profile?.npcPlayer!==true))throw new WorldError(403,'Bot receipts require an actual canonical actor.');
     trackForcedDisplacement(this,p);
     // Tracking movement and self-only snapshot hooks can mutate this actor even
@@ -525,8 +654,10 @@ export class SharedWorld {
       const events=this.events.slice(lo).filter(e=>e.actorId===p.id&&(e.type==='chat'||e.type==='messenger')&&(e.recipients?e.recipients.includes(p.id):sameScene(e,p)));
       return {sequence:this.sequence,serverTime,tickAt:this.lastTick,self:{id:p.id,fishing:fishingState(p)},events};
     }
+    // REALM-PERF receipt: the stream delivers rows/events; only the contact observations of the full snapshot are kept here.
+    if(receiptOnly){if(map)this.snapshotMonsters(p,map,noteContact);return {sequence:this.sequence,serverTime,tickAt:this.lastTick,receipt:true};}
     const npcInterest=this.npcSnapshotInterest?.(p);
-    return { sequence: this.sequence, serverTime, npcSceneReadiness:this.npcSceneReadiness?.(p)||null, npcScenePreparationRequired:this.npcScenePreparationRequired?.(p)===true, tickAt: this.lastTick, eventAnnouncements:this.broadcastMemo(`partyWarAnnouncements:${serverTime}`,()=>partyWarAnnouncements(this,serverTime)), eventLobby:partyWarLobbySnapshot(this,p,serverTime), mail:mailSnapshot(this,p),consign:consignmentSnapshot(this,p),pvp:pvpSnapshot(this,p),partyPvp:partyPvpSnapshot(this,p),trainingCamp:trainingCampSnapshot(this,p),dkSquare:dkSquareSnapshot(this,p),colosseum:colosseumSnapshot(this,p),race:raceSnapshot(this,p),oxQuiz:oxQuizSnapshot(this,p),zuto:zutoSnapshot(this,p),siegeRenew:siegeRenewSnapshot(this,p),guild:guildSnapshot(this,p),hunt:huntSnapshot(this,p),tourney:tourneySnapshot(this,p),dkr:dkrSnapshot(this,p),trade:tradeSnapshot(this,p),chartrade:charTradeSnapshot(this,p), customItemsRevision:this.data.customLibrary?.revision||0, customMapsRevision:this.data.customMaps?.revision||0, instance:dungeonSnapshot(this,p)||eventSnapshot(this,p), onlineCount: this.onlineCount(), simulationPopulation:this.npcPopulationCensus?.()||null, party:withPartyFinder(this,p,()=>partySnapshot(this,p)), expedition:expeditionSnapshot(this,p), summons:summonSnapshot(this,p.map,p.instanceId,p.channel??0), drops:groundDrops(this,p.map,p.instanceId,p.channel??0), self: this.publicPlayer(p, true), players: [...this.players.values()].filter(q => !q.leaving && sameScene(q,p) && (q===p||!isObserver(this,q))&&(!(npcInterest instanceof Set)||npcInterest.has(q.id))).map(q => this.snapshotPublicPlayer(q)), monsters: (records => monsterRecords ? records : records.map(m => this.monsterRow(m)))(this.snapshotMonsters(p, map, noteContact)), events: this.snapshotEvents(p) };
+    return { sequence: this.sequence, serverTime, castRequestIdVersion: 1, npcSceneReadiness:this.npcSceneReadiness?.(p)||null, npcScenePreparationRequired:this.npcScenePreparationRequired?.(p)===true, tickAt: this.lastTick, eventAnnouncements:this.broadcastMemo(`partyWarAnnouncements:${serverTime}`,()=>partyWarAnnouncements(this,serverTime)), eventLobby:partyWarLobbySnapshot(this,p,serverTime), mail:mailSnapshot(this,p),consign:consignmentSnapshot(this,p),pvp:pvpSnapshot(this,p),partyPvp:partyPvpSnapshot(this,p),dkSquare:dkSquareSnapshot(this,p),colosseum:colosseumSnapshot(this,p),oxQuiz:oxQuizSnapshot(this,p),zuto:zutoSnapshot(this,p),siegeRenew:siegeRenewSnapshot(this,p),guild:guildSnapshot(this,p),hunt:huntSnapshot(this,p),tourney:tourneySnapshot(this,p),dkr:dkrSnapshot(this,p),trade:tradeSnapshot(this,p),chartrade:charTradeSnapshot(this,p), customItemsRevision:this.data.customLibrary?.revision||0, customMapsRevision:this.data.customMaps?.revision||0, instance:dungeonSnapshot(this,p)||eventSnapshot(this,p), onlineCount: this.onlineCount(), simulationPopulation:this.npcPopulationCensus?.()||null, party:withPartyFinder(this,p,()=>partySnapshot(this,p)), expedition:expeditionSnapshot(this,p), summons:summonSnapshot(this,p.map,p.instanceId,p.channel??0), drops:groundDrops(this,p.map,p.instanceId,p.channel??0), self: this.publicPlayer(p, true), players: [...this.players.values()].filter(q => !q.leaving && sameScene(q,p) && (q===p||!isObserver(this,q))&&(!(npcInterest instanceof Set)||npcInterest.has(q.id))&&(NET_PLAYER_AOI<=0||q===p||this._netAoiKeep(p,q))).map(q => this.snapshotPublicPlayer(q)), monsters: (records => monsterRecords ? records : records.map(m => this.monsterRow(m)))(this.snapshotMonsters(p, map, noteContact)), events: this.snapshotEvents(p) };
   }
   onlineCount() {
     let count=0;for(const player of this.players.values())if(!player.leaving)count++;
@@ -538,11 +669,13 @@ export class SharedWorld {
   async npcAction(account,input){const p=this.lease(account,input.token);if(!/^npc_[a-f0-9]{32}$/.test(account)||p.profile?.authority!=='server'||p.profile?.npcPlayer!==true)throw new WorldError(403,'Bot command requires a canonical NPC character.');const release=this.acquireSceneLease(null);try{return await runNpcServiceScope(this,account,input,()=>this._action(account,input,true));}finally{release();}}
   async _action(account, input, npcReceipt = false) {
     const p = this.lease(account, input.token), now = this.now(), since=this.sequence;
-    const finish=()=>this.snapshot(p,npcReceipt?{npcReceipt:true,since}:{});
+    // REALM-PERF: a movement report answered with a receipt (api.mjs moveReceiptAction) skips the full snapshot build; its side effects
+    // (forced displacement, melee contacts) still run (snapshot receiptOnly). Every other command and every other caller is unchanged.
+    const finish=()=>this.snapshot(p,npcReceipt?{npcReceipt:true,since}:(p._moveReceiptReply===true&&input.type==='move')?{receiptOnly:true}:{});
     if (now - p.rateAt >= 1000) { p.rateAt = now; p.actions = 0; }
     if (++p.actions > 30) throw new WorldError(429, 'Too many world commands.');
-    const schemas = { ...GAMEPLAY_PREFERENCE_SCHEMAS, move: ['token', 'type', 'x', 'z', 'walk', ...MOVEMENT_REPORT_FIELDS], stop: ['token', 'type', ...MOVEMENT_REPORT_FIELDS], attack: ['token', 'type', 'targetId', 'forced', 'step'], travel: ['token', 'type', 'map', 'gateId'], revive: ['token', 'type', 'uid'], ...NPC_FRIEND_SCHEMAS,...FRIEND_REQUEST_SCHEMAS,...BLACKLIST_SCHEMAS,...BATTLE_SUPPORT_SCHEMAS,...SOCIAL_SCHEMAS,...TRADE_SCHEMAS,...CHAR_TRADE_SCHEMAS,...PET_SERVICE_SCHEMAS,...VEHICLE_SERVICE_SCHEMAS,...MAIL_SCHEMAS,...CONSIGN_SCHEMAS,...PVP_SCHEMAS,...PARTY_PVP_SCHEMAS,...TRAINING_CAMP_SCHEMAS,...GUILD_SCHEMAS,...ITEM_SERVICE_SCHEMAS,...PREMIUM_SCHEMAS,...NAME_CHANGE_SCHEMAS,...MEGAPHONE_SCHEMAS, allocate: ['token', 'type', 'stat', 'count'],
-      quest: ['token','type','operation','questId','npc','option','on'], box: ['token','type','uid','choices'], ...ITEM_ACTION_SCHEMAS,...SHOP_ACTION_SCHEMAS,...SKILL_SCHEMAS,...TRAVEL_SCHEMAS,...CHANNEL_SCHEMAS,...HUNT_SCHEMAS,...TOURNEY_SCHEMAS,...DKR_SCHEMAS,...LOOT_ACTION_SCHEMAS,...ENHANCEMENT_ACTION_SCHEMAS,...MOUNT_SCHEMAS,...PARTY_SCHEMAS,...EXPEDITION_SCHEMAS,...CONVERSION_ACTION_SCHEMAS,...EVENT_SCHEMAS,...DUNGEON_SCHEMAS,...PET_SCHEMAS,...DEKAPASS_SCHEMAS,...CRAFTING_SCHEMAS,...FISHING_SCHEMAS,...SUPPLY_SCHEMAS,...LIFE_EVENT_SCHEMAS,...EMOTE_SCHEMAS,...SUPPORT_REWARD_SCHEMAS,...PCSHOP_SCHEMAS,...PARTY_FINDER_SCHEMAS,...MESSENGER_SCHEMAS,...DK_SQUARE_SCHEMAS,...COLOSSEUM_SCHEMAS,...OX_QUIZ_SCHEMAS,...SIEGE_RENEW_SCHEMAS,...ZUTO_SCHEMAS,...IAN_SCHEMAS,...POINT_RESET_SCHEMAS };
+    const schemas = { ...GAMEPLAY_PREFERENCE_SCHEMAS, move: ['token', 'type', 'x', 'z', 'walk', ...MOVEMENT_REPORT_FIELDS], stop: ['token', 'type', ...MOVEMENT_REPORT_FIELDS], attack: ['token', 'type', 'targetId', 'forced', 'step'], travel: ['token', 'type', 'map', 'gateId'], revive: ['token', 'type', 'uid'], ...NPC_FRIEND_SCHEMAS,...FRIEND_REQUEST_SCHEMAS,...BLACKLIST_SCHEMAS,...AUTO_REPORT_SCHEMAS,...BATTLE_SUPPORT_SCHEMAS,...SOCIAL_SCHEMAS,...TRADE_SCHEMAS,...CHAR_TRADE_SCHEMAS,...PET_SERVICE_SCHEMAS,...VEHICLE_SERVICE_SCHEMAS,...MAIL_SCHEMAS,...CONSIGN_SCHEMAS,...PVP_SCHEMAS,...PARTY_PVP_SCHEMAS,...GUILD_SCHEMAS,...ITEM_SERVICE_SCHEMAS,...PREMIUM_SCHEMAS,...NAME_CHANGE_SCHEMAS,...MEGAPHONE_SCHEMAS, allocate: ['token', 'type', 'stat', 'count'],
+      quest: ['token','type','operation','questId','npc','option','on'], box: ['token','type','uid','choices'], ...ITEM_ACTION_SCHEMAS,...SHOP_ACTION_SCHEMAS,...SKILL_SCHEMAS,...TRAVEL_SCHEMAS,...CHANNEL_SCHEMAS,...HUNT_SCHEMAS,...TOURNEY_SCHEMAS,...DKR_SCHEMAS,...LOOT_ACTION_SCHEMAS,...ENHANCEMENT_ACTION_SCHEMAS,...MOUNT_SCHEMAS,...PARTY_SCHEMAS,...EXPEDITION_SCHEMAS,...CONVERSION_ACTION_SCHEMAS,...EVENT_SCHEMAS,...DUNGEON_SCHEMAS,...MAP_EVENT_SCHEMAS,...PET_SCHEMAS,...DEKAPASS_SCHEMAS,...CRAFTING_SCHEMAS,...FISHING_SCHEMAS,...SUPPLY_SCHEMAS,...LIFE_EVENT_SCHEMAS,...EMOTE_SCHEMAS,...SUPPORT_REWARD_SCHEMAS,...PCSHOP_SCHEMAS,...PARTY_FINDER_SCHEMAS,...MESSENGER_SCHEMAS,...DK_SQUARE_SCHEMAS,...COLOSSEUM_SCHEMAS,...OX_QUIZ_SCHEMAS,...SIEGE_RENEW_SCHEMAS,...ZUTO_SCHEMAS,...IAN_SCHEMAS,...POINT_RESET_SCHEMAS };
     const permitted = typeof input.type === 'string' && Object.hasOwn(schemas, input.type) ? schemas[input.type] : null;
     if (!permitted) throw new WorldError(400, 'This action is unavailable in shared play.');
     if (Object.keys(input).some(k => !permitted.includes(k))) throw new WorldError(400, 'World commands cannot change stats, damage or inventory.');
@@ -562,6 +695,7 @@ export class SharedWorld {
       throw new WorldError(400,'You can only open a shop while standing.');
     // MESSENGER-CHAT: 1:1 messenger lines are chat, so they go out while dead like chat does (server/world/messenger.mjs)
     if(input.type==='blacklist'){const result=await blacklistCommand(this,p,input);return {...finish(),blacklistResult:result};}
+    if(input.type==='autoreport'){const autoReportResult=autoReportCommand(this,p,input);return {...finish(),autoReportResult};}
     if(input.type==='messenger'){const result=messengerCommand(this,p,input);return {...finish(),messengerResult:result};}
     if(input.type==='battlesupport'){await battleSupportCommand(this,p,input);return finish();}
     if(input.type==='npcfriends'){await npcFriendCommand(this,p,input);return finish();}
@@ -592,7 +726,6 @@ export class SharedWorld {
     if(input.type==='partypvp'){const partyPvpResult=await partyPvpCommand(this,p,input);return {...finish(),partyPvpResult};}
     // DK-SQUARE: npc job 48 lobbies and the map 67 battlefield (server/world/dk-square.mjs)
     if(input.type==='dksquare'){const dkSquareResult=await dkSquareCommand(this,p,input);return {...finish(),dkSquareResult};}
-    if(input.type==='trainingcamp'){const trainingCampResult=await trainingCampCommand(this,p,input);return {...finish(),trainingCampResult};}
     // COLOSSEUM: queues, Battle Royale (163 / 196) and Individual Match (164) (server/world/colosseum.mjs)
     if(input.type==='colosseum'){const colosseumResult=await colosseumCommand(this,p,input);return {...finish(),colosseumResult};}
     if(input.type==='guild'){await guildCommand(this,p,input);return finish();}
@@ -612,6 +745,7 @@ export class SharedWorld {
     if(['move','attack','travel','cast','mount','npctravel','smartwarp','equip','unequip','preset','weapontab','equipswap','itemuse','event','dungeon','channel','oxquiz','siegerenew','zuto'].includes(input.type)){cancelFishing(this,p);endSitting(this,p);}
     if(input.type==='channel'){const result=await channelCommand(this,p,input);return {...finish(),channelResult:result};}
     if(Object.hasOwn(DUNGEON_SCHEMAS,input.type)){const result=await dispatchDungeon(this,p,input);return {...finish(),...(typeof result==='object'?result:{})};}
+   if(Object.hasOwn(MAP_EVENT_SCHEMAS,input.type)){const result=await dispatchMapEvent(this,p,input);return {...finish(),...(typeof result==='object'?result:{})};}
     if(input.type==='siegerenew'){const result=await siegeRenewCommand(this,p,input);return {...finish(),siegeRenewResult:result};}
     if(isZutoBattlefieldTeleport(this,input)){const result=await zutoEnterBattlefield(this,p,input);return {...finish(),zutoResult:result};}   // native teleport 133 -> 650 (Zuto adaptation)
     if(await travelCommand(this,p,input))return finish();
@@ -642,15 +776,15 @@ export class SharedWorld {
       if(result.warpTarget && !result.warpCommitted)await this.persist(p); return {...finish(),result:{ok:result.ok,...(result.purchase?{purchase:result.purchase}:{})}};
     }
     // MOVE-NO-RUBBERBAND: a client-predicted intent carries its own position; the host validates and echoes it.
-    if (input.type === 'stop') { if(!hasMovementReport(input)||applyMovementReport(this,p,map,input,{blocked:!!(skillControls(p).move||mountBusy(p)||travelFrozen(this,p)||isShopOpen(this,p)),rootLocked:!!p._skills?.engine?.rootLocked?.()})==='accepted')clearAttackRoot(p); p.path = []; this.changed(p); return finish(); }   // an open Personal Shop holds its seller: a stop report cannot carry the character anywhere (180:3)
+    if (input.type === 'stop') { if(!hasMovementReport(input)||applyMovementReport(this,p,map,input,{blocked:!!(skillHoldsMove(p)||mountBusy(p)||travelFrozen(this,p)||isShopOpen(this,p)),rootLocked:!!p._skills?.engine?.rootLocked?.()})==='accepted')clearAttackRoot(p); p.path = []; this.poseChanged(p); return finish(); }   // MOVE-NO-SQL: stop clears path + snapshot only; leave/map/combat still durable-save
     if (input.type === 'move' && hasMovementReport(input)) {
       if (!finite(input.x) || !finite(input.z)) throw new WorldError(400, 'Destination is outside the walkable map.');
       if (input.walk !== undefined && input.walk !== 'peace' && input.walk !== 'battle') throw new WorldError(400, 'Walk must be peace or battle.');
-      if(applyMovementReport(this,p,map,input,{blocked:!!(skillControls(p).move||mountBusy(p)||travelFrozen(this,p)),destination:{x:input.x,z:input.z},walk:input.walk,rootLocked:!!p._skills?.engine?.rootLocked?.()})==='accepted')clearAttackRoot(p);   // input movement ends any swing still carrying the body
+      if(applyMovementReport(this,p,map,input,{blocked:!!(skillHoldsMove(p)||mountBusy(p)||travelFrozen(this,p)),destination:{x:input.x,z:input.z},walk:input.walk,rootLocked:!!p._skills?.engine?.rootLocked?.()})==='accepted')clearAttackRoot(p);   // input movement ends any swing still carrying the body
       return finish();
     }
     if (input.type === 'move') {
-      if(skillControls(p).move||mountBusy(p)||travelFrozen(this,p))throw new WorldError(400,'Movement is currently blocked by a skill effect or mount preparation.');
+      if(skillHoldsMove(p)||mountBusy(p)||travelFrozen(this,p))throw new WorldError(400,'Movement is currently blocked by a skill effect or mount preparation.');
       if (!finite(input.x) || !finite(input.z)) throw new WorldError(400, 'Destination is outside the walkable map.');
       if (input.walk !== undefined && input.walk !== 'peace' && input.walk !== 'battle') throw new WorldError(400, 'Walk must be peace or battle.');
       let destination={x:input.x,z:input.z};
@@ -671,12 +805,16 @@ export class SharedWorld {
       if(input.step!==undefined&&(!Number.isInteger(input.step)||input.step<0||input.step>63))throw new WorldError(400,'Attack step must be a combo step index.');
       const step=attackStepFor(this,p,input,now);
       const stepApproval=previewAttackStep(this,p,step,now);
+      // AUTOATTACK-SKILL-PRIORITY: Global 0x5ac6a0 drops the attack while the caster's skill runs (0x7861c0 / 0x786040), with no
+      // damage and no swing broadcast, so nothing restarts the caster's or the observers' skill body.
+      if(skillControls(p,now).skillMotion)throw new WorldError(429,'The skill motion is still playing.');
       if(skillControls(p).attack||skillControls(p).casting||mountBusy(p)||p.mount?.phase==='on')throw new WorldError(400,'Dismount or wait for your skill effect before attacking.');
       // PVP-DUEL: a player target is only valid as the duel opponent (server/world/pvp.mjs; PvP damage src/game/pvp-rules.js).
       const pvpFoe=!map.monsters.has(input.targetId)&&[...this.players.values()].find(q=>q.id===input.targetId&&q!==p&&sameScene(q,p)&&!isObserver(this,q));
       if(pvpFoe){
         // FIELD-PK: Ctrl (forced attack) arms the attacker; a refusal the original names (Safety Zone 1003:8, ally 1003:3) is told as such
-        if(input.forced===true){noteForcedIntent(this,p);const refusal=!isPvpTarget(this,p,pvpFoe)&&pkRefusalText(this,p,pvpFoe);if(refusal)throw new WorldError(400,refusal);}
+        noteForcedIntent(this,p,input.forced===true);   // the flag lives with this attack command (Force::State::PK)
+        if(input.forced===true){const refusal=!isPvpTarget(this,p,pvpFoe)&&pkRefusalText(this,p,pvpFoe);if(refusal)throw new WorldError(400,refusal);}
         await pvpAttack(this,p,pvpFoe,now,step);
         commitAttackStepAdmission(p,stepApproval);
         commitAttackStep(this,p,input.targetId,step,now);
@@ -714,32 +852,43 @@ export class SharedWorld {
       commitAttackStep(this,p,input.targetId,step,now);
       if (Number.isInteger(step)) startAttackRoot(this, p, step);
       p._skills?.statuses.onAttack(p._skills.game.player);
-      const raw = Math.max(1, (p.stats.attackMin || 20) + this.random() * ((p.stats.attackMax || p.stats.attackMin || 20) - (p.stats.attackMin || 20)));
       const fixedDamage = isEventObject(m) || isSiegeRenewObject(m) || (p.gmAuthorized && p.profile.gm?.onehit);
+      // MATH-VERIFY (Global DekaronServer attack strategy 0x596890 / 0x597c8d): miss roll -> block roll (a block ends the
+      // hit) -> guard roll -> critical roll ONLY when the guard roll failed; a critical takes the MAXIMUM of the damage
+      // range (Computer vt+0x14 / +0x20) instead of the uniform roll (vt+0x4 / +0x10). The map's ability-cap row adds its
+      // Blocking / Guard columns to those chances (0x586ff0 / 0x5870a0), like its Miss column (0x586f40).
+      const cap = fixedDamage ? null : abilityCapFor(this.data.abilityCap?.(p.map), { attackerLevel: p.profile.level, defenderLevel: m.def.level, attackerIsPlayer: true, kind: p.stats.attackType || 'melee' });
+      // Global 0x586f40: ONE miss roll on the attacker's own miss% (0x7c0950, stats.missRate) + the ability-cap Miss column.
+      const missPct = fixedDamage ? 0 : (p.stats.globalBattle ? Math.max(0, Number(p.stats.missRate) || 0) : 0) + (cap?.miss || 0);
+      const rolledMiss = missPct > 0 && this.random() * 100 < missPct;
+      // STEP10-LANE51 Immune (older server reference 0x587150): after a failed miss roll, the All Resist roll ends the hit.
+      const capImmune = !rolledMiss && !fixedDamage && immuneHit(cap?.resist, () => this.random());
+      const capMiss = rolledMiss || capImmune;
+      const capped = { miss: capMiss, immune: capImmune };
+      const blockRate=fixedDamage||capMiss?0:Math.min(100,blockChance(p,m,Number(m.def.blockRate)||0)+(cap?.blocking||0));
+      const guardRate=fixedDamage||capMiss?0:Math.min(100,guardChance(p,m,Number(m.def.guard?.[0])||0)+(cap?.guard||0));
+      const block=blockRate>0&&this.random()*100<blockRate;
+      const guard=!block&&guardRate>0&&this.random()*100<guardRate;
+      // Plain attacks use the client's combat.js critical chance/multiplier (derived stats.critRate / critMultiplier).
+      const crit=!capMiss&&!block&&!guard&&!fixedDamage&&this.random()*100<criticalChance(p,m,Number(p.stats.critRate)||0);
+      const lo = p.stats.attackMin || 20, hi = p.stats.attackMax || p.stats.attackMin || 20;
+      const raw = Math.max(1, crit ? Math.max(lo, hi) : lo + this.random() * (hi - lo));
       const defense = fixedDamage ? Math.max(0, m.def.def?.[0] || 0) : penetratedDefense(p, m.def.def?.[0], p.stats.attackType || 'melee');
       const baseDamage = p.gmAuthorized && p.profile.gm?.onehit ? m.hp : Math.max(1, Math.round(raw * 100 / (100 + defense)));
-      // MAP-CAPS: the map's level-difference ability caps (block 1: a character attacking a monster) scale or miss the hit.
-      const capped = fixedDamage ? { amount: baseDamage, miss: false }
-        : applyAbilityCap(this.data.abilityCap?.(p.map), { attackerLevel: p.profile.level, defenderLevel: m.def.level, attackerIsPlayer: true, kind: p.stats.attackType || 'melee' }, baseDamage, () => this.random());
-      let damage=capped.miss?0:eventObjectDamage(this,p,m,capped.amount,p.stats.attackType||'melee');
+      const capAmount = !cap || cap.damageMul === 1 ? baseDamage : Math.max(1, Math.round(baseDamage * cap.damageMul));
+      let damage=capMiss||block?0:eventObjectDamage(this,p,m,capAmount,p.stats.attackType||'melee');
       damage=siegeRenewObjectDamage(this,p,m,damage,p.stats.attackType||'melee');
-      // Plain attacks roll the same critical as the client's combat.js: derived stats.critRate (%) and critMultiplier
-      // (formula.ini / pcclass); no crit on a miss, a GM one-hit, or fixed-damage event objects.
-      const crit=damage>0&&!fixedDamage&&this.random()*100<criticalChance(p,m,Number(p.stats.critRate)||0);
-      if(crit)damage=Math.max(1,Math.round(damage*criticalDamageMultiplier(p,m,Number(p.stats.critMultiplier)||1)));
-      const blockRate=fixedDamage?0:blockChance(p,m,Number(m.def.blockRate)||0);
-      const guardRate=fixedDamage?0:guardChance(p,m,Number(m.def.guard?.[0])||0);
-      const block=damage>0&&blockRate>0&&this.random()*100<blockRate;
-      const guard=damage>0&&!block&&guardRate>0&&this.random()*100<guardRate;
+      if(crit&&damage>0)damage=Math.max(1,Math.round(damage*criticalDamageMultiplier(p,m,Number(p.stats.critMultiplier)||1)));
       if(block)damage=0;
       else if(guard){const efficiency=Number(m.def.guard?.[1])||0;damage=Math.max(1,Math.round(damage*(1-guardEfficiency(m,Math.min(75,efficiency>100?efficiency/10:efficiency))/100)));}
-      if(damage>0&&!fixedDamage)damage=modifyHitDamage(p,m,damage);
+      if(damage>0&&!fixedDamage)damage=modifyHitDamage(p,m,damage,(p.stats.attackType||'melee')!=='magic'?{elementBase:raw,capElement:cap?.element||0}:{});
       m.hp = Math.max(0, m.hp - damage);
       if(damage>0&&!isEventObject(m)&&!isSiegeRenewObject(m))furyHit(this,p);
       // hostility (share/ai/damageaggrocode.csv class code x damage), engagement and the Call patterns (src/game/hate.js, monsterHit)
       if(!isSiegeRenewObject(m))this.monsterHit(m, p, map, now, { hate: plainHitHate(damage, p.profile.classIndex, this.data.skillCommon?.aggro) });
       this.emit(p.map, { type: 'attack', actorId: p.id, targetId: m.id, ...(Number.isInteger(step) ? { variant: step } : {}) });   // observers play this combo step's own clip
-      this.emit(p.map, { type: 'damage', sourceId: p.id, targetId: m.id, amount: damage, dead: m.hp === 0, ...(capped.miss ? { miss: true } : {}), ...(crit ? { crit: true } : {}), ...(block ? {block:true}:{}), ...(guard ? {guard:true}:{}) });
+      this.emit(p.map, { type: 'damage', sourceId: p.id, targetId: m.id, amount: damage, dead: m.hp === 0, ...(capped.miss ? { miss: true } : {}), ...(capped.immune ? { immune: true } : {}), ...(crit ? { crit: true } : {}), ...(block ? {block:true}:{}), ...(guard ? {guard:true}:{}) });
+      if (damage > 0 && m.hp > 0) basicHitBlow(this, p.id, m);   // STEP10-LANE51 Blow, older server reference 0x5e0880 (skills.mjs)
       if (m.hp === 0) { m.dead = true; m.targetId = null; clearHate(m); m.called = false; m.respawnAt = isSiegeRenewObject(m)?Infinity:now + respawnDelayMs(m.respawnSec); this.reward(p, m); if(!isEventObject(m)&&!isSiegeRenewObject(m))void this.persistLatest(p).catch(()=>{}); }
       // 2.2.1: the kill's save is queued at once but the reply no longer waits for the disk: a save queued behind other players'
       // saves held kill replies for 1.6-12 s (measured) and those replies feed the HUD ping. Kills that land
@@ -783,7 +932,6 @@ export class SharedWorld {
     }
     if (input.type === 'revive') {
       if(partyPvpBlocksRevive(this,p))throw new WorldError(400,PARTY_PVP_TEXT.revive);
-      if(trainingCampBlocksRevive(this,p))throw new WorldError(400,TRAINING_CAMP_TEXT.revive);
       if(colosseumBlocksRevive(this,p))throw new WorldError(400,COLOSSEUM_REVIVE_TEXT);
       // An item intent must never fall through to an event/town revival that
       // ignores the chosen item. The native field-only policy is public too.
@@ -811,7 +959,7 @@ export class SharedWorld {
       if (premiumAt && !at) { respawn = this.data.respawn || this.data.start; town = await this.map(respawn.map,null,scene.channel); at = town.nearest(respawn.x, respawn.z); }
       this.lease(account, input.token);
       if (!at) throw new WorldError(503, 'No safe revive point is available.');
-      p.map = respawn.map; p.channel = scene.channel; if (scene.leftDk) delete p.profile.dkReturn; p.x = at.x; p.z = at.z; p.hp = p.maxHp; p.mp = p.stats.maxMp || 0; refillShield(p); p.dead = false; p.path = []; this.changed(p); await this.persist(p);
+      p.map = respawn.map; p.channel = scene.channel; if (scene.leftDk) delete p.profile.dkReturn; p.x = at.x; p.z = at.z; applyRespawnVitals(p, this.data); refillShield(p); p.dead = false; p.path = []; this.changed(p); await this.persist(p);
       this.emit(p.map, { type: 'revive', actorId: p.id });
     }
     if (input.type === 'chat') {
@@ -852,8 +1000,10 @@ export class SharedWorld {
     const shares=partyExpRewards(this,p,exp,m),partySize=shares.length>1?shares.length:0;
     // MAP-CAPS: the map's level-difference table (maplist StrLevelCapPath) sets each recipient's % of the monster EXP.
     const capOf=player=>levelCapRate(this.data.levelCap?.(p.map),(Number(m.def.level)||0)-(Number(player.profile.level)||1))/100;
-    // + each recipient's own RESULT_EXP_MUL (EXP scrolls / potions / items; src/game/reward-bonus.js), added like the premium rates
-    const bonusOf=player=>capOf(player)*(1+((this.pcRoom?.expPercent(player)||0)+premiumExpPercent(this,player.profile)+premiumPartyBonus(this,player.profile)*partySize+playerRewardBonus('exp',player,this.now()))/100);
+    // Personal % = worn cash AddExpRate / OPT_316 / RESULT_EXP_MUL (stats.expBonus) + buff RESULT_EXP_MUL
+    // + premium Rate (+ byAddExpPlus when Premium+regular stack) + PC-cafe. itemOptions omitted from
+    // rewardBonusPercent here so RESULT_EXP_MUL on gear is not double-counted with stats.expBonus.
+    const bonusOf=player=>capOf(player)*(1+((this.pcRoom?.expPercent(player)||0)+premiumExpPercent(this,player.profile)+premiumPartyBonus(this,player.profile)*partySize+(Number(player.stats?.expBonus)||0)+rewardBonusPercent('exp',{buffs:player.profile?.buffs},this.now()))/100);
     let ownExp=0; // Report the killer's credited party share, including its own bonuses.
     for(const reward of shares){const gain=Math.floor(reward.exp*bonusOf(reward.player));if(reward.player===p)ownExp=Math.max(0,gain);this.grantProgress(reward.player,gain,reward.player===p&&!rolled?dil:0);if(reward.player!==p)this.emit(p.map,{type:'reward',actorId:reward.player.id,exp:gain,dil:0,monsterId:m.id});}
     progressDekaPass(this,p,31,32,m.monsterIndex??m.def.index,1);
@@ -866,7 +1016,7 @@ export class SharedWorld {
     while (p.profile.level < (this.data.maxLevel || 250)) {
       const need = this.data.expNeeded(p.profile.level);
       if (!(need > 0) || p.profile.exp < need) break;
-      p.profile.exp -= need; p.profile.level++; p.profile.statPoints = (p.profile.statPoints || 0) + 5; p.profile.skillPoints = (p.profile.skillPoints || 0) + 1;
+      p.profile.exp -= need; p.profile.level++; const _pts = Number(this.data.classesFile?.statPointsPerLevel) || Number(this.data.formula?.byStatPointPerLevel) || 0; p.profile.statPoints = (p.profile.statPoints || 0) + _pts; p.profile.skillPoints = (p.profile.skillPoints || 0) + 1; // skill +1: no Global formula key; see progression.SKILL_POINTS_PER_LEVEL
       claimEligibleGradeRewards(p.profile,this.data.nameplateGrades);
       p.stats = this.data.stats(p.profile,p,this.now()); p.maxHp = p.stats.maxHp; p.hp = p.maxHp; p.mp = p.stats.maxMp || 0;
       this.emit(p.map, { type: 'levelup', actorId: p.id, level: p.profile.level });
@@ -918,11 +1068,11 @@ export class SharedWorld {
       if(!p.leaving&&!p.commandActive)tickFishing(this,p,dt);
       if (now - p.lastSeen > 60000 && !(this.npcPeriodicAccount?.(p.account)===true&&/^npc_[a-f0-9]{32}$/.test(p.account)&&p.profile?.authority==='server'&&p.profile?.npcPlayer===true)) { void this.leave(p.account, p.token).catch(() => {}); continue; }
       const map = mapFor(this,p);
-      const moveBlocked=!!(skillControls(p).move||mountBusy(p)||travelFrozen(this,p)||isShopOpen(this,p));trackMovementBlock(this,p,moveBlocked);
+      const moveBlocked=!!(skillHoldsMove(p)||mountBusy(p)||travelFrozen(this,p)||isShopOpen(this,p));trackMovementBlock(this,p,moveBlocked);
       // A client-predicted mover is extrapolated along its intent between reports (host range checks stay current);
       // its published pose remains the last accepted report (movement-authority.mjs).
       if (reportingMovement(p)) expireIdleReport(this,p);
-      if (!p.dead && p.path.length && !moveBlocked) { const before = { x: p.x, z: p.z }; if (this.step(p, p.path[0], pathMovementSpeed(this,p), dt, map)) p.path.shift(); if (distance(p, before)) this.changed(p); else p.path = []; noteHostStep(this,p); }
+      if (!p.dead && p.path.length && !moveBlocked) { const before = { x: p.x, z: p.z }; if (this.step(p, p.path[0], pathMovementSpeed(this,p), dt, map)) p.path.shift(); if (distance(p, before)) this.poseChanged(p); else p.path = []; noteHostStep(this,p); }
       tickTravel(this,p);
       trackForcedDisplacement(this,p);
       if (p.gmAuthorized && !p.dead) {
@@ -947,7 +1097,7 @@ export class SharedWorld {
     void Promise.resolve(tickSiegeRenew(this)).catch(()=>{});
     tickGuildWarHunting(this);void tickGuildTournament(this).catch(()=>{});void tickDkrPvp(this).catch(()=>{});
     void Promise.resolve(tickGuildFrontier(this)).catch(()=>{});   // scheduled Guild Frontier settlement (guild-frontier.mjs)
-    void tickPvp(this).catch(()=>{});void tickPartyPvp(this).catch(()=>{});void tickTrainingCamp(this).catch(()=>{});void tickDkSquare(this).catch(()=>{});
+    void tickPvp(this).catch(()=>{});void tickPartyPvp(this).catch(()=>{});void tickDkSquare(this).catch(()=>{});
     void tickColosseum(this).catch(()=>{});void Promise.resolve().then(()=>tickSiege(this)).catch(()=>{});void Promise.resolve().then(()=>tickGuildWarPvp(this)).catch(()=>{});
     disposeEmptyInstances(this);
     // Keep player insertion order; eligibility is still checked for each monster.
@@ -1007,6 +1157,9 @@ export class SharedWorld {
     const live=p=>!!p&&!p.leaving&&!p.sceneTransition&&!p.tradeCommitting&&!p.dead;
     // An idle monster only wanders while someone of its scene (any viewer, observers included) is within VIEW_CELLS, the
     // snapshot radius: beyond it nobody can see the walk. 18,313 loaded vs 747 near a player in the 100-player dungeon run.
+    // >>> MIND hook: null unless DK_MIND=1 (created on the first tick of this world)
+    const mind=this._mind===undefined?(this._mind=mindFor(this)):this._mind;mind?.beginTick();
+    // <<< MIND hook
     const watched=(map,m)=>{const list=mapPlayers.get(map);return !!list?.length&&nearbyPlayers(list,m,VIEW_CELLS,p=>!p.leaving&&Math.abs(p.x-m.x)<VIEW_CELLS&&Math.abs(p.z-m.z)<VIEW_CELLS&&distance(p,m)<VIEW_CELLS);};
     for (const map of this.maps.values()) {
      // the original-map edit freeze is a state of the scene: tested once per scene (it scanned every player for every monster,
@@ -1036,14 +1189,18 @@ export class SharedWorld {
         if(!target&&m.targetId){const q=V.byId.get(m.targetId);if(live(q))target=q;}
         // 3. SIGHT_IN (aggressive patterns): the first eligible player within DwSight and within DwPersuitRange of its roaming centre (roamCentre(m): where its last chase ended, else its spawn)
         //    (insertion order; which player the original picks when several are in sight is unknown)
-        if(!target&&def.ai?.aggressive)target=nearbyPlayers(V.list,m,sight).find(p=>live(p)&&canAcquire({sight,pursuit},m,roamCentre(m),p)&&fb.available(m,p.id,flim,fvalid))||null;
+        if(!target&&def.ai?.aggressive){const acquirable=p=>live(p)&&canAcquire({sight,pursuit},m,roamCentre(m),p)&&fb.available(m,p.id,flim,fvalid);
+          // >>> MIND hook: the same rule on Mind's intent (exact same target, see mind.mjs); undefined = scan here as before
+          const fromMind=mind&&V===sourceV?mind.acquire(map,V.list,m,sight,pursuit,roamCentre(m),acquirable,playerGrids):undefined;
+          // <<< MIND hook
+          target=fromMind!==undefined?fromMind:nearbyPlayers(V.list,m,sight).find(acquirable)||null;}
       let d=0,stop=0;
       if(target){d=distance(m,target);stop=preferredReach(def,mRadius,TARGET_RADIUS);if(shouldLeash({sight,pursuit,immobile,forgetRange:Math.max(sight,stop)},m,roamCentre(m),target,{attacking:d<=stop}))target=null;}
       // FOLLOWER CAP (src/game/follow-cap.js): at most dwFollowTarget monsters follow ONE target. Over the cap the monster does not chase / attack it
       // (it keeps its hostility, takes damage as usual, explores) and takes the first free slot; one that already follows another target keeps that one
       if(target&&!fb.claim(m,target.id,flim,fvalid)){const prev=m._fk!=null?V.byId.get(m._fk):null;if(prev&&prev!==target&&live(prev)&&!shouldLeash({sight,pursuit,immobile,forgetRange:Math.max(sight,stop)},m,roamCentre(m),prev,{attacking:distance(m,prev)<=stop})){target=prev;d=distance(m,target);}else{let alt=null;const cand=hatedAlternatives(m,target.id,aggroData,now,id=>live(V.byId.get(id)));if(cand)for(const id of cand){const q=V.byId.get(id);if(!q||shouldLeash({sight,pursuit,immobile,forgetRange:Math.max(sight,stop)},m,roamCentre(m),q,{attacking:distance(m,q)<=stop}))continue;if(fb.claim(m,id,flim,fvalid)){alt=q;break;}}if(alt){target=alt;d=distance(m,alt);}else{if(watched(map,m))idleMonster(this,m,map,dt,speedMul,flags);continue;}}}   // fix: the top hated target is full -> the next hated eligible player with a free slot (party members are separate targets), else wait
       if(!target){
-        if(m.renewGuard){m.anchor=null;m.targetId=null;clearHate(m);if(distance(m,m.home)>1){if(!flags.move)this.step(m,m.home,chaseSpeed(def)*speedMul,dt,map);continue;}}
+        if(m.renewGuard){m.anchor=null;m.targetId=null;clearHate(m);if(distance(m,m.home)>1){if(!flags.move){const _gx=m.x,_gz=m.z;this.step(m,m.home,chaseSpeed(def)*speedMul,dt,map);tagMonsterChaseGait(m,m.x!==_gx||m.z!==_gz);}continue;}}
         if(m._fk!=null)fb.release(m);if(m.targetId||m.hate?.size){const out=persuitOutRule(def);m.aiState=out?out.state:REST_STATE;m.idleMove=null;clearHate(m);m.called=false;if(rehomes(def)&&!m.eventMarch)m.anchor={x:m.x,z:m.z};}   // RE-HOME (ENGINE-CHOSEN): a monster that roams (explore range and WalkSpeed > 0, not an event marcher) takes the point where it stands as its roaming centre AND as the origin its pursuit range / leash is measured from (roamCentre(m)), so it keeps following a player it still sees and never walks back; m.home stays the ORIGINAL spawn = the respawn point (only death returns it); only here, never in an explore leg   // PERSUIT_OUT (pattern table NEXT_STATE, mode EXPLORE): hostility dropped, call re-armed; the monster stops chasing and resumes ordinary EXPLORE roaming (idleMonster), hittable, no heal, no evade, no teleport
         m.targetId=null;
         if(watched(map,m))idleMonster(this,m,map,dt,speedMul,flags);
@@ -1051,13 +1208,14 @@ export class SharedWorld {
       }
       m.idleMove=null;
       m.targetId = target.id;
+      if(d<=stop)tagMonsterChaseGait(m,false);
       // chase at the monster's own run speed (monster.dat) up to its longest base reach; a rooted monster waits in place
-      if (d > stop) { if(!immobile&&!flags.move)this.step(m, target, chaseSpeed(def)*speedMul, dt, map); continue; }
+      if (d > stop) { if(!immobile&&!flags.move){const _gx=m.x,_gz=m.z;this.step(m, target, chaseSpeed(def)*speedMul, dt, map);tagMonsterChaseGait(m,m.x!==_gx||m.z!==_gz);}else tagMonsterChaseGait(m,false); continue; }
       if (now < m.attackAt || flags.attack || (map.collision?.lineOfSight && !map.collision.lineOfSight(m.x, m.z, target.x, target.z))) continue;
       // the attack block: special / power by their rates, aggro1-4 by dwAttackN_Rate, else the base block (range patterns
       // prefer the range block); nothing in reach from here -> close in
       const pick=chooseAttack(def,{dist:d,hpPct:m.maxHp>0?m.hp/m.maxHp*100:100,nowMs:now,specialReadyAt:m.specialReadyAt||0,powerReadyAt:m.powerReadyAt||0,rng:()=>this.random(),mRadius,tRadius:TARGET_RADIUS});
-      if(!pick){if(!immobile&&!flags.move)this.step(m,target,chaseSpeed(def)*speedMul,dt,map);continue;}
+      if(!pick){if(!immobile&&!flags.move){const _gx=m.x,_gz=m.z;this.step(m,target,chaseSpeed(def)*speedMul,dt,map);tagMonsterChaseGait(m,m.x!==_gx||m.z!==_gz);}else tagMonsterChaseGait(m,false);continue;}
       m.specialReadyAt=pick.specialReadyAt;m.powerReadyAt=pick.powerReadyAt;
       const attack=pick.block,kind=attackKind(pick.key);
       m.attackAt = now + Math.max(MONSTER_AI.serverSwing.minDelayMs, attack[5] || MONSTER_AI.serverSwing.defaultDelayMs);
@@ -1066,17 +1224,25 @@ export class SharedWorld {
       if(m.deadIslandRun&&!(target.gmAuthorized&&target.profile.gm?.god)&&deadIslandSuicide(this,m,target,pick.key)){playerGrids=new WeakMap();continue;}
       let damage = target.gmAuthorized && target.profile.gm?.god ? 0 : Math.max(1, Math.round((attack[0] + attack[1]) / 2 * 100 / (100 + (target.stats.defense || 0))));
       // MAP-CAPS: block 2 (a monster attacking a character) of the map's level-difference ability caps.
-      let capMiss=false;if(!(target.gmAuthorized&&target.profile.gm?.god)){const c=applyAbilityCap(this.data.abilityCap?.(m.map),{attackerLevel:m.def.level,defenderLevel:target.profile.level,attackerIsPlayer:false,kind:'melee'},damage,()=>this.random());damage=c.amount;capMiss=c.miss;}
-      if(!capMiss&&!(target.gmAuthorized&&target.profile.gm?.god)){damage=incomingSkillDamage(this,target,m,damage,kind);playerGrids=new WeakMap();}
+      let capMiss=false,capImmune=false,mBlock=false,mGuard=false;if(!(target.gmAuthorized&&target.profile.gm?.god)){const c=applyAbilityCap(this.data.abilityCap?.(m.map),{attackerLevel:m.def.level,defenderLevel:target.profile.level,attackerIsPlayer:false,kind:'melee'},damage,()=>this.random());damage=c.amount;capMiss=c.miss;capImmune=!!c.immune;
+        // MATH-VERIFY 4.3.2 (Global 0x596890 -> 0x586ff0 / 0x5870a0 on the defending character): block = the character's block% (0x7c0950)
+        // + the ability-cap Blocking column, a block ends the hit; else guard = guard% + the Guard column, a guard keeps (100 - guard efficiency)%.
+        if(!capMiss){const a=characterAvoidance(target,c,damage,()=>this.random());mBlock=a.block;mGuard=a.guard;damage=a.damage;}}
+      if(!capMiss&&!mBlock&&!(target.gmAuthorized&&target.profile.gm?.god)){damage=incomingSkillDamage(this,target,m,damage,kind);playerGrids=new WeakMap();}
       target.hp = Math.max(0, target.hp - damage); target.lastCombat = now; target.dead = target.hp === 0;
       if (damage > 0) furyHurt(this, target);
-      if (target.dead) { target.path = []; target.profile.deaths = (target.profile.deaths || 0) + 1; }
+      // MATH-VERIFY 4.3.2: Global NormalDeadPC 0x5df1b0 lowers a chaotic character's value on death (Decrease.cpp 0x845d60).
+      if (target.dead) { target.path = []; target.profile.deaths = (target.profile.deaths || 0) + 1; if (!target._deathPenaltyApplied) { target._deathPenaltyApplied = true; applyDeathPenaltyToProfile(target.profile, this.data); } chaoticDeath(this, target); }
       this.changed(target);
-      this.emit(m.map, { type: 'damage', sourceId: m.id, targetId: target.id, amount: damage, dead: target.dead, ...(capMiss ? { miss: true } : {}) });
+      this.emit(m.map, { type: 'damage', sourceId: m.id, targetId: target.id, amount: damage, dead: target.dead, ...(capMiss ? { miss: true } : {}), ...(capImmune ? { immune: true } : {}), ...(mBlock ? { block: true } : {}), ...(mGuard ? { guard: true } : {}) });
+      if (damage > 0 && !target.dead) basicHitBlow(this, m.id, target);   // STEP10-LANE51 Blow, older server reference 0x5e0350 (skills.mjs)
       if(m.deadIslandRun&&!capMiss&&damage>0)deadIslandMonsterAttack(this,m,target,pick.key);
       if (target.dead) void this.persist(target).catch(() => {});
      }
     }
+    // >>> MIND hook: this tick's copy goes to the Mind worker
+    mind?.endTick();
+    // <<< MIND hook
   }
   persistMany(players) {
     if(players.length===1)return this.persist(players[0]);
@@ -1113,7 +1279,7 @@ export class SharedWorld {
   // outcome and receipt. Staged/immediate boundaries fence latest refresh.
   _queueNpcDurableCheckpoint(entry,kind,hooks,latest=false) {
     const actor=entry.player||entry.original,account=entry.update.accountId;
-    const field=p=>!p.instanceId&&!p.profile?.instance&&(p.channel??0)===0&&!p.profile?.dkReturn&&!p.customMapPending&&!this.data.customMaps?.has?.(p.map)&&!this.data.requiresInstance?.(p.map)&&!p.arenaId&&!p.dkSquareId&&!p.colosseumId&&!p.partyPvpId&&!p.trainingCampId&&!p.duelId&&!p.raceRun&&!p.tradeId&&!p.charTradeId&&!p.tradeCommitting&&!p.progressCommitting&&!p.pcShopOpen&&!p.smartWarp&&!p.fishing&&!p.mount;
+    const field=p=>!p.instanceId&&!p.profile?.instance&&(p.channel??0)===0&&!p.profile?.dkReturn&&!p.customMapPending&&!this.data.customMaps?.has?.(p.map)&&!this.data.requiresInstance?.(p.map)&&!p.arenaId&&!p.dkSquareId&&!p.colosseumId&&!p.partyPvpId&&!p.duelId&&!p.tradeId&&!p.charTradeId&&!p.tradeCommitting&&!p.progressCommitting&&!p.pcShopOpen&&!p.smartWarp&&!p.fishing&&!p.mount;
     const row={entry,kind,hooks,actor},pending=this._npcDurableBatch,old=pending?.entries.get(account);
     const refresh=latest&&kind==='progress'&&pending?.latestRefresh.has(account)&&old?.kind==='progress'&&old.actor===actor&&old.entry.token===entry.token&&old.entry.characterId===entry.characterId&&old.entry.id===entry.id;
     const cross=pending&&[...pending.entries.values()].some(e=>e.kind!==kind);
@@ -1210,7 +1376,7 @@ export class SharedWorld {
   // original actor owns publication only after its own durable receipt settles.
   // ENGINE-CHOSEN bounded distinct trusted NPC staged life checkpoints.
   persistNpcLifeCheckpoint(original,staged) {
-    const field=p=>!p.instanceId&&!p.profile?.instance&&(p.channel??0)===0&&!p.profile?.dkReturn&&!p.customMapPending&&!this.data.customMaps?.has?.(p.map)&&!this.data.requiresInstance?.(p.map)&&!p.arenaId&&!p.dkSquareId&&!p.colosseumId&&!p.partyPvpId&&!p.trainingCampId&&!p.duelId&&!p.raceRun&&!p.tradeId&&!p.charTradeId&&!p.tradeCommitting&&!p.progressCommitting&&!p.pcShopOpen&&!p.smartWarp&&!p.fishing&&!p.mount;
+    const field=p=>!p.instanceId&&!p.profile?.instance&&(p.channel??0)===0&&!p.profile?.dkReturn&&!p.customMapPending&&!this.data.customMaps?.has?.(p.map)&&!this.data.requiresInstance?.(p.map)&&!p.arenaId&&!p.dkSquareId&&!p.colosseumId&&!p.partyPvpId&&!p.duelId&&!p.tradeId&&!p.charTradeId&&!p.tradeCommitting&&!p.progressCommitting&&!p.pcShopOpen&&!p.smartWarp&&!p.fishing&&!p.mount;
     const owned=()=>field(original)&&this.players.get(original.account)===original&&/^npc_[a-f0-9]{32}$/.test(original.account)&&this.npcPeriodicAccount?.(original.account)===true&&original.npcPlayer===true&&original.profile?.authority==='server'&&original.profile?.npcPlayer===true&&original.characterId===original.profile.id&&original.id===original.account+':'+original.characterId;
     if(typeof this.saveProfiles!=='function'||!owned()||staged===original||staged.account!==original.account||staged.id!==original.id||staged.token!==original.token||staged.characterId!==original.characterId||staged.profile===original.profile||staged.profile?.id!==original.characterId||staged.profile?.authority!=='server'||staged.profile?.npcPlayer!==true||!original.sceneTransition||!(original.commandActive>0))throw new WorldError(503,'Canonical bot life progress is unavailable.');
     const entry={original,staged,profile:original.profile,stagedProfile:staged.profile,token:original.token,id:original.id,characterId:original.characterId,generation:staged.revision,update:{accountId:original.account,characterId:original.characterId,profile:this.canonical(staged)}};
@@ -1308,6 +1474,7 @@ export class SharedWorld {
     await flushInstanceProgress(this,p);
     if(this.players.get(p.account)!==p)return;
     p.leaving=true;
+    clearShopRebuy(p.profile);
     try{await this.persist(p);}catch(error){if(!p.revoked)p.leaving=false;throw error;}
     if(this.players.get(p.account)===p){cancelTrade(this,p,'disconnected');cancelCharTrade(this,p,'disconnected');leaveParty(this,p);this.players.delete(p.account);this.emit(p.map,{type:'leave',actorId:p.id,instanceId:p.instanceId||null});disposeEmptyInstances(this);}
   }

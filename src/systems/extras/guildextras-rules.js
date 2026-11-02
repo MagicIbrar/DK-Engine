@@ -87,10 +87,17 @@ export function durationText(sec, words = {}) {
   if (h) return `${h}H`;
   return `${m}${words.minutes || 'M'}`;
 }
-/** Effective state of a host war record at `now` (pending past the reply time = lost by the target; active past End Date = ended). */
+/** Start / End Date of a declaration nobody answered: ONLINE (official JP notice 2025-07-04, GUILD_WAR_CHOSEN.PENDING_TIMEOUT_MS)
+ *  it is accepted automatically when the reply time ends and then runs its full duration. */
+export function autoAcceptTimes(w, pendingMs) {
+  const startAt = w.declaredAt + pendingMs;
+  return { startAt, endAt: startAt + (Number(w.days) || 0) * 86400000 };
+}
+/** Effective state of a host war record at `now` (pending past the reply time = automatically accepted, then ended after its
+ *  duration; active past End Date = ended). A missing / non-finite pendingMs never resolves a pending war. */
 export function warState(w, now, pendingMs) {
   if (!w) return null;
-  if (w.status === 'pending' && now >= w.declaredAt + pendingMs) return 'surrendered';
+  if (w.status === 'pending' && Number.isFinite(pendingMs) && now >= w.declaredAt + pendingMs) return now >= autoAcceptTimes(w, pendingMs).endAt ? 'ended' : 'active';
   if (w.status === 'active' && now >= w.endAt) return 'ended';
   return w.status;
 }

@@ -4,6 +4,7 @@
 //   hud_target    ui_targetpop.txt            target plate (name, level colour, HP, ownership orb, statuses, ToT)
 //   hud_bosshp    ui_bosshpbar.txt            the big stacked boss HP bar
 //   hud_buff / hud_skillbuff / hud_debuff     mainbar/ui_buffwnd.txt, ui_skillbuffwnd.txt, ui_debuffwnd.txt
+import { gfxC } from '../../ui/gfx-parity-c.js'; // gfxC: Global 43.19 recording 'Lv.1' (left) / 'EXP 0.00%'
 import { classIconSprite, atlas } from '../../ui/atlas.js';
 import { classDefOf, expProgress, isBoss, levelDiffColor, npcDef } from '../../ui/gameinfo.js';
 import { loadStringTable, NPC_JOB, npcJobNameTitle } from '../../ui/strings.js';
@@ -35,14 +36,14 @@ export function registerHpWindow(game) {
       if (d.sh !== shf) { d.sh = shf; win.control('shield').setGauge(shf); }
       const lv = s.level || p.level || 1;
       // the level box reads "Lv. #", centred in its box
-      if (d.lv !== lv) { d.lv = lv; win.control('lbl_pclevel').setText(`<center>Lv. ${lv}`); }
+      if (d.lv !== lv) { d.lv = lv; win.control('lbl_pclevel').setText(gfxC('hudfmt') ? (gfxC('hudpos') ? `Lv.${lv}` /* gfxC3: lbl_pclevel has no align in ui_hpwnd.txt -> left, as the Global recording */ : `<center>Lv.${lv}`) : `<center>Lv. ${lv}`) /* gfxC: Global text 'Lv.1' (no space); Global draws it left-aligned, kept centred here until hud_hp sits at Global's offset (left text is under the quickslot B panel now) */; }
       const name = playerNameplateName(p.name || s.name || '',p.nameplate||g.network?.self?.nameplate);
       if (d.name !== name) { d.name = name; win.control('lbl_pcname').setText(name); }
       const cls = classDefOf(g)?.index ?? s.classIndex;
       if (d.cls !== cls) { d.cls = cls; const [grp, i] = classIconSprite(cls); win.control('pan_class').setSprite(grp, i); win.control('pan_class').setTooltip(classDefOf(g)?.name || ''); }
       const { frac } = expProgress(g);
       const pct = `${(clamp01(frac) * 100).toFixed(2)}%`;
-      if (d.exp !== pct) { d.exp = pct; win.control('lbl_exp').setText(pct); }
+      if (d.exp !== pct) { d.exp = pct; win.control('lbl_exp').setText(gfxC('hudfmt') ? `EXP ${pct}` : pct); }
       // action gauge (charging skills): skills.js may expose a charge fraction
       const ch = Number(g.skills?.chargeFraction?.());
       const act = Number.isFinite(ch) && ch > 0;

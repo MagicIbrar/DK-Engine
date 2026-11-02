@@ -1,4 +1,5 @@
 import {characterNameCSS} from '../game/character-name.js';
+import {GUILD_WAR_CHOSEN} from '../config/engine-chosen-guild.js';   // ONLINE ENEMY_NAME_COLOR (red1) for guild-war rivals
 import {guildNameCSS} from '../game/guild-name-color.js';
 import {partyNameplateFrame} from '../game/party-nameplate.js';
 import {nameplateView,playerNameplateDetails,playerNameplateName} from '../game/nameplate-view.js';
@@ -40,6 +41,24 @@ const LS_UI = 'dekaron-solo:ui:v1';
 const tmpV = new THREE.Vector3();
 const tmpV2 = new THREE.Vector3();
 
+// Name plate match to the Global 43.19 client (docs/overnight-43.19/ref/global-event-badge.png, 1:1 capture):
+// outer box 20 px tall = pcpop#79 nine-slice margins 4+4 (imagetable) + a 12 px name line, and the
+// interior shows ~46% black over the scene (sampled interior/background ratio 0.446-0.469 per channel)
+// where pcpop#79 itself stores 0xC0 (75%). The 1 px rim stays opaque black, as in both.
+const PLATE_NAME_LINE_PX = 12;
+const PLATE_FILL_ALPHA = 0x76; // 118/255 = 0.463
+async function plateFillAlpha(sp) {
+  if (!sp || typeof document === 'undefined') return sp;
+  try {
+    const im = new Image(); im.src = sp.url; await im.decode();
+    const c = document.createElement('canvas'); c.width = im.width; c.height = im.height;
+    const x = c.getContext('2d'); x.drawImage(im, 0, 0);
+    const d = x.getImageData(0, 0, c.width, c.height);
+    for (let i = 3; i < d.data.length; i += 4) if (d.data[i] > 0 && d.data[i] < 0xff) d.data[i] = PLATE_FILL_ALPHA;
+    x.putImageData(d, 0, 0);
+    return { ...sp, url: c.toDataURL() };
+  } catch { return sp; }
+}
 export class HUD {
   constructor(game, rootEl) {
     this.game = game;
@@ -69,7 +88,7 @@ export class HUD {
     atlas.load().then(() => this._paintArt());
     // The original atlas explicitly labels pcpop#79 as name_border (80% black).
     // Share one decoded nine-slice; never load or resize textures per actor/frame.
-    this._nameplateArtReady = Promise.all([atlas.sprite('pcpop',79),atlas.sprite('pcpop',105)]).then(sprites => {
+    this._nameplateArtReady = Promise.all([atlas.sprite('pcpop',79).then(plateFillAlpha),atlas.sprite('pcpop',105)]).then(sprites => {
       this._plateFrame = sprites[0];this._plateFrames=new Map([[79,sprites[0]],[105,sprites[1]]]);
       for (const plate of this._plates.values()) this._paintPlateFrame(plate);
     });
@@ -420,15 +439,18 @@ export class HUD {
     if (target) this._damaged.set(target, this.game.time ?? performance.now() / 1000);
     const amt = fmtInt(e.amount || 0);
     const skillName = e.skill?.name ? `${e.skill.name} ` : '';
-    const note = `${e.crit ? ' (critical!)' : ''}${e.guard ? ' (blocked)' : ''}`;
+    const note = `${e.crit ? ' (critical!)' : ''}${e.block ? ' (block)' : e.guard ? ' (guard)' : ''}`;
     const kind = e.crit ? 'crit' : null;
     if (target === p) {
       if (e.miss) { this.floater(p, 'Miss', 'miss'); return; }
-      this.floater(p, e.guard ? `Block ${amt}` : amt, e.guard ? 'guard' : kind || 'dmg-in');
+      if (e.block) { this.floater(p, 'Block', 'guard'); return; }
+      // STEP12-LANE51: no Guard word in Global; a guarded hit falls through to its damage digits.
+      this.floater(p, amt, kind || 'dmg-in');
       if (!e.dot) this.log(`${source?.name || 'Something'}${skillName ? `'s ${skillName.trim()}` : ''} hits you for ${amt}${note}.`, 'dmg');
     } else if (source === p || source?.owner === p) {
       if (e.miss) { this.floater(target, 'Miss', 'miss'); if (!e.dot) this.log(`You missed ${target?.name || 'the target'}.`, 'dmg'); return; }
-      this.floater(target, e.guard ? `Block ${amt}` : amt, e.guard ? 'guard' : kind || (e.dot ? 'dot' : 'dmg-out'));
+      if (e.block) { this.floater(target, 'Block', 'guard'); return; }
+      this.floater(target, amt, kind || (e.dot ? 'dot' : 'dmg-out'));
       if (!e.dot) this.log(`${skillName ? `Your ${skillName}hits` : 'You hit'} ${target?.name || 'the target'} for ${amt}${note}.`, 'dmg');
     } else if (target && !e.miss) {
       this.floater(target, amt, 'dmg-out');
@@ -843,9 +865,9 @@ export class HUD {
         const time = withTime ? h('div', { class: 'dk-st-time' }) : null;
         const el = h('div', { class: 'dk-st', title: `${s.name || 'Status'}${s.description ? `\n${s.description}` : ''}` }, icon, time);
         if (s.iconIndex != null) {
-          atlas.paint(icon, group, s.iconIndex).then(ok => { if (!ok && fallback) return atlas.paint(icon, fallback, s.iconIndex); return ok; })
-            .then(ok => { if (!ok) icon.textContent = String(s.name || '?').slice(0, 1); });
-        } else icon.textContent = String(s.name || '?').slice(0, 1);
+          // No icon in Global imagetable buffer/buffer_b (e.g. status.csv IconIndex 0) -> slot stays blank; the engine-invented name-letter glyph was removed (Lane 63, no source).
+          atlas.paint(icon, group, s.iconIndex).then(ok => { if (!ok && fallback) return atlas.paint(icon, fallback, s.iconIndex); return ok; });
+        }
         box.appendChild(el);
         box._items.push({ el, time });
       }
@@ -1010,15 +1032,17 @@ export class HUD {
     }
   }
 
-  /** NPC name + title from script/string/npc/stringtable_job.txt (desc id), once the table is loaded. */
+  /** NPC nametag: REA/C1 one yellow line "Name (Role)"; no separate title/head tag. */
   _npcPlateText(a, pl) {
     const d = npcDef(this.game, a);
     const js = this._jobStrings?.get(Number(d.desc));
     const nt = npcJobNameTitle(a, js);
     if (!this._jobStrings && !nt) return;
     pl.npcResolved = true;
-    if (nt?.name) pl.name.textContent = nt.name;
-    pl.title.textContent = nt?.title || '';
+    const name = (nt?.name || a.name || '').trim();
+    const title = (nt?.title || '').trim();
+    pl.name.textContent = title ? `${name} (${title})` : name;
+    if (pl.title) pl.title.textContent = '';
   }
 
   _plate(a) {
@@ -1056,12 +1080,18 @@ export class HUD {
     pl.hpb.appendChild(pl.fill);
     pl.guild.append(pl.mark, pl.guildName);
     pl.alliance.append(pl.amark, pl.allianceName);applyFont(pl.alliance,2);
-    applyFont(pl.name, 2);
+    applyFont(pl.name, 2, PLATE_NAME_LINE_PX);
     applyFont(pl.title, 2);applyFont(pl.rank,2);applyFont(pl.guild,2);
     this._paintPlateFrame(pl);
     if (a.kind === 'npc') {
-      this._npcPlateText(a, pl);
-      pl.el.append(pl.title, pl.name);
+      this._npcPlateText(a, pl);
+      // Title node kept for players only; NPCs are one-line (REA: no invented head tags).
+      if (a.placement?.isEvent) {
+        const eventBadge = h('span', { class: 'dk-npc-event-badge' });
+        pl.el.append(eventBadge);
+        void atlas.paint(eventBadge, 'bigmap', 84);
+      }
+      pl.el.append(pl.name);
     } else {
       if(a.kind==='player'){this._playerPlateText(a,pl);pl.el.append(pl.alliance,pl.guild,pl.title,pl.rank);}
       pl.el.append(pl.name, pl.hpb);
@@ -1100,7 +1130,11 @@ export class HUD {
     // Preserve native crest layers; registered native glory items select
     // authored UI sprites. Unavailable art keeps its ordinary static crest.
     if(this.game.items?.db){void this._guildArt?.set(pl.mark,key&&details.guild?.name?info?.guild?.glory:0,{kind:'guild'});void this._guildArt?.set(pl.amark,akey?ally?.glory:0,{kind:'alliance'});}
-    setStyle(pl.name,'color',characterNameCSS(info?.nameColor||a.nameColor||a.save?.nameColor));
+    // ONLINE (WAR_SOURCE_URL) + GLOBAL stringtable_color red1: active-war rivals (incl. alliance auto-join) draw red,
+    // including on SAFE_MAP_INDEXES where combat is refused. Wanted colours still win when the host already sent one.
+    const baseColor=info?.nameColor||a.nameColor||a.save?.nameColor;
+    const warRed=(!baseColor||baseColor==='white')&&this.game.guildExtras?.isWarRival?.(a)?GUILD_WAR_CHOSEN.ENEMY_NAME_COLOR:null;
+    setStyle(pl.name,'color',warRed||characterNameCSS(baseColor));
     const frame=partyNameplateFrame(this.game,a);
     if(pl.frameIndex!==frame){pl.frameIndex=frame;this._paintPlateFrame(pl);}
   }
@@ -1203,7 +1237,7 @@ export class HUD {
       const s = toScreen(n.x, n.z);
       const c = Number(npcDef(g, n).minimapColor) || 0;
       if (s.x < -6 || s.y < -6 || s.x > S + 6 || s.y > S + 6) continue;
-      const spr = this._mmSprites?.[`dot${Math.max(0, Math.min(7, c === 0 ? 5 : c))}`];
+      const spr = this._mmSprites?.[`dot${Math.max(0, Math.min(8, c))}`];
       if (spr) ctx.drawImage(spr, Math.round(s.x - 4), Math.round(s.y - 4), 8, 8);
       else { ctx.fillStyle = '#ffe24a'; ctx.fillRect(s.x - 2.5, s.y - 2.5, 5, 5); }
     }

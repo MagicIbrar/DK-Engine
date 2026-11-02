@@ -26,9 +26,9 @@ export function clientSource(engine = ENGINE) {
   if(fs.existsSync(dedicatedConfig)){
     const config=JSON.parse(fs.readFileSync(dedicatedConfig,'utf8'));
     const source=path.resolve(engine,config.sourceEngine||'');
-    if(config.version!==1||source===path.resolve(engine)||!fs.existsSync(path.join(source,'.client-cache/current.json')))throw Error('Dedicated Global source is unavailable.');
+    if(config.version!==1||source===path.resolve(engine)||!fs.existsSync(path.join(source,'.client-cache/current.json')))throw Error('Dedicated Global source is unavailable. Select your original Global data again, or redownload it if files are missing.');
     const active=clientSource(source);
-    if(!active.manifest)throw Error('Dedicated Global source has no validated prepared generation.');
+    if(!active.manifest)throw Error('Dedicated Global source has no validated prepared generation. Select your original Global data again, or redownload it if files are missing.');
     return active;
   }
   const fallbackData = process.env.DEKARON_DATA || path.resolve(engine, '../data/unpacked/data');

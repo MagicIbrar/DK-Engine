@@ -13,7 +13,17 @@
 // so its condition (170:41) is checked here; party / expedition / guild are checked again by the host.
 import { randomUUID } from '../network/web-crypto.js';
 import { fetchText } from '../../engine/assets.js';
-import { SCRIPTS, NAME_STRINGS, NAME_TEXT, isCharNameItem, isGuildNameItem, isGuildMistakeItem, GUILD_NAME_CHANGES_MAX, charNameBlocker, checkNewCharacterName, checkNewGuildName, fillName } from './namechange-rules.js';
+import { SCRIPTS, NAME_STRINGS, NAME_TEXT, isCharNameItem, isGuildNameItem, isGuildMistakeItem, GUILD_NAME_CHANGES_MAX, charNameBlocker, checkNewCharacterName, checkNewGuildName, fillName, NAME_FILTER_FILE, parseNameFilter } from './namechange-rules.js';
+
+let guildFilter = null;
+/** GLOBAL script/filter/namefilter.txt entries (LANE-61; guild create / rename and alliance names). A missing file = no entries. */
+export function guildNameFilter() {
+  return guildFilter ||= fetchText(NAME_FILTER_FILE, true).then(parseNameFilter).catch(() => []);
+}
+/** The 275:330 refusal line for a restricted entry (`get` = the client string lookup of a [cate, code]). */
+export function guildNameWordText(get, word) {
+  return String(get?.(NAME_STRINGS.guildNameWord) ?? NAME_TEXT.guildNameWord).replace('%s', word).replace(/<[^>]+>/g, '').replace(/\n/g, ' ').trim();
+}
 
 const ref = ([cate, code]) => ({ group: 'NORMAL', cate, code });
 
@@ -220,7 +230,11 @@ export class NameChange {
     if (!await this._ask(SCRIPTS.guildCaution, 'guildchangename_caution', [['lbl_static1', this.text('guildChangeAsk')], ['lbl_text', this.text('guildChanged').replace('<VALUE>', String(changes))]])) return false;
     const name = await this._entry(SCRIPTS.guildName, 'changeguildname', {
       line: fillName(this.text('guildLine'), { name: st.name }),
-      validate: async v => { const r = checkNewGuildName(v, { taken: key => key === String(st.name || '').toLowerCase() }); return r.error ? { error: this.text(r.error) } : r; },
+      validate: async v => {
+        const r = checkNewGuildName(v, { taken: key => key === String(st.name || '').toLowerCase(), words: await guildNameFilter() });
+        if (r.error === 'guildNameWord') return { error: guildNameWordText(pair => this.game.uiwin?.strings?.get?.(ref(pair)), r.word) };
+        return r.error ? { error: this.text(r.error) } : r;
+      },
     });
     if (!name) return false;
     // lbl_text: the typed name on the guild-name line 170:88 (the script's default 170:6 adds a character level/class line)

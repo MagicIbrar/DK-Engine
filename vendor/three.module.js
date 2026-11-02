@@ -30499,6 +30499,40 @@ class WebGLRenderer {
 
 		}
 
+		// DK-PERF8 LIGHTS-REBIND helpers: the light-dependent inputs of WebGLPrograms.getParameters, and the light uniform wiring of getProgram.
+		function dkLightsKey( ls, shadows ) {
+
+			return ls.directional.length + ',' + ls.point.length + ',' + ls.spot.length + ',' + ls.spotLightMap.length + ',' + ls.rectArea.length + ',' +
+				ls.hemi.length + ',' + ls.directionalShadowMap.length + ',' + ls.pointShadowMap.length + ',' + ls.spotShadowMap.length + ',' +
+				ls.numSpotLightShadowsWithMaps + ',' + ls.numLightProbes + ',' + ( _this.shadowMap.enabled && shadows.length > 0 ) + ',' + _this.shadowMap.type;
+
+		}
+
+		function dkBindLights( uniforms, ls ) {
+
+			uniforms.ambientLightColor.value = ls.ambient;
+			uniforms.lightProbe.value = ls.probe;
+			uniforms.directionalLights.value = ls.directional;
+			uniforms.directionalLightShadows.value = ls.directionalShadow;
+			uniforms.spotLights.value = ls.spot;
+			uniforms.spotLightShadows.value = ls.spotShadow;
+			uniforms.rectAreaLights.value = ls.rectArea;
+			uniforms.ltc_1.value = ls.rectAreaLTC1;
+			uniforms.ltc_2.value = ls.rectAreaLTC2;
+			uniforms.pointLights.value = ls.point;
+			uniforms.pointLightShadows.value = ls.pointShadow;
+			uniforms.hemisphereLights.value = ls.hemi;
+
+			uniforms.directionalShadowMap.value = ls.directionalShadowMap;
+			uniforms.directionalShadowMatrix.value = ls.directionalShadowMatrix;
+			uniforms.spotShadowMap.value = ls.spotShadowMap;
+			uniforms.spotLightMatrix.value = ls.spotLightMatrix;
+			uniforms.spotLightMap.value = ls.spotLightMap;
+			uniforms.pointShadowMap.value = ls.pointShadowMap;
+			uniforms.pointShadowMatrix.value = ls.pointShadowMatrix;
+
+		}
+
 		function getProgram( material, scene, object ) {
 
 			if ( scene.isScene !== true ) scene = _emptyScene; // scene could be a Mesh, Line, Points, ...
@@ -30574,6 +30608,7 @@ class WebGLRenderer {
 
 			materialProperties.needsLights = materialNeedsLights( material );
 			materialProperties.lightsStateVersion = lightsStateVersion;
+			materialProperties.__dkLightsKey = dkLightsKey( lights.state, shadowsArray ); // DK-PERF8 LIGHTS-REBIND
 
 			if ( materialProperties.needsLights ) {
 
@@ -30701,9 +30736,23 @@ class WebGLRenderer {
 
 			let needsProgramChange = false;
 
+			// DK-PERF8 LIGHTS-REBIND (Dekaron 2026-10-30): a material drawn in a nested render (water reflection / refraction capture,
+			// which has its own WebGLLights instance) and in the main render rebuilt its program parameters on every switch
+			// (getProgram ~33x per frame in Ardeca) only because the two light states carry different version numbers. When the
+			// light structure the program was built for (light / shadow counts, shadow map on + type) is the same, only the light
+			// uniform bindings are re-pointed - exactly what getProgram does for an already cached program. Same program, same pixels.
+			// Kill switch: globalThis.__dekaronNoLightsRebind = true.
+			let dkRebind = false;
+
+			if ( materialProperties.needsLights && materialProperties.lightsStateVersion !== lights.state.version && materialProperties.__dkLightsKey !== undefined && globalThis.__dekaronNoLightsRebind !== true ) {
+
+				dkRebind = materialProperties.__dkLightsKey === dkLightsKey( lights.state, currentRenderState.state.shadowsArray );
+
+			}
+
 			if ( material.version === materialProperties.__version ) {
 
-				if ( materialProperties.needsLights && ( materialProperties.lightsStateVersion !== lights.state.version ) ) {
+				if ( materialProperties.needsLights && ( materialProperties.lightsStateVersion !== lights.state.version ) && dkRebind === false ) {
 
 					needsProgramChange = true;
 
@@ -30817,6 +30866,12 @@ class WebGLRenderer {
 			if ( needsProgramChange === true ) {
 
 				program = getProgram( material, scene, object );
+
+			} else if ( dkRebind === true ) {
+
+				dkBindLights( materialProperties.uniforms, lights.state );
+				materialProperties.lightsStateVersion = lights.state.version;
+				_this.info.dkLightsRebinds = ( _this.info.dkLightsRebinds || 0 ) + 1;
 
 			}
 

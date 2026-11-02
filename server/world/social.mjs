@@ -2,6 +2,7 @@ import {sameScene} from './scene.mjs';
 import {npcLocalAudible} from './npc-chat-scope.mjs';
 import {SHOUT_COOLDOWN_MS,WORLD_CHAT_COOLDOWN_MS,SUPERCHAT_TEXT,worldWaitText,serverScope} from '../../src/systems/hud-options/superchat-rules.js';
 import {hostChatLinks} from '../../src/systems/hud-options/chat-links-rules.js';
+import {isBlacklisted} from './blacklist.mjs';
 
 export const SOCIAL_SCHEMAS = {chat:['token','type','text','channel','targetName']};
 const fail=(message,status=400)=>{throw Object.assign(new Error(message),{status});};
@@ -25,14 +26,19 @@ export function socialChat(world,p,input) {
     if(typeof input.targetName!=='string'||!input.targetName.trim()||input.targetName.length>20)fail('Choose a connected character to whisper to.');
     target=[...world.players.values()].find(q=>!q.leaving&&q.profile.name.toLowerCase()===input.targetName.trim().toLowerCase());
     if(!target)fail('That character is not connected.',404);
+    // Blacklist: if the target listed the speaker, whisper does not deliver (fandom: cannot contact via chat).
+    // No Global whisper-blacklist string; answer as not connected so the block is not advertised.
+    if(isBlacklisted(target,p.profile?.name))fail('That character is not connected.',404);
   } else if(input.targetName!==undefined)fail('A recipient is only allowed for whispers.');
   p.chatAt=now+1000;
   if(channel==='shout')p.shoutAt=now+SHOUT_COOLDOWN_MS;
   if(channel==='world')p.worldChatAt=now+WORLD_CHAT_COOLDOWN_MS;
+  // Blacklist: viewers who listed the speaker do not receive their chat (Chinese regional guide; fandom Interface).
+  const notBlocked=q=>!isBlacklisted(q,p.profile?.name);
   const recipients=channel==='whisper'
     ? [...new Set([p.id,target.id])]
     : channel==='world'
-      ? [...world.players.values()].filter(q=>!q.leaving&&serverScope(q.channel)===serverScope(p.channel)).map(q=>q.id)
-      : [...world.players.values()].filter(q=>!q.leaving&&sameScene(q,p)&&(channel!=='normal'||npcLocalAudible(p,q))).map(q=>q.id);
+      ? [...world.players.values()].filter(q=>!q.leaving&&notBlocked(q)&&serverScope(q.channel)===serverScope(p.channel)).map(q=>q.id)
+      : [...world.players.values()].filter(q=>!q.leaving&&notBlocked(q)&&sameScene(q,p)&&(channel!=='normal'||npcLocalAudible(p,q))).map(q=>q.id);
   world.emit(p.map,{type:'chat',channel,actorId:p.id,name:p.profile.name,text,recipients,...(linked.links.length?{links:linked.links}:{}),...(target?{targetId:target.id,targetName:target.profile.name}:{})});
 }

@@ -2,6 +2,8 @@
 // local collision and reports where it is; host echoes of those reports are acknowledged WITHOUT moving the body.
 // Only a host posRev bump (forced displacement / impossible report) moves the body to the host pose.
 // Remote client-predicted players render from a time-stamped buffer (smooth interpolation, short extrapolation).
+// Remote facing while moving snaps to the host pose yaw / move delta (Global WASD parity in controller._stepDirect) so
+// a/d spam never moonwalks under TURN_RATE; heading reverses never extrapolate or overshoot-hold (no rubberband).
 // Tunables: ./movement-config.js (ENGINE-CHOSEN).
 import {MOVEMENT_SYNC as C} from './movement-config.js';
 import {REMOTE_LOCOMOTION_CHOSEN as L} from '../../config/engine-chosen-anim-loop.js';
@@ -52,18 +54,20 @@ export class RemoteMotion {
     const t=Number(row.pt);if(!Number.isFinite(t)||!Number.isFinite(row.x)||!Number.isFinite(row.z))return;
     let last=this.samples.at(-1);
     if(t<this.lastPt)return;                                       // an older response/stream reordering
+    const yaw=Number(row.yaw);
     const sample={t,x:row.x,z:row.z,moving:!!row.moving,walk:row.walk==='peace'||row.walk==='battle'};
+    if(Number.isFinite(yaw))sample.yaw=yaw;
     // Same pose re-published by a later tick: the host's own path may have ended (it only extrapolates between
     // reports), which says nothing about the mover; keep the moving state the pose was first published with.
-    if(t===this.lastPt){if(last){last.walk=sample.walk;if(Math.hypot(last.x-row.x,last.z-row.z)>1e-9){last.x=row.x;last.z=row.z;}}return;}
+    if(t===this.lastPt){if(last){last.walk=sample.walk;if(Number.isFinite(sample.yaw))last.yaw=sample.yaw;if(Math.hypot(last.x-row.x,last.z-row.z)>1e-9){last.x=row.x;last.z=row.z;}}return;}
     if(last){const d=Math.hypot(row.x-last.x,row.z-last.z);if(d>C.TELEPORT_CELLS&&d/Math.max(.001,(t-last.t)/1000)>80){this.samples=[];this.renderT=null;last=null;}}
     // Via point published by the host (the point before this pose, which observers may not have seen yet).
     const via=Array.isArray(row.via)&&row.via.length===3&&row.via.every(Number.isFinite)&&last&&row.via[0]>last.t&&row.via[0]<t?{t:row.via[0],x:row.via[1],z:row.via[2]}:null;
     // A mover that stood still (stop report) and starts again: keep it standing until shortly before its first new
     // point, instead of crawling across the whole pause.
     const first=via||{t,x:row.x,z:row.z};
-    if(last&&!last.moving){const lead=startLead(Math.hypot(first.x-last.x,first.z-last.z));if(first.t-last.t>lead*1.5)this.samples.push({t:first.t-lead,x:last.x,z:last.z,moving:false,walk:last.walk});}
-    if(via)this.samples.push({t:via.t,x:via.x,z:via.z,moving:true,walk:sample.walk});
+    if(last&&!last.moving){const lead=startLead(Math.hypot(first.x-last.x,first.z-last.z));if(first.t-last.t>lead*1.5){const hold={t:first.t-lead,x:last.x,z:last.z,moving:false,walk:last.walk};if(Number.isFinite(last.yaw))hold.yaw=last.yaw;this.samples.push(hold);}}
+    if(via){const v={t:via.t,x:via.x,z:via.z,moving:true,walk:sample.walk};if(Number.isFinite(sample.yaw))v.yaw=sample.yaw;this.samples.push(v);}
     // Buffer sizing uses the previous pose time: the render clock must not pass it before this pose arrives
     // (covers report spacing, host tick wait, transport jitter and holes left by reordered reports).
     const prior=this.samples.at(-1);
@@ -71,7 +75,9 @@ export class RemoteMotion {
     // First buffered pose of an actor already on screen: start from where it is shown, one host tick earlier,
     // instead of jumping onto the first sample and waiting there.
     if(!this.samples.length&&from&&Number.isFinite(from.x)&&Number.isFinite(from.z)){const d=Math.hypot(from.x-row.x,from.z-row.z);
-      if(d>1e-6&&d<C.TELEPORT_CELLS)this.samples.push({t:t-startLead(d),x:from.x,z:from.z,moving:false,walk:sample.walk});}
+      if(d>1e-6&&d<C.TELEPORT_CELLS){const seed={t:t-startLead(d),x:from.x,z:from.z,moving:false,walk:sample.walk};if(Number.isFinite(sample.yaw))seed.yaw=sample.yaw;this.samples.push(seed);}}
+    // Direction reverse (WASD a/d spam): drop extrapolation / overshoot hold so the buffer never rubberbands backward.
+    if(last){const mx=sample.x-last.x,mz=sample.z-last.z,ml=Math.hypot(mx,mz);if(ml>1e-6&&this.dir&&mx/ml*this.dir.x+mz/ml*this.dir.z<-0.2){this.extrapolated=false;this.holdSince=null;this.holdGap=null;}}
     this.samples.push(sample);this.lastPt=t;if(this.samples.length>40)this.samples.splice(0,this.samples.length-40);
     // adaptive buffer: how late (vs the smoothed host clock) poses arrive, worst of the last few seconds, plus a margin
     if(Number.isFinite(clockNow)){this.late.push({at:clockNow,v:clockNow-(prevT??t)});while(this.late.length&&clockNow-this.late[0].at>C.INTERP_MEMORY_MS)this.late.shift();
@@ -91,30 +97,48 @@ export class RemoteMotion {
     const s=this.samples;if(!s.length)return null;
     const t=this._render(clockNow,wallNow);
     while(s.length>2&&s[1].t<=t-1000)s.shift();
-    if(t<=s[0].t)return {x:s[0].x,z:s[0].z,moving:false,walk:s[0].walk};
-    for(let i=0;i<s.length-1;i++){const a=s[i],b=s[i+1];if(t<=b.t){const u=(t-a.t)/Math.max(1e-6,b.t-a.t);return {x:a.x+(b.x-a.x)*u,z:a.z+(b.z-a.z)*u,moving:true,walk:b.walk};}}
-    const last=s.at(-1),prev=s.at(-2),ahead=t-last.t;
-    if(last.moving&&prev&&ahead<=C.EXTRAPOLATE_MS&&last.t>prev.t){const k=ahead/(last.t-prev.t);return {x:last.x+(last.x-prev.x)*k,z:last.z+(last.z-prev.z)*k,moving:true,walk:last.walk,extrapolated:true};}
-    if(last.moving&&prev&&last.t>prev.t){const k=C.EXTRAPOLATE_MS/(last.t-prev.t);return {x:last.x+(last.x-prev.x)*k,z:last.z+(last.z-prev.z)*k,moving:false,walk:last.walk,extrapolated:true};}
-    return {x:last.x,z:last.z,moving:false,walk:last.walk};
+    const yawOf=r=>Number.isFinite(r?.yaw)?r.yaw:undefined;
+    if(t<=s[0].t)return {x:s[0].x,z:s[0].z,moving:false,walk:s[0].walk,yaw:yawOf(s[0])};
+    for(let i=0;i<s.length-1;i++){const a=s[i],b=s[i+1];if(t<=b.t){const u=(t-a.t)/Math.max(1e-6,b.t-a.t);return {x:a.x+(b.x-a.x)*u,z:a.z+(b.z-a.z)*u,moving:true,walk:b.walk,yaw:yawOf(b)??yawOf(a)};}}
+    const last=s.at(-1),prev=s.at(-2),ahead=t-last.t,older=s.at(-3);
+    // a/d reverse: do not extrapolate past a heading flip (that is the rubberband / moonwalk source).
+    if(older&&prev&&last){const ax=prev.x-older.x,az=prev.z-older.z,bx=last.x-prev.x,bz=last.z-prev.z;
+      if(ax*bx+az*bz<0&&(ax*ax+az*az)>1e-8&&(bx*bx+bz*bz)>1e-8)return {x:last.x,z:last.z,moving:!!last.moving,walk:last.walk,yaw:yawOf(last)};}
+    if(last.moving&&prev&&ahead<=C.EXTRAPOLATE_MS&&last.t>prev.t){const k=ahead/(last.t-prev.t);return {x:last.x+(last.x-prev.x)*k,z:last.z+(last.z-prev.z)*k,moving:true,walk:last.walk,yaw:yawOf(last),extrapolated:true};}
+    if(last.moving&&prev&&last.t>prev.t){const k=C.EXTRAPOLATE_MS/(last.t-prev.t);return {x:last.x+(last.x-prev.x)*k,z:last.z+(last.z-prev.z)*k,moving:false,walk:last.walk,yaw:yawOf(last),extrapolated:true};}
+    return {x:last.x,z:last.z,moving:false,walk:last.walk,yaw:yawOf(last)};
   }
   /** Place a remote actor at its buffered pose and keep its locomotion clip in step. */
   apply(actor,clockNow,wallNow,rest='idleCombat'){
     let pose=this.sample(clockNow,wallNow);if(!pose)return false;
     // Overshoot guard: after extrapolating past the newest pose, a late sample must not pull the remote back.
     // Hold still until the buffered path passes the shown point (bounded by OVERSHOOT_HOLD_MS).
+    // Exception: a real heading reverse (a/d spam) must never hold — that hold is the rubberband.
     const out=this.out,dir=this.dir;
     if(out&&dir&&(this.extrapolated||this.holdSince!=null)&&!pose.extrapolated){
-      const bx=pose.x-out.x,bz=pose.z-out.z,back=bx*dir.x+bz*dir.z;
-      const gap=Math.hypot(bx,bz),approaching=this.holdGap==null||gap<this.holdGap+1e-6;
-      if(back<-1e-6&&gap<C.TELEPORT_CELLS&&approaching){if(this.holdSince==null)this.holdSince=wallNow;if(wallNow-this.holdSince<C.OVERSHOOT_HOLD_MS){this.holdGap=gap;pose={x:out.x,z:out.z,moving:true,walk:pose.walk,held:true};}}
+      const s=this.samples,last=s.at(-1),prev=s.at(-2);
+      let reversed=false;
+      if(last&&prev){const sx=last.x-prev.x,sz=last.z-prev.z;if(sx*dir.x+sz*dir.z<-1e-6)reversed=true;}
+      if(reversed){this.holdSince=null;this.holdGap=null;}
+      else{
+        const bx=pose.x-out.x,bz=pose.z-out.z,back=bx*dir.x+bz*dir.z;
+        const gap=Math.hypot(bx,bz),approaching=this.holdGap==null||gap<this.holdGap+1e-6;
+        if(back<-1e-6&&gap<C.TELEPORT_CELLS&&approaching){if(this.holdSince==null)this.holdSince=wallNow;if(wallNow-this.holdSince<C.OVERSHOOT_HOLD_MS){this.holdGap=gap;pose={x:out.x,z:out.z,moving:true,walk:pose.walk,yaw:pose.yaw,held:true};}}
+      }
     }
     if(!pose.held){this.holdSince=null;this.holdGap=null;}
     this.extrapolated=!!pose.extrapolated;
     if(out){const mx=pose.x-out.x,mz=pose.z-out.z,ml=Math.hypot(mx,mz);if(ml>1e-6)this.dir={x:mx/ml,z:mz/ml};}
     this.out={x:pose.x,z:pose.z};
     const moving=Math.hypot(pose.x-actor.x,pose.z-actor.z)>0.001;
-    if(!actor.dead&&moving&&!Number.isFinite(actor._serverYaw))actor.faceTowards?.(pose.x,pose.z);
+    // Global WASD parity (controller._stepDirect): held directional facing snaps immediately.
+    // Remotes used TURN_RATE toward a stale _serverYaw while the buffer reversed = moonwalk on a/d spam.
+    // Facing comes from the host pose (row.yaw / move delta) already in this Global interp buffer — no invented prediction.
+    if(!actor.dead&&moving){
+      if(Number.isFinite(pose.yaw))actor.yaw=pose.yaw;
+      else if(typeof actor.faceDirection==='function')actor.faceDirection(pose.x-actor.x,pose.z-actor.z,true);
+      else actor.faceTowards?.(pose.x,pose.z);
+    }else if(!actor.dead&&Number.isFinite(pose.yaw))actor._yawGoal=pose.yaw;
     placeRemote(actor,pose.x,pose.z);
     if(!actor.dead&&(actor._networkAnimHold||0)<=wallNow){const state=remoteLocomotionState(actor,moving,pose.walk,wallNow,rest);if(actor.state!==state)actor.play(state);}
     return true;
@@ -190,7 +214,8 @@ export function syncSelfSnapshot(net,self,now,setServerPose){
     const rejected=(Number(self.posRejects)||0)>ms.rejects;
     ms.posRev=self.posRev;ms.rejects=Number(self.posRejects)||0;ms.corrections++;if(!rejected)ms.forced++;ms.ackedSentAt=now;ms.ackPos={x:self.x,z:self.z};   // the displaced host pose is the new lead base (revive, travel, knockback)
     net._lastMove=null;net._localStopped=false;net._stopServer=null;net._predictionAt=-Infinity;net._predictionIntentAt=-Infinity;
-    if(rejected){setServerPose(p,self,now,true);p.setPosition(self.x,self.z);p._serverPose=null;}   // impossible report: the host pose wins now
+    if(rejected&&Math.hypot(self.x-p.x,self.z-p.z)>(C.REJECT_SMOOTH_CELLS??3)){setServerPose(p,self,now,true);p.setPosition(self.x,self.z);p._serverPose=null;}   // big desync: the host pose wins now
+    else if(rejected){setServerPose(p,self,now,false);ms.holdUntil=now+(p._serverPose?120:0);}   // small correction: eased back (RUBBERBAND-RELEASE)   // impossible report: the host pose wins now
     else{setServerPose(p,self,now,false);ms.holdUntil=now+((p._serverPose&&Math.hypot(self.x-p.x,self.z-p.z)>1e-6)?200:0);}  // forced displacement: shown (tween <=10 cells, else placed)
     return true;
   }

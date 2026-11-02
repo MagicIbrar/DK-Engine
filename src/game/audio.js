@@ -14,21 +14,21 @@ import { soundURL, cachedAssetRequest } from '../engine/assets.js';
 import { classDefOf, monsterDef, weaponSound } from '../ui/gameinfo.js';
 
 const MAX_VOICES = 24;
-const DEFAULT_RANGE = 25;
+export const DEFAULT_RANGE = 20; // mode authored range in sound.json (7679 units); native uses per-unit range
 const DEFAULT_FADE_MS = 1800;
 const SAME_SOUND_GAP = 0.045;   // s: identical sounds closer than this are merged
 const MONSTER_IDLE_MIN = 5, MONSTER_IDLE_MAX = 11;
 
 /**
- * Distance gain: 1 at the listener, smooth fall-off to 0 at `range` (metres).
- * g = (1 - d/range)^2 â€” close to the client's linear-in-dB roll-off for the short ranges it uses (10-50 m).
+ * Distance gain: 1 at the listener, linear fall-off to 0 at `range` (metres).
+ * Native Global FUN_015c7430: after sqrt distance, gain *= (range - dist) / range
+ * when dist < range (authored vol already / DAT_01b7e360=100). No quadratic term.
  */
 export function distanceGain(d, range = DEFAULT_RANGE) {
   const r = Math.max(0.5, Number(range) || DEFAULT_RANGE);
   if (!(d >= 0)) return 1;
   if (d >= r) return 0;
-  const k = 1 - d / r;
-  return k * k;
+  return 1 - d / r;
 }
 
 /** Pick the next playlist entry at random, avoiding an immediate repeat when possible. */
@@ -176,7 +176,7 @@ export class Audio {
     if (!entry) { this.stopBGM(); return; }
     M.entry = entry;
     M.plays = 0;
-    const delay = first ? Math.min(Number(entry.delayMs) || 0, 1500) : Number(entry.delayMs) || 0;
+    const delay = Number(entry.delayMs) || 0; // honor authored bgsound delayMs (mode 2000); was Math.min(...,1500) on first track; ENGINE-CHOSEN cap contradicted sound.json
     const mapAtStart = M.mapIndex;
     // fade the old track out right away; start the new one after its delay
     for (const el of M.els) if (!el.paused) this._fadeEl(el, 0, DEFAULT_FADE_MS, true);
@@ -340,7 +340,7 @@ export class Audio {
         node = pn;
       }
       node.connect(this.sfxBus);
-      const voice = admittedVoice = { src, gain: g, panner: pn, path, t: startAt, at, range, base: volume, loop: !!loop, mixGain, stateBound };
+      const voice = admittedVoice = { src, gain: g, panner: pn, path, t: startAt, at, range, base: volume, loop: !!loop, mixGain, stateBound, release };
       while (this._voices.length >= MAX_VOICES) this._stopVoice(this._voices[0]);
       this._voices.push(voice);
       src.onended = () => this._dropVoice(voice);
@@ -388,6 +388,10 @@ export class Audio {
 
   _stopVoice(v) {
     try { v.src.stop(); } catch { /* already stopped */ }
+    // Explicit stop (anim interrupt / state replace / dispose) must free SAME_SOUND_GAP
+    // and exclusive reservations so the same path can restart immediately. Duplicate
+    // concurrent starts that never stopped still merge via the gap check.
+    try { v.release?.(); } catch { /* ignore */ }
     this._dropVoice(v);
   }
   _dropVoice(v) {
@@ -438,13 +442,16 @@ export class Audio {
   }
 
   /** Native soundscript0/event/2/servantIndex, invoked by an accepted servant
-   * clip. Action-scene sounds own identical paths. As with monster voices,
-   * attack-voice chance/variant selection is engine policy, not native data. */
+   * clip. Action-scene sounds own identical paths. Variant pick among soundscript rows is pickOne (no weights). Play-skip chance is
+   * UNRESOLVED-ENGINE-CHOSEN (no Global chance evidence); trigger is the clip event. */
   servantClip(actor,state,{excluded=new Set(),isCurrent=()=>true,onHandle}={}) {
     const bank=this.S?.summonSfx?.[`2:${actor?.servantIndex}`];
     const event=state==='idle'||state==='idleCombat'?'idle':state==='hit'?'hit':state==='die'?'die':state==='attack'||state==='skill'?'attackVoice':null;
     if(!bank||!event||actor.disposed||!isCurrent())return Promise.resolve([]);
-    if(event==='attackVoice'&&Math.random()>=.35)return Promise.resolve([]);
+    /* UNRESOLVED-ENGINE-CHOSEN: Global attackVoice skip/chance not evidenced (see SOUND-EVIDENCE-LANE16).
+     * Evidenced trigger: attack/skill clip -> soundscript code2=5 bank; play pickOne(variant) when event fires.
+     * No authored chance column / rand()%N / 0.35f/0.3f in portable soundscript, sound.json, or FUN_015c*. */
+    /* (no invented chance gate) */
     if(event==='die'){if(this._deathSounded.has(actor))return Promise.resolve([]);this._deathSounded.add(actor);}
     else if(!actor.dead)this._deathSounded.delete(actor);
     let rows=(bank[event]||[]).filter(r=>!excluded.has(String(r.path||'').replace(/\\/g,'/').replace(/^sound\//i,'').toLowerCase()));
@@ -571,12 +578,19 @@ export class Audio {
       const atk = m?.attack;
       const list = Array.isArray(atk) && atk.length ? atk[Math.max(0, Math.min(atk.length - 1, Number(index) || 0))] : null;
       if (list) this.playAll(list, { at });
-      if (m?.attackVoice && Math.random() < 0.35) this.playOne(m.attackVoice, { at });
+      /* UNRESOLVED-ENGINE-CHOSEN: monster attackVoice play-skip chance not in Global data/engine dumps.
+       * Evidenced path: attackStart (attack anim) + soundscript code2=5 / monsterSfx.attackVoice; pickOne via playOne.
+       * Search list: portable soundscript.csv (no chance col); sound.json attackVoice={path,vol,range,lenMs,delayMs};
+       * attackTiming 0.35/0.3 are hit fractions not voice chance; decompile att_voice/0.35f/rand%N near FUN_015c* = 0 hits;
+       * act CSV sound events = 0; server-ref legacy = no voice chance. */
+    if (m?.attackVoice) this.playOne(m.attackVoice, { at });
       this._attackAt.set(actor, this._now());
     } else if (actor.kind === 'player') {
       const list = this.S?.hit?.swing?.[this._weapon(actor)];
       if (Array.isArray(list) && list.length) this.play(list[(Number(index) || 0) % list.length], { at, volume: 0.9 });
-      if (Math.random() < 0.3) this.playOne(this._pc(actor)?.attackVoice, { at: actor === this.game.player ? null : at });
+      /* UNRESOLVED-ENGINE-CHOSEN: player attackVoice play-skip chance not in Global data/engine dumps (same search list as monster).
+       * Evidenced path: attackStart + pcSfx[class].attackVoice (soundscript 0,5,class,variant); playOne=pickOne. */
+    if (this._pc(actor)?.attackVoice) this.playOne(this._pc(actor)?.attackVoice, { at: actor === this.game.player ? null : at });
       this._attackAt.set(actor, this._now());
     }
   }
@@ -627,31 +641,37 @@ export class Audio {
     this._lastPos = { x: p.x, z: p.z };
     if (!last || p.dead || dt <= 0) { this._stepRequest++; return; }
     const d = Math.hypot(p.x - last.x, p.z - last.z);
-    if (d > 5) { this._stepDist = 0; this._stepFoot = 0; this._stepRequest++; return; } // teleport
+    // Large one-frame jumps are teleports/warps — reset gait (safety gate, not a native constant).
+    if (d > 5) { this._stepDist = 0; this._stepFoot = 0; this._stepRequest++; return; }
     const speed = d / dt;
     if (speed < 0.4) { this._stepDist = 0; this._stepRequest++; return; }
-    const run = speed > 2.7;
-    // one step per half cycle: run 3.45 m / cycle, walk ~1.8 m / cycle (classes.json speedFromRootMotion)
-    const stride = run ? 1.72 : 0.9;
+    const sfr = p.classDef?.stats?.speedFromRootMotion
+      || this.game.player?.classDef?.stats?.speedFromRootMotion
+      || {};
+    const walkSpeed = Number(sfr.walk) || 1.851;
+    const runSpeed = Number(sfr.run) || 3.445;
+    // Midpoint between class walk/run root-motion speeds separates gait.
+    const run = speed > (walkSpeed + runSpeed) / 2;
+    // One footfall per half locomotion cycle: stride = speedFromRootMotion / 2 (metres).
+    const stride = (run ? runSpeed : walkSpeed) / 2;
     this._stepDist += d;
     if (this._stepDist < stride) return;
     this._stepDist -= stride;
-    const fs = this.S?.footsteps?.[run ? 'run' : 'walk'];
-    // ENGINE-CHOSEN binding: native soundscript code2 shares the boots' item
-    // Quality/sound-class enum. Costumes never change the equipment sound.
+    const fsBank = this.S?.footsteps?.[run ? 'run' : 'walk'];
+    // Boots quality → soundscript armor code (build-sound.mjs); costumes do not override.
     const boots = this.game.save?.equipment?.boots ?? p.save?.equipment?.boots;
     const def = boots?.itemIndex ? this.game.items?.db?.def(boots.itemIndex) : null;
-    const armorCode = def && Object.hasOwn(fs || {}, String(def.quality)) ? String(def.quality) : '0';
-    const armor = fs?.[armorCode] || fs?.['0'];
+    const armorCode = def && Object.hasOwn(fsBank || {}, String(def.quality)) ? String(def.quality) : '0';
+    const armor = fsBank?.[armorCode] || fsBank?.['0'];
     const ground = this.game.world?.groundTypeAt?.(p.x, p.z) || 'soil';
     const pair = armor?.[ground] || armor?.soil;
     if (!pair) return;
     const request = ++this._stepRequest;
-    this.play(pair[this._stepFoot % pair.length], { volume: 0.45,
+    // Authored effectdata volume (vol 100 → gain 1); no forced 0.45 heuristic.
+    this.play(pair[this._stepFoot % pair.length], {
       isCurrent: () => request === this._stepRequest && this.game.player === p && !p.dead && !this.game.paused });
     this._stepFoot ^= 1;
   }
-
   _monsterIdle(dt) {
     this._idleTimer -= dt;
     if (this._idleTimer > 0) return;

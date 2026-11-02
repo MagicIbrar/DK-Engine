@@ -81,7 +81,8 @@ export class BuilderWindow {
     // general
     c('edit_name').on('change', (v) => this.set('name', v));
     c('edit_desc').on('change', (v) => this.set('desc', v));
-    c('com_kind').setItems(this.cat.kinds().map(k => ({ text: k.text, value: k.value })));
+    // perf-frame: the kind list scans every item (~40 ms); it is filled on first open, not during the idle pre-build
+    this._kindsFilled = false;
     c('com_kind').on('change', (i, it) => this.setKind(it?.value));
     c('com_rank').setItems(Object.entries(db.enums.rankNames || {}).map(([k, v]) => ({ text: `${v} (${k})`, value: Number(k) })));
     c('com_rank').on('change', (i, it) => this.set('rank', it?.value ?? 0));
@@ -156,6 +157,7 @@ export class BuilderWindow {
   // ------------------------------------------------------------------------------------------ open / close
   onOpen(win, arg) {
     this._closed = false;
+    if (!this._kindsFilled) { this._kindsFilled = true; win.control('com_kind').setItems(this.cat.kinds().map(k => ({ text: k.text, value: k.value }))); }
     const g = this.game;
     if (!this.preview) {
       this.preview = new ItemPreview(g, this.db);

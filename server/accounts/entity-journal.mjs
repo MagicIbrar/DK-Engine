@@ -29,7 +29,9 @@ export function diffStores(prev, next, hint = null) {
     for (const k of keys) {
       const has = Object.hasOwn(b, k), was = Object.hasOwn(a, k);
       if (has && (!was || a[k] !== b[k] || hint?.[col])) { (c[col] ||= {})[k] = b[k]; any = true; }
-      else if (!has && was) { (c[col] ||= {})[k] = null; any = true; }
+      // STABILITY-PING: in-place session edits (transactSessions) pass prev===next, so a hinted key that is gone must be journaled
+      // as a delete even though prev no longer has it either (before: a logged-out / replaced session came back after a restart).
+      else if (!has && (was || hint?.[col])) { (c[col] ||= {})[k] = null; any = true; }
     }
   }
   for (const k of new Set([...Object.keys(prev || {}), ...Object.keys(next || {})])) {

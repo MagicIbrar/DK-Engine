@@ -19,18 +19,22 @@ const UP = new THREE.Vector3(0, 1, 0);
 
 // ENGINE-CHOSEN thresholds (every 2nd frame when the frame interval is <~8.4 ms (>= 120 fps), every
 // frame below that). SKIP_LEAVE_MS is a hysteresis so a frame time hovering at the threshold does not flap.
-export const SHADOW_SKIP_ENTER_MS = 8.4;     // smoothed frame interval below this -> alternate-frame updates
-export const SHADOW_SKIP_LEAVE_MS = 9.2;     // smoothed frame interval above this -> every frame again
+export const SHADOW_SKIP_ENTER_MS = 12.5;    // PERF-SHADOWRATE: was 8.4 (>=120 fps); now >= 80 fps -> alternate-frame updates (40+ refreshes/s)
+export const SHADOW_SKIP_LEAVE_MS = 14;      // PERF-SHADOWRATE: was 9.2; smoothed frame interval above this -> every frame again
 const EMA = 0.15;                            // ENGINE-CHOSEN smoothing of the frame interval (~7 frames to settle)
 const MAX_DT_MS = 50;                        // ENGINE-CHOSEN: a hitch / pause counts as 50 ms (it still ends the skip mode)
 const SAME_FRAME_MS = 1;                     // ENGINE-CHOSEN: a second main-scene render < 1 ms after the last one (map warm-up,
                                              // screenshot key) is not a new frame: always draw it, never count it
 
+// Smallest Global shadow texture: rc_shadowlevel 1 = 256 (RenderTexture::Shadow FUN_0159c5f0; LANE-66). The old 512 floor
+// overrode Global's level-1 size.
+export const GLOBAL_MIN_SHADOW_MAP = 256;
+
 export class ShadowTuner {
   constructor(game) {
     this.game = game;
     this.cap = 4096;          // governor cap on the map size
-    this.userSize = 2048;     // what the Options asked for (hud-options apply.js sets mapSize; remembered here)
+    this.userSize = 512;      // what the Options asked for (hud-options apply.js sets mapSize; remembered here). 512 = Global default level 2
     this.half = 32;
     this.now = () => performance.now();       // replaceable clock (tests)
     this.frameMs = 1000 / 60;                 // smoothed interval between main-scene renders (starts at "60 fps": every frame)
@@ -108,7 +112,7 @@ export class ShadowTuner {
     // size: the Options value (whatever apply.js last set, while it is above our cap) capped by the governor
     const cur = sh.mapSize.x;
     if (cur !== this._setSize) { this.userSize = cur; force = true; }   // changed by someone else (Options, map load)
-    const want = Math.max(512, Math.min(this.userSize, this.cap));
+    const want = Math.max(GLOBAL_MIN_SHADOW_MAP, Math.min(this.userSize, this.cap));
     if (cur !== want) {
       sh.mapSize.set(want, want);
       sh.map?.dispose?.();

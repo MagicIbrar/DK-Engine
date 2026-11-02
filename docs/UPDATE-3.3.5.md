@@ -14,4 +14,4 @@ The changes were checked using disposable profiles, authored entrance records an
 
 Close the world, game and launcher before applying the complete update. Existing accounts, settings and SQL data are preserved by the verified installer; keep your own backups. No original Global executables or game assets are included.
 
-Thanks to Franky and DEV ShadoW for their contributions and testing reports.
+Thanks to DEV ShadoW for their contributions and testing reports.

@@ -75,7 +75,8 @@ export class GameData {
 
   expNeeded(level) {
     const L = this.exp?.levels;
-    if (!L) return 100 * level * level;
+    // No authored exp.json levels: never invent a quadratic curve (Global uses share/pc/exp.csv).
+    if (!L) return Infinity;
     const row = Array.isArray(L) ? L.find(r => r.level === level) || L[level] : L[level];
     return row ? Number(row.exp) : Infinity;
   }

@@ -1,10 +1,13 @@
 import {createServerLists} from './server-lists.mjs';
 import {mapDataPaths} from '../../src/formats/spawn.js';
-import {LEGACY_MAPS,legacyMapRow,firstNpcLanding,parseLegacySpawns} from '../../src/world/legacy-maps.js';
+import {MAIL_POSTAGE_DIL} from '../../src/systems/life/mail-rules.js';
+import {LEGACY_MAPS,ABSENT_MAPLIST_MAPS,allSynthesisedMaps,legacyMapRow,firstNpcLanding,parseLegacySpawns} from '../../src/world/legacy-maps.js';
+import {reconcileMapFolderBindings} from '../../src/world/map-folder-bindings.js';
 import {landingOverride} from '../../src/world/map-landing.js';
 import {awakeningShieldRows} from '../../src/game/awakening-shield.js';
 import {ardecaHeightScope} from './original-map-scope.mjs';
 import {loadDungeonData} from './dungeons.mjs';
+import {enrichAbsentMaplistDungeonMaps} from '../../src/systems/dungeons/data.js';
 import {EventData} from '../../src/systems/events/data.js';
 import fs from 'node:fs/promises';
 import {existsSync} from 'node:fs';
@@ -96,6 +99,8 @@ export async function loadWorldData({ dataRoot, gamedataRoot, customItemsFile } 
     progression = { quests, dialogs, boxes, npcs, monsters: monstersFile };
     itemDB = new ItemDB({ core, options, looks, styles });
   } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  // Folder-convention MON_/NPC_: fill maplist holes and replace cross-map misbinds (Global share/map/<index>_*/; e.g. 27/28 wrongly baked to Aquarius).
+  reconcileMapFolderBindings(monstersFile, progression?.npcs || { placements: {} }, dataRoot);
   const customLibrary=itemDB?await loadCustomItems(itemDB,{file:customItemsFile}):null;
   let itemUseData=null,shopData=null;
   if(itemDB){
@@ -110,7 +115,7 @@ export async function loadWorldData({ dataRoot, gamedataRoot, customItemsFile } 
   const lifeData=await read('life.json'),partyData=lifeData.party;
   const gradeShieldRows=awakeningShieldRows(lifeData.grade?.grades);   // awakening grade shield (src/game/awakening-shield.js)
   const itemServiceData=await loadItemServiceData(dataRoot);
-  const dungeonData=await loadDungeonData(gamedataRoot),dungeonCatalog=dungeonData.dg;
+  const dungeonData=await loadDungeonData(gamedataRoot);enrichAbsentMaplistDungeonMaps(dungeonData.dg,dungeonData.tr);const dungeonCatalog=dungeonData.dg;   // Lane 52: ABSENT_MAPLIST floors (120) wired in code, Global pack untouched
   const eventData=new EventData(await read('events.json'),await read('events_text.json'),await read('events_caps.json'),null,await read('events_effectui.json'));
   const rows = parseCSV(decodeText(await fs.readFile(path.join(dataRoot, 'share/maplist.csv'))));
   const header = rows.shift();
@@ -120,15 +125,16 @@ export async function loadWorldData({ dataRoot, gamedataRoot, customItemsFile } 
   // registry landings on blocked cells -> Global's own walkable arrival point (src/world/map-landing.js, map-landings.js)
   for (const m of lists.maps) { const o = landingOverride(m.index); if (o) { m.landing = o.landing; m.landingFrom = o.landingFrom; } }
   const mapInfo = new Map(lists.maps.filter(m => m.file).map(m => [m.index, m]));
-  // LEGACY MAPS (src/world/legacy-maps.js): the original 2005 fields are absent from the client maplist but every file ships in Global.
-  // Register them only when their native collision really exists in this data root, with the landing/spawns from their own share/map csv.
-  for (const [k, L] of Object.entries(LEGACY_MAPS)) { const index = Number(k); if (rawMaps.has(index) && mapInfo.get(index)?.file) continue;
+  // SYNTHESISED MAPS (src/world/legacy-maps.js): client maplist omitted these indexes but Global still ships map/.mac/light + share/map folders
+  // (2005 fields in LEGACY_MAPS; conscript 27/28 + dungeonlist 120 in ABSENT_MAPLIST_MAPS). Register only when native collision exists.
+  for (const [k, L] of Object.entries(allSynthesisedMaps())) { const index = Number(k); if (rawMaps.has(index) && mapInfo.get(index)?.file) continue;
     const row = legacyMapRow(index, rawMaps.get(0)); const paths = mapDataPaths(row); if (!(await fs.stat(path.join(dataRoot, paths.mac)).then(st => st.isFile(), () => false))) continue;
     const dir = path.join(dataRoot, 'share/map', L.dir.toLowerCase()), text = async f => fs.readFile(path.join(dir, f.toLowerCase())).then(decodeText, () => '');
     const listed = lists.maps.find(m => m.index === index); let spawnRows = monstersFile.spawns[index]?.rows;
     if (!spawnRows?.length) { spawnRows = parseLegacySpawns(await text(`MON_${L.dir}.csv`)); if (spawnRows.length) monstersFile.spawns[index] = { rows: spawnRows, legacy: true }; }
     const landing = listed?.landing || firstNpcLanding(await text(`NPC_${L.dir}.csv`)) || (spawnRows?.[0] ? [spawnRows[0][2] + 0.5, spawnRows[0][3] + 0.5, 0] : null);
-    rawMaps.set(index, row); mapInfo.set(index, { ...(listed || {}), index, name: L.Name, file: `map/${L.file}.map`, dungeon: 0, siege: 0, legacy: true, landing });
+    const dungeon = Number(L.dungeonIndex || row.DungeonIndex || 0) || 0;
+    rawMaps.set(index, row); mapInfo.set(index, { ...(listed || {}), index, name: L.Name, file: `map/${L.file}.map`, dungeon, siege: 0, legacy: true, landing });
     if (!listed) lists.maps.push(mapInfo.get(index)); else Object.assign(listed, mapInfo.get(index), { serverOnly: undefined }); }
   const levelCaps = await loadLevelCaps(dataRoot, rawMaps), abilityCaps = await loadAbilityCaps(dataRoot, rawMaps);
   const loaded = new Map(),loadingMaps=new Set(),mapOwners=new Map(),geometry=new Map(),forecasts=new Map();
@@ -143,7 +149,7 @@ export async function loadWorldData({ dataRoot, gamedataRoot, customItemsFile } 
     dataRoot, gamedataRoot, serverLists,
     travelData:travel,dungeonCatalog,dungeonData,
     nameplateTitles:lifeData.grade?.titles||[],nameplateGrades:lifeData.grade?.grades||[],pkData:lifeData.pk||null,   // FIELD-PK: chaotic bands / pkcount / pkLevelCap
-    eventData,lifeEvents:lifeData.events,classMotions:lifeData.classMotions||null,dekapass:lifeData.dekapass,fishing:lifeData.fishing,craft:lifeData.craft,guild:lifeData.guild,guildPolicy:FRONTIER_CHOSEN.PRODUCTION_POLICY,mailPolicy:{postage:100},pvpRules:await loadPvpRules(dataRoot),partyPvp:await loadPartyPvpData(dataRoot,lists.maps),colosseum:await loadColosseumData(dataRoot).catch(()=>null),consignment:await loadConsignmentPolicy(dataRoot,gamedataRoot),pcRoom:await loadPcRoomRules(dataRoot),itemServiceData,exp,
+    eventData,lifeEvents:lifeData.events,classMotions:lifeData.classMotions||null,dekapass:lifeData.dekapass,fishing:lifeData.fishing,craft:lifeData.craft,guild:lifeData.guild,guildPolicy:FRONTIER_CHOSEN.PRODUCTION_POLICY,mailPolicy:{postage:MAIL_POSTAGE_DIL},pvpRules:await loadPvpRules(dataRoot),partyPvp:await loadPartyPvpData(dataRoot,lists.maps),colosseum:await loadColosseumData(dataRoot).catch(()=>null),consignment:await loadConsignmentPolicy(dataRoot,gamedataRoot),pcRoom:await loadPcRoomRules(dataRoot),itemServiceData,exp,
     requiresInstance: index => !!mapInfo.get(Number(index))?.dungeon,
     /** The raw share/maplist.csv row for a map index (read-only lookups such as IsPvP), or null. */
     mapRow: index => rawMaps.get(Number(index)) || null,

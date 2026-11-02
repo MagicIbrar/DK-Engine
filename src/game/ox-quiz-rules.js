@@ -49,7 +49,7 @@ export const OX_QUIZ = Object.freeze({
 // DELIBERATE ENGINE CHOICES (not native rules; each is a bounded, fail-closed substitute for a missing server script).
 export const OX_QUIZ_ENGINE_CHOICES = Object.freeze([
   'The Operation Assistant 5825 has no field placement (0,0), so Entry Allowed / Entry Not Allowed (9553/9554) are accepted from an authorized GM on map 22 or 654 without NPC proximity.',
-  'Entry Allowed is the admission signal: Hani refuses with654:9712 whenever it is closed. Manual GM events remain manual; an unoccupied scheduled Saturday17:00 UTC+1 window runs automatically.',
+  'Entry Allowed is the admission signal: Hani refuses with654:9712 whenever it is closed.',
   'Eliminate (O)/(X) are read as "the correct answer is O/X; the other half is out". The host refuses a button that disagrees with the current oxlist answer, and refuses elimination without a host-set question, so neither reading can eliminate correct responders.',
   'Wrong-side elimination after the wall rises summons the authored 8134 rows on that half (O78/X75) with unchanged native combat values. Staff and correct responders are never eligible targets. ENGINE-CHOSEN lifetime: Remove Wall or session end despawns them. Dropouts may use the Escape Stone as conv61756 instructs.',
   'Leaving the arena (Escape Stone, disconnect, any travel) ends that character\'s participation as a dropout; re-entry is allowed only as a dropout.',
@@ -57,8 +57,6 @@ export const OX_QUIZ_ENGINE_CHOICES = Object.freeze([
   'Survivors MAX_COUNT is the number of distinct characters admitted in the session (GM characters are staff, not participants).',
   'Hani admits a character only on the single Theme Park DK channel of dkmaplist 654; the arena runs on that same channel. A player in the arena without admission (no session, another channel, not registered) is moved out by the tick.',
   'Export All moves every non-GM player in the arena through warp 11786 -> 11787; the GM stays to close the event.',
-  'Automatic scheduling follows native Hani Saturday17:00 with the shared fixed UTC+1 clock. ENGINE-CHOSEN missing pacing:5min admission,30sec answer,native5sec wall,10sec solution,15 rounds,60sec return. An active manual event is never replaced.',
-  'ENGINE-CHOSEN reward binding: latest native OX Quiz Gift Box1192809 x1 after all15 correct rounds, still present, saved once with a durable session receipt. Failed storage or full bags hold settlement for retry. Native5202 clear effect plays after durability.',
   'Native Operation Assistant choices9601–9609 bind to status7484–7492 for1800seconds, recovered from the client executable. Only this OX buff family is replaced; unrelated potion buffs survive. The tenth untranslated choice remains refused.',
   'A player pushed onto the raised Wall of Fire footprint is moved to the nearest walkable cell.',
 ]);

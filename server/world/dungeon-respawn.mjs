@@ -5,6 +5,7 @@ import {mergeRewardProgress} from './reward-progress.mjs';
 import {cancelFishing} from './fishing.mjs';
 import {sceneKey} from './scene.mjs';
 import {nativeStageRespawn} from '../../src/game/native-stage-index.js';
+import {applyRespawnVitals} from '../../src/game/progression.js';
 const fail=(text,status=409)=>{throw Object.assign(Error(text),{status});};
 
 /** Native maprespawn rows only. No table row means retain the existing return path.
@@ -32,7 +33,7 @@ export async function reviveNativeDungeon(world,p,authorize){
   const before={profile:structuredClone(p.profile),revision:p.revision},transition=p.sceneTransition;
   const candidate={...p,profile:structuredClone(p.profile),stats:{...p.stats},map,instanceId:same?previousInstance:null,x:at.x,z:at.z,path:[],attackTarget:null,mount:null,pet:null,dead:false,hp:p.maxHp,mp:p.stats.maxMp||0,maxShield:Math.max(0,Number(p.stats.maxShield)||0),shield:Math.max(0,Number(p.stats.maxShield)||0),fishing:p.fishing?structuredClone(p.fishing):p.fishing};
   if(!same)delete candidate.profile.instance;
-  cancelFishing(world,candidate);world.changed(candidate);p.sceneTransition=true;
+  cancelFishing(world,candidate);applyRespawnVitals(candidate,world.data);world.changed(candidate);p.sceneTransition=true;
   try{
    check();await world.persist(candidate);
    // The account fence retains human custody through this durable write.
@@ -44,7 +45,7 @@ export async function reviveNativeDungeon(world,p,authorize){
    for(const key of ['map','instanceId','x','z','path','attackTarget','mount','pet','dead','fishing'])p[key]=candidate[key];
    p.revision=candidate.revision+intervening;p.dirty=!!candidate.dirty||intervening!==0;p.saveError=candidate.saveError||null;
    refreshConcurrentBuffStats(world,p,before.profile);
-   p.hp=p.maxHp;p.mp=p.stats.maxMp||0;p.maxShield=Math.max(0,Number(p.stats.maxShield)||0);p.shield=p.maxShield;delete p.respawnReadyAt;
+   p.hp=candidate.hp;p.mp=candidate.mp;p.maxShield=Math.max(0,Number(p.stats.maxShield)||0);p.shield=p.maxShield;delete p.respawnReadyAt;
    world.snapshotPublicRows?.delete(p);
    if(!same){world.emit(previousMap,{type:'leave',actorId:p.id,instanceId:previousInstance});instance.members.delete(p.id);world.emit(map,{type:'join',actorId:p.id,instanceId:null});disposeEmptyInstances(world);}
    for(const[m,event]of merged.notices)world.emit(m,event);

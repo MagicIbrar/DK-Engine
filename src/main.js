@@ -10,6 +10,7 @@ import { returnToFrontEnd, RETURN_KEY } from './ui/frontend/return.js';
 import { installBrowserFullscreen, fitDesktopWindow, installNativeFullscreenKey } from './ui/browser-fullscreen.js';
 import { installUICursor } from './ui/cursor.js';
 import { installMobileControls } from './ui/mobile-controls.js';
+import { reportCrash, installCrashHandlers } from './ui/crash-log.js';
 
 const ui = document.getElementById('ui');
 const canvas = document.getElementById('game');
@@ -23,15 +24,10 @@ function fatal(err) {
   // The in-world loading screen already owns recovery for a failed map entry.
   // A second generic fatal panel would sit underneath it and offer no context.
   if (ui.querySelector('.fe-loading [role="alert"]')) return;
-  const box = document.createElement('div');
-  box.className = 'panel deathbox';
-  box.style.maxWidth = '640px';
-  box.innerHTML = `<h3>Something went wrong</h3><pre style="white-space:pre-wrap;text-align:left;font-size:12px;color:#f2b3a8"></pre>
-    <button onclick="location.reload()">Reload</button>`;
-  box.querySelector('pre').textContent = String(err && (err.stack || err.message) || err);
-  ui.appendChild(box);
+  // Open + show a shareable crash log (download, in-page viewer, notepad on local host).
+  void reportCrash(err, { where: 'fatal' });
 }
-window.addEventListener('unhandledrejection', e => console.error('unhandled', e.reason));
+installCrashHandlers({ onFatal: () => {} });
 
 globalThis.dekaronReturnTo = async (screen = 'select') => {
   try { await returnToFrontEnd(screen, { game: window.dekaron, accounts: new LocalAccounts(), flush: flushCharacterSaves }); }

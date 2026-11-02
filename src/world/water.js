@@ -2,56 +2,103 @@
 // regions for culling, one material per water definition (property/effect/water/*.txt, environment.js parseWater).
 //
 // The look follows the client's own shader, data/binary/water.fx (techniques by definition `type`):
-//   type 0 / -1  "Water/WaterWave"  fixed function: texture x waterColor (ARGB), alpha = texture alpha x alpha curve
-//   type 2       "WaterEnvWave"     ps.1.1 texm3x3vspec: environment reflection (bump-perturbed normal) x waterColor
-//   type 1       "WaterRefWave"     psWaterRef: lerp(refraction x exp(-depth x attenuation) x phase, reflection,
-//                                  fresnel(0.0204, 3.8)); opaque, waterColor unused
-//   type 3       "WaterReflect"     psReflect: reflection, alpha = fresnel(0.4, 3.5) x waterColor.a
-//   type 4       "FloorReflect"     a 0.2-alpha planar reflection of the scene on shiny floors: not drawn (see below)
-// Waves are the vertex displacement of water.fx MakeWave: y += A sin(2pi/L (D.xz - s t)), normal from the derivative.
+//   type 0 / -1  "Water/WaterWave"  fixed function: diffuse texture (uv1) x g_waterColor
+//   type 2       "WaterEnvWave"     ps.1.1 texm3x3vspec: environment reflection of the bump normal x g_waterColor
+//   type 1       "WaterRefWave"     psWaterRef: lerp(scatter x (0.1 + refraction) x phase, reflection, fresnel(H, 0.0204,
+//                                  3.8)), alpha 1; reflection / refraction are planar render targets (below)
+//   type 3       "WaterReflect"     psReflect: planar reflection, alpha = fresnel(H, 0.4, 3.5) x g_waterColor.a, no wave
+//   type 4       "FloorReflect"     shiny floors: drawn by systems/hud-options/waterfx.js (Tile Reflection option), not here.
+//                                  The definition type is kept per entry (typeAt): Global skips the camera-underwater fog
+//                                  when the eye cell's water entry is type 4 (FUN_0151b680 via FUN_0098bc60; LANE-66).
+// Waves are water.fx MakeWave: y += A sin(2pi/L (D.xz - s t)), D = (-sin a, -cos a) (FUN_0097d0f0).
 //
-// Deviations (documented): the game's planar reflection / refraction render targets are not reproduced. Reflection
-// samples the map's EnvironmentMap panorama (texture/water/skycube*.dds -> skyStripToEquirect, ENGINE_NOTES .mol
-// note 8); type 1 refraction is done exactly with blending instead of a render target: a multiply pass
-// (dst *= (1-F) T phase) plus an additive pass (+ F refl + (1-F) 0.1 T phase), where T = exp(-pathLength x
-// attenuation) uses the per-vertex water depth (level - terrain) - so shallow shores stay clear and deep water darkens,
-// as in psWaterRef. Type 4 floors are skipped (a reflection of the sky on indoor floors would be wrong).
+// Global values (32-bit addresses; 64-bit cross-checks in docs/global-parity-420/lanes/LANE-66-REPORT.md rev c):
+//   uv = (col, row) x 0.125 for every water vertex                 FUN_0098ca80, 0.125 @DAT_01b7e118 (64-bit 0x7ff671e84e60)
+//   g_f2UV / g_f2UV2 = frac(D x speed x t x 0.1), t in seconds      FUN_01545ff0 / FUN_015473d0, 0.1 @DAT_01b7e114
+//   g_waterColor = (1, 1, 1, a): a = 0.4 for type >= 1 (planar path) @0x01b7e6b0; otherwise the alpha curve at
+//                  trunc((1 - frac(t)) x 999) (999 @DAT_01b7e3bc), 1.0 without a curve. The definition `color` is parsed
+//                  (FUN_0097cb80) but never reaches the shader.
+//   diffuse frame = (time ms / definition time) % frames            FUN_01545d00
+//   type 2 bump = the renderer's texturepack/effect/water.tpack (16 frames, 90 ms each) CWaterRenderer FUN_015458a0
+//   definition defaults: type 1, attenuation (0.032, 0.02, 0.008), waves speed 0 / amplitude 0 / wavelength 2 / dir 0
+//                  FUN_0097c8e0 (@DAT_01b7e0f8, @DAT_01b7e0f0, imm 0x3c03126f); an unreadable definition never loads, so
+//                  the entry is not drawn (FUN_0097cb80 failure path)
+//   planar targets: 512 x 512 (256 if the device refuses, 0x0159ee90 / 0x0159f2c0), reflection slot 6 + refraction slot
+//                  7 (FUN_01545e40) for types 1 and 3; plane height = maplist Reflect_Height (RenderTexture::Provider
+//                  +0x18 setter 0x01591840 from the camera setup FUN_01540660).
+// Labelled judgments (LANE-66 rev c): Reflect_Height -1000 (= none) uses the entry's water level as the plane; the
+// type 2 tangent frame is water.fx's no-wave frame for every vertex (the wave frame's T = (0, df/dz, 0) is degenerate);
+// type 0 draws stage 0 only (stage 1 is never configured in the water path and D3D's default stage-1 op is DISABLE).
 //
 // FILE frame under worldRoot: (x = col, y = level, z = row), D3D winding (see terrain.js). Colours are raw 0..1.
 import * as THREE from 'three';
 import { parseWater, skyStripToEquirect } from '../formats/environment.js';
 import { sampleHeight } from '../formats/map.js';
+import { parseTpack, resolveTexture } from '../formats/tpack.js';
 import { fetchText, tryFetchBuffer } from '../engine/assets.js';
 import { decodeRGBA, loadTexture } from './texload.js';
 
 const REGION = 64;
-const TEX_CELLS = 8;            // one water texture repeat per 8 cells (the game's water UV scale is not in the data)
-const DEFAULT_ATTENUATION = [0.06, 0.04, 0.03]; // water03 declares none; mild clear water
+/** Global water constants (see header). */
+export const WATER_GLOBAL = Object.freeze({
+  UV_SCALE: 0.125,                 // FUN_0098ca80 @DAT_01b7e118
+  SCROLL_RATE: 0.1,                // FUN_015473d0 @DAT_01b7e114
+  ALPHA_STEPS: 999,                // FUN_01545ff0 @DAT_01b7e3bc
+  PLANAR_ALPHA: 0.4,               // @0x01b7e6b0 (1, 1, 1, 0.4)
+  DEFAULT_TYPE: 1,                 // FUN_0097c8e0
+  DEFAULT_ATTENUATION: Object.freeze([0.032, 0.02, 0.008]),   // FUN_0097c8e0
+  DEFAULT_WAVE: Object.freeze({ speed: 0, amplitude: 0, wavelength: 2, direction: 0 }),   // FUN_0097c8e0
+  BUMP_PACK: 'texturepack/effect/water.tpack',   // CWaterRenderer FUN_015458a0 (FUN_01547df0)
+  BUMP_FRAME_MS: 90,               // CWaterRenderer +0x18 = 0x5a
+  RT_SIZE: 512,                    // 0x0159ee90 (256 fallback 0x0159f2c0)
+  NO_REFLECT_HEIGHT: -1000,        // maplist Reflect_Height "none"
+});
+const DEFAULT_ATTENUATION = WATER_GLOBAL.DEFAULT_ATTENUATION;
 
 const WATER_VERTEX = /* glsl */`
-attribute float depth;          // water level - terrain height at this vertex (FILE frame)
+attribute float depth;          // water level - terrain height at this vertex (FILE frame; vertex.position.w in water.fx)
 uniform float time;
 uniform vec4 wave1;             // speed, amplitude, 2pi/wavelength, direction (rad)
 uniform vec4 wave2;
-varying vec2 vCell;
-varying vec3 vWorld;
-varying vec3 vNormalW;
-varying float vDepth;
+uniform vec4 scroll;            // g_f2UV (xy), g_f2UV2 (zw)
+uniform mat4 reflectMatrix;     // g_reflectVPTex
+uniform mat4 refractMatrix;     // g_refractVPTex
+uniform vec3 attenuation;
+varying vec2 vUv1;
+varying vec2 vUv2;
+varying vec3 vEye;              // eye - undisplaced vertex (water.fx eyeVec)
+varying vec4 vRefl;
+varying vec4 vRefr;
+varying vec3 vScatter;
 #include <fog_pars_vertex>
+float waveY(vec4 w, vec2 xz) {
+  vec2 d = vec2(-sin(w.w), -cos(w.w));   // FUN_0097d0f0
+  return w.y * sin(w.z * (dot(d, xz) - w.x * time));
+}
 void main() {
   vec3 p = position;
-  vec2 d1 = vec2(cos(wave1.w), sin(wave1.w));
-  vec2 d2 = vec2(cos(wave2.w), sin(wave2.w));
-  float t1 = wave1.z * (dot(d1, p.xz) - wave1.x * time);
-  float t2 = wave2.z * (dot(d2, p.xz) - wave2.x * time);
-  p.y += wave1.y * sin(t1) + wave2.y * sin(t2);
-  vec2 g = d1 * (wave1.y * wave1.z * cos(t1)) + d2 * (wave2.y * wave2.z * cos(t2));
-  vec3 nFile = normalize(vec3(-g.x, 1.0, -g.y));
-  vNormalW = normalize(vec3(nFile.x, nFile.y, -nFile.z));   // FILE -> three (the worldRoot mirror)
-  vCell = position.xz;
-  vDepth = max(depth, 0.0);
+#if WATER_WAVE == 1
+  p.y += waveY(wave1, position.xz) + waveY(wave2, position.xz);
+#endif
+  vec2 uv = position.xz * ${WATER_GLOBAL.UV_SCALE.toFixed(3)};
+  vUv1 = uv + scroll.xy;
+  vUv2 = uv + scroll.zw;
   vec4 wp = modelMatrix * vec4(p, 1.0);
-  vWorld = wp.xyz;
+  vec4 wp0 = modelMatrix * vec4(position, 1.0);
+  vEye = cameraPosition - wp0.xyz;
+  vRefl = reflectMatrix * wp;
+  vRefr = refractMatrix * wp;
+  vScatter = vec3(1.0);
+#if WATER_MODE == 1
+  // vsWaterRef: underwater path length of the view ray to the terrain under this vertex
+  vec3 geo = (modelMatrix * vec4(position.x, position.y - depth, position.z, 1.0)).xyz;
+  float dist = length(cameraPosition - geo);
+  float wh = cameraPosition.y - wp0.y;
+  float den = cameraPosition.y - geo.y;
+  if (abs(den) < 1e-5) den = den < 0.0 ? -1e-5 : 1e-5;
+  float dd = dist - dist * wh / den;
+  vScatter = exp(max(0.0, dd) * -attenuation);
+#endif
   vec4 mvPosition = viewMatrix * wp;
   gl_Position = projectionMatrix * mvPosition;
   #include <fog_vertex>
@@ -60,85 +107,62 @@ void main() {
 const WATER_FRAGMENT = /* glsl */`
 uniform sampler2D map;
 uniform float hasMap;
-uniform sampler2D bumpMap;
+uniform sampler2D bumpMap;       // type 2: renderer bump frame; types 1: definition bumptex (g_disortSampler)
 uniform float hasBump;
 uniform sampler2D envMap;
 uniform float hasEnv;
-uniform vec4 waterColor;         // ARGB of the definition as (r,g,b,a)
-uniform float opacity;           // alpha curve value
-uniform float time;
-uniform vec3 attenuation;
-uniform vec3 fallbackSky;
-uniform vec4 scroll;             // uv1 offset (xy), uv2 offset (zw)
-varying vec2 vCell;
-varying vec3 vWorld;
-varying vec3 vNormalW;
-varying float vDepth;
+uniform sampler2D reflectMap;
+uniform sampler2D refractMap;
+uniform vec4 waterColor;         // g_waterColor
+varying vec2 vUv1;
+varying vec2 vUv2;
+varying vec3 vEye;
+varying vec4 vRefl;
+varying vec4 vRefr;
+varying vec3 vScatter;
 #include <fog_pars_fragment>
 
-vec3 envColor(vec3 r) {
-  if (hasEnv < 0.5) return fallbackSky;
+vec4 envColor(vec3 r) {
+  if (hasEnv < 0.5) return vec4(0.0, 0.0, 0.0, 1.0);   // unbound texture stage
   r.y = abs(r.y);
   vec2 uv = vec2(atan(r.z, r.x) / 6.2831853 + 0.5, asin(clamp(r.y, -1.0, 1.0)) / 3.14159265 + 0.5);
-  return texture2D(envMap, uv).rgb;
-}
-vec3 bumpedNormal(float strength) {
-  vec3 n = vNormalW;
-  if (hasBump > 0.5) {
-    vec2 b = texture2D(bumpMap, vCell / ${TEX_CELLS.toFixed(1)} + scroll.xy).xy - 0.6;
-    b += texture2D(bumpMap, vCell / ${(TEX_CELLS * 0.77).toFixed(2)} + scroll.zw).xy - 0.6;
-    n = normalize(n + vec3(b.x, 0.0, -b.y) * strength);   // FILE (x, z) -> three (x, -z)
-  }
-  return n;
+  return texture2D(envMap, uv);
 }
 float fresnelTerm(float ndv, float bias, float power) { return bias + (1.0 - bias) * pow(1.0 - max(ndv, 0.0), power); }
 
 void main() {
-  vec3 v = normalize(cameraPosition - vWorld);
 #if WATER_MODE == 0
-  // basic: texture x waterColor, alpha = texture alpha x curve (two scrolled layers of the same texture)
-  vec4 t = vec4(1.0);
-  if (hasMap > 0.5) {
-    t = 0.5 * (texture2D(map, vCell / ${TEX_CELLS.toFixed(1)} + scroll.xy) + texture2D(map, vCell / ${(TEX_CELLS * 1.3).toFixed(1)} + scroll.zw));
-  }
-  gl_FragColor = vec4(t.rgb * waterColor.rgb, t.a * opacity);
-  #include <fog_fragment>
+  vec4 t = hasMap > 0.5 ? texture2D(map, vUv1) : vec4(1.0);
+  gl_FragColor = t * waterColor;
 #elif WATER_MODE == 2
-  // environment reflection x waterColor
-  vec3 n = bumpedNormal(0.35);
-  vec3 refl = envColor(reflect(-v, n));
-  gl_FragColor = vec4(refl * waterColor.rgb, opacity);
-  #include <fog_fragment>
+  // envWater_ps11: n = bump x 2 - 1 (tangent space) -> world through the no-wave frame (x, z, -y); reflect the eye
+  vec3 nt = hasBump > 0.5 ? texture2D(bumpMap, vUv1).xyz * 2.0 - 1.0 : vec3(0.0, 0.0, 1.0);
+  vec3 nFile = vec3(nt.x, nt.z, -nt.y);
+  vec3 n = normalize(vec3(nFile.x, nFile.y, -nFile.z));   // FILE -> three (the worldRoot mirror)
+  gl_FragColor = envColor(reflect(-normalize(vEye), n)) * waterColor;
 #elif WATER_MODE == 3
-  // reflection only, fresnel alpha
-  vec3 n = bumpedNormal(0.2);
-  float F = fresnelTerm(dot(n, v), 0.4, 3.5);
-  gl_FragColor = vec4(envColor(reflect(-v, n)), F * waterColor.a);
-  #include <fog_fragment>
+  float H = normalize(vEye).y;
+  vec4 refl = texture2DProj(reflectMap, vRefl);
+  gl_FragColor = vec4(refl.rgb, fresnelTerm(H, 0.4, 3.5) * waterColor.a);
 #else
-  // psWaterRef, split into a multiply pass (WATER_PASS 0) and an additive pass (WATER_PASS 1)
-  vec3 n = bumpedNormal(0.25);
-  float H = dot(v, n);
-  float phase = pow((1.0 + H) * 0.5, 0.6);
-  float F = fresnelTerm(H, 0.0204, 3.8);
-  float path = vDepth / max(v.y, 0.15);            // underwater path length of the view ray
-  vec3 T = exp(-path * attenuation);
-  float fogF = 0.0;
-  #ifdef USE_FOG
-    fogF = clamp((vFogDepth - fogNear) / max(fogFar - fogNear, 1e-4), 0.0, 1.0);   // linear range fog (fog-model.js)
-  #endif
-  #if WATER_PASS == 0
-    gl_FragColor = vec4(mix((1.0 - F) * T * phase, vec3(1.0), fogF), 1.0);
-  #else
-    vec3 add = F * envColor(reflect(-v, n)) + (1.0 - F) * 0.1 * T * phase;
-    gl_FragColor = vec4(add * (1.0 - fogF), 1.0);
-  #endif
+  vec3 bump = vec3(0.0);
+  if (hasBump > 0.5) bump = (texture2D(bumpMap, vUv1).xyz - 0.6) + (texture2D(bumpMap, vUv2).xyz - 0.6);
+  float distortion = length(vEye) / 20.0;
+  vec4 rl = vRefl; rl.xy += bump.xy * (distortion + 0.4);
+  vec4 rr = vRefr; rr.xy += bump.xy * (distortion / 2.0);
+  vec3 refl = texture2DProj(reflectMap, rl).rgb;
+  vec3 refr = texture2DProj(refractMap, rr).rgb;
+  float H = normalize(vEye).y;            // dot(normalize(eyeVec), vertex normal (0, 1, 0))
+  float phase = pow((1.0 + H) / 2.0, 0.6);
+  vec3 refract = vScatter * ((0.1 + refr) * phase);
+  gl_FragColor = vec4(mix(refract, refl, fresnelTerm(H, 0.0204, 3.8)), 1.0);
 #endif
+  #include <fog_fragment>
 }`;
 
-/** Evaluate a parseWater alpha curve [(t 0..999, v)] at cycle position t. */
-function alphaAt(curve, t) {
-  if (!curve || !curve.length) return 0.6;
+/** Evaluate a parseWater alpha curve [(t 0..999, v)] at cycle position t; 1.0 without a curve (FUN_01545ff0). */
+export function alphaAt(curve, t) {
+  if (!curve || !curve.length) return 1.0;
   if (curve.length === 1) return curve[0][1];
   for (let i = 0; i < curve.length - 1; i++) {
     const [t0, v0] = curve[i], [t1, v1] = curve[i + 1];
@@ -146,14 +170,38 @@ function alphaAt(curve, t) {
   }
   return curve[curve.length - 1][1];
 }
+/** Alpha-curve index of FUN_01545ff0 at time t seconds: trunc((1 - frac(t)) x 999). */
+export function alphaIndex(tSec) {
+  return Math.trunc((1 - (tSec - Math.floor(tSec))) * WATER_GLOBAL.ALPHA_STEPS);
+}
+const frac = x => x - Math.floor(x);
+/** g_f2UV of one wave at time t seconds: frac(D x speed x t x 0.1), D = (-sin a, -cos a) (FUN_015473d0). */
+export function waveScroll(speed, dirRad, tSec) {
+  const k = speed * tSec * WATER_GLOBAL.SCROLL_RATE;
+  return [frac(-Math.sin(dirRad) * k), frac(-Math.cos(dirRad) * k)];
+}
+/** Diffuse frame of FUN_01545d00: (time ms / definition time) % frames; frame 0 for a missing or zero time. */
+export function frameAt(tMs, frameMs, n) {
+  if (!(n > 1) || !(frameMs > 0)) return 0;
+  return Math.floor(tMs / frameMs) % n;
+}
+/** Wave slot (1 or 2) of a definition, or the constructor default (FUN_0097c8e0). */
+export function waveOf(def, slot) {
+  const ws = def?.waves || [];
+  const w = ws.find(x => x.id === slot) || (ws.every(x => !Number.isFinite(x.id)) ? ws[slot - 1] : null);
+  const D = WATER_GLOBAL.DEFAULT_WAVE;
+  const f = (v, d) => (Number.isFinite(v) ? v : d);
+  return w ? { speed: f(w.speed, D.speed), amplitude: f(w.amplitude, D.amplitude), wavelength: f(w.wavelength, D.wavelength), direction: f(w.direction, D.direction) } : { ...D };
+}
 
 const envCache = new Map();
 /** Sky panorama for reflections (DataTexture, equirectangular), cached per key. Also the characters' specular
  *  reflection (src/engine/matfx.js via src/systems/graphics). */
 export function envTexture(key) {
   if (!key) return Promise.resolve(null);
-  if (!envCache.has(key)) {
-    envCache.set(key, tryFetchBuffer(key).then(buf => {
+  let p = envCache.get(key);
+  if (!p) {
+    p = tryFetchBuffer(key).then(buf => {
       const img = buf && decodeRGBA(new Uint8Array(buf));
       if (!img) return null;
       const eq = skyStripToEquirect(img.data, img.width, img.height, { width: 512 });
@@ -162,36 +210,166 @@ export function envTexture(key) {
         magFilter: THREE.LinearFilter, minFilter: THREE.LinearMipmapLinearFilter, generateMipmaps: true });
       tex.needsUpdate = true;
       return tex;
-    }).catch(() => null));
+    }).catch(err => {
+      if (err?.transient) {
+        if (envCache.get(key) === p) envCache.delete(key);
+        throw err;
+      }
+      return null;
+    });
+    envCache.set(key, p);
   }
-  return envCache.get(key);
+  return p;
 }
 
-/** Shader mode for a definition type (see header). */
+let bumpPackPromise = null;
+/** The renderer's animated bump set (texturepack/effect/water.tpack: texture/water/normalbump/water00..30.dds). */
+function loadBumpPack(game) {
+  if (!bumpPackPromise) {
+    bumpPackPromise = fetchText(WATER_GLOBAL.BUMP_PACK).then(async src => {
+      const tp = parseTpack(src);
+      const frames = await Promise.all(tp.slots.map(s => loadTexture(game, resolveTexture(tp, s)).catch(() => null)));
+      return frames.filter(Boolean);
+    }).catch(() => { bumpPackPromise = null; return []; });
+  }
+  return bumpPackPromise;
+}
+
+/** Shader mode for a definition type (see header); a missing type is the constructor default 1. */
 export function waterMode(type) {
+  if (type === null || type === undefined) return waterMode(WATER_GLOBAL.DEFAULT_TYPE);
   if (type === 1) return 1;
   if (type === 2) return 2;
   if (type === 3) return 3;
-  if (type === 4) return -1; // floor reflection: skipped
+  if (type === 4) return -1; // floor reflection: waterfx.js
   return 0;                  // 0, -1 and anything unknown: basic
+}
+
+// ------------------------------------------------------------------ planar reflection / refraction
+const _bias = new THREE.Matrix4().set(0.5, 0, 0, 0.5, 0, 0.5, 0, 0.5, 0, 0, 0.5, 0.5, 0, 0, 0, 1);
+const _v = new THREE.Vector3(), _d = new THREE.Vector3(), _u = new THREE.Vector3(), _q = new THREE.Vector4();
+const _plane = new THREE.Plane(), _cp = new THREE.Vector4();
+
+/** Mirror a camera about the horizontal plane y = h into `out` (three world; FILE y = three y). */
+export function mirrorCamera(camera, h, out) {
+  camera.updateMatrixWorld();
+  out.position.setFromMatrixPosition(camera.matrixWorld);
+  out.position.y = 2 * h - out.position.y;
+  _d.set(0, 0, -1).transformDirection(camera.matrixWorld); _d.y = -_d.y;
+  _u.set(0, 1, 0).transformDirection(camera.matrixWorld); _u.y = -_u.y;
+  out.up.copy(_u);
+  out.lookAt(_v.copy(out.position).add(_d));
+  out.projectionMatrix.copy(camera.projectionMatrix);
+  out.updateMatrixWorld();
+  out.matrixWorldInverse.copy(out.matrixWorld).invert();
+  return out;
+}
+/** Replace the near plane of a perspective projection by a world plane (oblique clipping). */
+export function obliqueClip(cam, normal, constant) {
+  _plane.set(normal, constant).applyMatrix4(cam.matrixWorldInverse);
+  _cp.set(_plane.normal.x, _plane.normal.y, _plane.normal.z, _plane.constant);
+  if (!(_cp.w < 0)) return false;   // eye on the kept side: the plane cannot be the near plane, keep the projection
+  const e = cam.projectionMatrix.elements;
+  _q.set((Math.sign(_cp.x) + e[8]) / e[0], (Math.sign(_cp.y) + e[9]) / e[5], -1, (1 + e[10]) / e[14]);
+  _cp.multiplyScalar(2 / _cp.dot(_q));
+  e[2] = _cp.x; e[6] = _cp.y; e[10] = _cp.z + 1; e[14] = _cp.w;
+  cam.projectionMatrixInverse.copy(cam.projectionMatrix).invert();
+  return true;
+}
+
+// PERF-PLANESIDE (2026-10-30): a capture clips at the water plane exactly (obliqueClip: near plane = the plane), so a terrain chunk
+// or decal whose world box lies wholly on the clipped side cannot put a pixel in that target. Those are hidden for that one
+// capture (restored in _prepass's finally). Margin PLANESIDE_EPS keeps anything touching the plane. Kill switch:
+// globalThis.__dekaronNoPlaneSide = true. Ardeca: ~58 of ~60 plain-mesh draws of the refraction capture.
+const PLANESIDE_EPS = 0.05;
+const _psBox = new THREE.Box3();
+function hidePlaneSide(group, h, keepAbove, out) {
+  if (!group || globalThis.__dekaronNoPlaneSide === true) return;
+  const kids = group.children;
+  for (let i = 0; i < kids.length; i++) {
+    const o = kids[i];
+    if (!o.visible || !o.isMesh || o.isSkinnedMesh || o.isInstancedMesh || !o.geometry) continue;
+    const geo = o.geometry;
+    if (!geo.boundingBox) geo.computeBoundingBox();
+    _psBox.copy(geo.boundingBox).applyMatrix4(o.matrixWorld);
+    if (keepAbove ? _psBox.max.y < h - PLANESIDE_EPS : _psBox.min.y > h + PLANESIDE_EPS) { o.visible = false; out.push(o); }
+  }
+}
+
+// PERF-CAPTURELITE (2026-10-30): the reflection / refraction captures draw a reduced set and are refreshed every 2nd frame.
+//  - reduced set: worldRoot children other than the world group and player characters (NPCs, monsters, pets, effects, weapon
+//    traces, water fx) are hidden for the capture (restored in _prepass's finally). Terrain, sky, map objects and players stay.
+//  - refresh: a capture is reused for one frame (its reflect/refract matrices stay paired with the texture, so it stays registered
+//    to the world) unless the camera moved more than CAPTURE_MOVE / turned more than CAPTURE_TURN since the capture, or the
+//    viewport camera changed. Kill switches: globalThis.__dekaronNoCaptureLite = true (full set), __dekaronCaptureEvery = 1.
+const CAPTURE_MOVE = 0.35, CAPTURE_TURN = 0.035;   // world units / radians (about 2 deg)
+const _capQ = new THREE.Quaternion(), _capP = new THREE.Vector3();
+function hideCaptureActors(root, keepGroup, out) {
+  if (!root || globalThis.__dekaronNoCaptureLite === true) return;
+  const kids = root.children;
+  for (let i = 0; i < kids.length; i++) {
+    const o = kids[i];
+    if (!o.visible || o === keepGroup || (typeof o.name === 'string' && o.name.startsWith('player:'))) continue;
+    o.visible = false; out.push(o);
+  }
+}
+
+class WaterPlane {
+  constructor(height, refract) {
+    this.height = height;
+    this.refract = refract;
+    this.reflectRT = null; this.refractRT = null;
+    this.reflectMatrix = new THREE.Matrix4();
+    this.refractMatrix = new THREE.Matrix4();
+    this.cam = new THREE.PerspectiveCamera();
+    this.cam.userData.dkCaptureCull = true;   // PERF-CAPTURECULL: objects.js culls the static groups / rig sets to this camera's frustum
+    this.mats = [];
+    this.token = null;
+    this.capCam = null; this.capTick = -1; this.capPos = new THREE.Vector3(); this.capQuat = new THREE.Quaternion(); this.capFov = 0; this.capAspect = 0;
+  }
+  ensure() {
+    if (this.reflectRT) return;
+    const S = WATER_GLOBAL.RT_SIZE, opt = { type: THREE.UnsignedByteType, depthBuffer: true };
+    this.reflectRT = new THREE.WebGLRenderTarget(S, S, opt);
+    this.reflectRT.texture.name = 'water reflection';
+    if (this.refract) { this.refractRT = new THREE.WebGLRenderTarget(S, S, opt); this.refractRT.texture.name = 'water refraction'; }
+    for (const m of this.mats) {
+      m.uniforms.reflectMap.value = this.reflectRT.texture;
+      if (this.refractRT) m.uniforms.refractMap.value = this.refractRT.texture;
+    }
+  }
+  dispose() { this.reflectRT?.dispose(); this.refractRT?.dispose(); this.reflectRT = this.refractRT = null; }
 }
 
 export class WaterLayer {
   /**
-   * @param {{map:object, game?:object, root:THREE.Object3D, envMapKey?:string}} opts
+   * @param {{map:object, game?:object, root:THREE.Object3D, envMapKey?:string, reflectHeight?:number}} opts
+   *   reflectHeight = maplist Reflect_Height (environment.js mapEnvironmentInfo); -1000 / missing = none
    */
-  constructor({ map, game = null, root, envMapKey = '' }) {
+  constructor({ map, game = null, root, envMapKey = '', reflectHeight = null }) {
     this.map = map;
     this.game = game;
     this.envMapKey = envMapKey;
+    this.reflectHeight = Number.isFinite(reflectHeight) && reflectHeight > WATER_GLOBAL.NO_REFLECT_HEIGHT ? reflectHeight : null;
     this.group = new THREE.Group();
     this.group.name = 'water';
     root.add(this.group);
     this.meshes = [];     // {meshes:[Mesh], minX, maxX, minZ, maxZ}
-    this.materials = [];  // {mats:[ShaderMaterial], def, frames, cycleMs}
+    this.materials = [];  // {mats:[ShaderMaterial], def, frames, bumpFrames, shared, frameMs, mode}
     this.geometries = [];
+    this.planes = new Map();  // plane height -> WaterPlane
     this.time = 0;
-    this.stats = { entries: 0, cells: 0, meshes: 0, modes: [] };
+    this._tick = 0;
+    this._inPrepass = false;
+    this.stats = { entries: 0, cells: 0, meshes: 0, modes: [], planes: 0 };
+    this.entryTypes = [];  // definition type per map.water entry (null until parsed / unreadable)
+  }
+
+  _plane(height, refract) {
+    let p = this.planes.get(height);
+    if (!p) { p = new WaterPlane(height, refract); this.planes.set(height, p); this.stats.planes++; }
+    if (refract) p.refract = true;
+    return p;
   }
 
   async build() {
@@ -200,54 +378,52 @@ export class WaterLayer {
     const env = await envTexture(this.envMapKey);
     this._env = env;
     const W = map.width, H = map.height;
-    for (const entry of map.water) {
+    for (let ei = 0; ei < map.water.length; ei++) {
+      const entry = map.water[ei];
       let def;
-      try { def = parseWater(await fetchText(entry.defPath)); } catch { def = { textures: [], type: 2, waves: [], color: null, alpha: [[0, 0.6]] }; }
-      const mode = waterMode(def.type);
+      try { def = parseWater(await fetchText(entry.defPath)); } catch { this.entryTypes[ei] = null; continue; }   // never loads
+      const type = Number.isFinite(def.type) ? def.type : WATER_GLOBAL.DEFAULT_TYPE;
+      this.entryTypes[ei] = type;
+      const mode = waterMode(type);
       if (mode < 0) continue;
       const frameKeys = (def.textures || []).map(t => t.path).filter(Boolean);
       const frames = mode === 0 ? (await Promise.all(frameKeys.map(k => loadTexture(this.game, [k, k.replace(/\.[^./]+$/, '.dds')])))).filter(Boolean) : [];
-      const bump = def.bumptex ? await loadTexture(this.game, [def.bumptex]) : null;
-      const c = def.color || { r: 1, g: 1, b: 1, a: 1 };
-      const w1 = def.waves[0] || { speed: 0.4, amplitude: 0.05, wavelength: 3, direction: 60 };
-      const w2 = def.waves[1] || w1;
-      const wave = (w) => new THREE.Vector4(w.speed, w.amplitude, (2 * Math.PI) / Math.max(0.05, w.wavelength), (w.direction * Math.PI) / 180);
+      const bumpFrames = mode === 2 ? await loadBumpPack(this.game) : [];
+      const disort = mode === 1 && def.bumptex ? await loadTexture(this.game, [def.bumptex]) : null;
+      const w1 = waveOf(def, 1), w2 = waveOf(def, 2);
+      const wave = (w) => new THREE.Vector4(w.speed, w.amplitude, (2 * Math.PI) / w.wavelength, (w.direction * Math.PI) / 180);
       const att = Array.isArray(def.attenuation) && def.attenuation.length >= 3 ? def.attenuation.slice(0, 3) : DEFAULT_ATTENUATION;
-      const shared = {
-        time: { value: 0 }, wave1: { value: wave(w1) }, wave2: { value: wave(w2) },
-        scroll: { value: new THREE.Vector4() },
-      };
-      const makeMat = (pass) => {
-        const uniforms = THREE.UniformsUtils.merge([THREE.UniformsLib.fog, {
-          map: { value: null }, hasMap: { value: frames.length ? 1 : 0 },
-          bumpMap: { value: null }, hasBump: { value: bump ? 1 : 0 },
-          envMap: { value: null }, hasEnv: { value: env ? 1 : 0 },
-          waterColor: { value: new THREE.Vector4(c.r, c.g, c.b, c.a) },
-          opacity: { value: alphaAt(def.alpha, 0) },
-          attenuation: { value: new THREE.Vector3(...att) },
-          fallbackSky: { value: new THREE.Color(0.45, 0.55, 0.7) },
-        }]);
-        Object.assign(uniforms, shared);   // shared objects: one update per definition drives every pass
-        uniforms.map.value = frames[0] || null;
-        uniforms.bumpMap.value = bump;
-        uniforms.envMap.value = env;
-        const mat = new THREE.ShaderMaterial({
-          vertexShader: WATER_VERTEX, fragmentShader: WATER_FRAGMENT, uniforms, fog: true,
-          defines: { WATER_MODE: mode, WATER_PASS: pass }, side: THREE.FrontSide, depthWrite: false, transparent: true,
-        });
-        if (mode === 1) {
-          mat.blending = THREE.CustomBlending;
-          mat.blendEquation = THREE.AddEquation;
-          if (pass === 0) { mat.blendSrc = THREE.ZeroFactor; mat.blendDst = THREE.SrcColorFactor; }   // dst *= src
-          else { mat.blendSrc = THREE.OneFactor; mat.blendDst = THREE.OneFactor; }                     // dst += src
-        }
-        mat.name = `water ${entry.name}${mode === 1 ? ` pass${pass}` : ''}`;
-        return mat;
-      };
-      const mats = mode === 1 ? [makeMat(0), makeMat(1)] : [makeMat(0)];
-      this.materials.push({ mats, def, frames, shared, frameMs: Math.max(30, Number(def.time) || 250) });
+      const alpha0 = mode === 0 ? alphaAt(def.alpha, alphaIndex(0)) : WATER_GLOBAL.PLANAR_ALPHA;
+      const shared = { time: { value: 0 }, wave1: { value: wave(w1) }, wave2: { value: wave(w2) }, scroll: { value: new THREE.Vector4() } };
+      let plane = null;
+      if (mode === 1 || mode === 3) {
+        const h = this.reflectHeight ?? (entry.cellHeights?.length ? entry.cellHeights[0] : 0);
+        plane = this._plane(h, mode === 1);
+      }
+      const uniforms = THREE.UniformsUtils.merge([THREE.UniformsLib.fog, {
+        map: { value: null }, hasMap: { value: frames.length ? 1 : 0 },
+        bumpMap: { value: null }, hasBump: { value: (mode === 2 ? bumpFrames.length : disort ? 1 : 0) ? 1 : 0 },
+        envMap: { value: null }, hasEnv: { value: env ? 1 : 0 },
+        reflectMap: { value: null }, refractMap: { value: null },
+        waterColor: { value: new THREE.Vector4(1, 1, 1, alpha0) },
+        attenuation: { value: new THREE.Vector3(...att) },
+      }]);
+      Object.assign(uniforms, shared);
+      uniforms.reflectMatrix = { value: plane ? plane.reflectMatrix : new THREE.Matrix4() };
+      uniforms.refractMatrix = { value: plane ? plane.refractMatrix : new THREE.Matrix4() };
+      uniforms.map.value = frames[0] || null;
+      uniforms.bumpMap.value = mode === 2 ? (bumpFrames[0] || null) : disort;
+      uniforms.envMap.value = env;
+      const mat = new THREE.ShaderMaterial({
+        vertexShader: WATER_VERTEX, fragmentShader: WATER_FRAGMENT, uniforms, fog: true,
+        defines: { WATER_MODE: mode, WATER_WAVE: mode === 3 ? 0 : 1 }, side: THREE.FrontSide, depthWrite: false, transparent: true,
+      });
+      mat.name = `water ${entry.name}`;
+      if (plane) { plane.mats.push(mat); if (plane.reflectRT) plane.ensure(); }
+      const mats = [mat];
+      this.materials.push({ mats, def, frames, bumpFrames, disort, shared, frameMs: Number(def.time) || 0, mode, plane });
       this.stats.entries++;
-      this.stats.modes.push(`${entry.name}:${def.type}`);
+      this.stats.modes.push(`${entry.name}:${type}`);
 
       // unique cells -> regions
       const seen = new Set(), regions = new Map();
@@ -291,17 +467,95 @@ export class WaterLayer {
         g.boundingBox.min.y -= amp; g.boundingBox.max.y += amp;
         g.boundingSphere = g.boundingBox.getBoundingSphere(new THREE.Sphere());
         this.geometries.push(g);
-        const ms = mats.map((mat, pass) => {
-          const mesh = new THREE.Mesh(g, mat);
-          mesh.name = mat.name;
-          mesh.renderOrder = 5 + pass;
+        const ms = mats.map((m) => {
+          const mesh = new THREE.Mesh(g, m);
+          mesh.name = m.name;
+          mesh.renderOrder = 5;
           mesh.matrixAutoUpdate = false;
+          if (plane) mesh.onBeforeRender = (renderer, scene, camera) => this._prepass(renderer, scene, camera, plane);
           this.group.add(mesh);
           this.stats.meshes++;
           return mesh;
         });
         this.meshes.push({ meshes: ms, minX, maxX, minZ, maxZ });
       }
+    }
+  }
+
+  /**
+   * Planar reflection (types 1, 3) and refraction (type 1) targets of one plane, once per frame and camera, before the
+   * first visible water mesh of that plane draws. The water itself is hidden during the capture (no recursion), the
+   * capture cameras are private (not game.camera), and every renderer state touched is restored in finally.
+   */
+  _prepass(renderer, scene, camera, plane) {
+    if (this._inPrepass || !camera?.isPerspectiveCamera || !renderer?.setRenderTarget) return;
+    const token = `${this._tick}:${camera.uuid}`;
+    if (plane.token === token) return;
+    plane.token = token;
+    // PERF-CAPTURELITE: reuse last frame's capture when the view barely changed (see CAPTURE_MOVE)
+    const every = Number.isFinite(globalThis.__dekaronCaptureEvery) ? globalThis.__dekaronCaptureEvery : 2;
+    camera.updateMatrixWorld();
+    _capP.setFromMatrixPosition(camera.matrixWorld); _capQ.setFromRotationMatrix(camera.matrixWorld);
+    if (every > 1 && plane.reflectRT && plane.capCam === camera.uuid && this._tick - plane.capTick < every && plane.capTick < this._tick &&
+        plane.capPos.distanceTo(_capP) <= CAPTURE_MOVE && plane.capQuat.angleTo(_capQ) <= CAPTURE_TURN &&
+        plane.capFov === camera.fov && plane.capAspect === camera.aspect) return;
+    plane.capCam = camera.uuid; plane.capTick = this._tick; plane.capPos.copy(_capP); plane.capQuat.copy(_capQ);
+    plane.capFov = camera.fov; plane.capAspect = camera.aspect;
+    plane.ensure();
+    const prevRT = renderer.getRenderTarget(), prevXr = renderer.xr?.enabled, prevShadow = renderer.shadowMap?.autoUpdate;
+    const prevVis = this.group.visible;
+    // PERF-CAPTURECULL: the scene's world matrices were updated by the render this capture runs inside (same frame, same poses); the
+    // captures skip the second and third whole-scene matrix walk. Kill switch: globalThis.__dekaronNoCaptureCull = true.
+    const prevAuto = scene.matrixWorldAutoUpdate;
+    const hidden = this._psHidden || (this._psHidden = []), ground = this.game?.world?.terrain?.group || null;
+    const actorsHidden = this._acHidden || (this._acHidden = []);
+    this._inPrepass = true;
+    try {
+      if (globalThis.__dekaronNoCaptureCull !== true) scene.matrixWorldAutoUpdate = false;
+      if (renderer.xr) renderer.xr.enabled = false;
+      if (renderer.shadowMap) renderer.shadowMap.autoUpdate = false;
+      this.group.visible = false;
+      hideCaptureActors(this.game?.worldRoot, this.game?.world?.root, actorsHidden);
+      const cam = plane.cam;
+      cam.layers.mask = camera.layers.mask;
+      cam.near = camera.near; cam.far = camera.far;
+      // reflection: camera mirrored about y = h, keep what is above the plane
+      mirrorCamera(camera, plane.height, cam);
+      obliqueClip(cam, _v.set(0, 1, 0), -plane.height);
+      plane.reflectMatrix.copy(_bias).multiply(cam.projectionMatrix).multiply(cam.matrixWorldInverse);
+      hidePlaneSide(ground, plane.height, true, hidden);
+      renderer.setRenderTarget(plane.reflectRT);
+      if (renderer.autoClear === false) renderer.clear();
+      renderer.render(scene, cam);
+      if (plane.refractRT) {
+        // refraction: the same camera, keep what is below the plane
+        camera.updateMatrixWorld();
+        cam.position.setFromMatrixPosition(camera.matrixWorld);
+        cam.quaternion.setFromRotationMatrix(camera.matrixWorld);
+        cam.up.set(0, 1, 0);
+        cam.projectionMatrix.copy(camera.projectionMatrix);
+        cam.updateMatrixWorld();
+        cam.matrixWorldInverse.copy(cam.matrixWorld).invert();
+        obliqueClip(cam, _v.set(0, -1, 0), plane.height);
+        plane.refractMatrix.copy(_bias).multiply(cam.projectionMatrix).multiply(cam.matrixWorldInverse);
+        for (const o of hidden) o.visible = true;
+        hidden.length = 0;
+        hidePlaneSide(ground, plane.height, false, hidden);
+        renderer.setRenderTarget(plane.refractRT);
+        if (renderer.autoClear === false) renderer.clear();
+        renderer.render(scene, cam);
+      }
+    } finally {
+      renderer.setRenderTarget(prevRT);
+      if (renderer.xr) renderer.xr.enabled = prevXr;
+      if (renderer.shadowMap) renderer.shadowMap.autoUpdate = prevShadow;
+      scene.matrixWorldAutoUpdate = prevAuto;
+      for (const o of hidden) o.visible = true;
+      hidden.length = 0;
+      for (const o of actorsHidden) o.visible = true;
+      actorsHidden.length = 0;
+      this.group.visible = prevVis;
+      this._inPrepass = false;
     }
   }
 
@@ -319,23 +573,40 @@ export class WaterLayer {
     return h === undefined ? null : h;
   }
 
+  /** Definition type of the first water entry covering a FILE cell (Global's eye-cell lookup), or null. */
+  typeAt(x, z) {
+    const m = this.map;
+    const col = Math.floor(x), row = Math.floor(z);
+    if (col < 0 || row < 0 || col >= m.width || row >= m.height) return null;
+    if (!m._waterEntryIdx) {
+      const idx = new Map();
+      m.water.forEach((w, ei) => { for (let j = 0; j < w.cells.length; j++) if (!idx.has(w.cells[j])) idx.set(w.cells[j], ei); });
+      Object.defineProperty(m, '_waterEntryIdx', { value: idx, enumerable: false });
+    }
+    const ei = m._waterEntryIdx.get(row * m.width + col);
+    if (ei === undefined) return null;
+    const t = this.entryTypes[ei];
+    return t === undefined ? null : t;
+  }
+
   update(dt, camX, camZ, viewDist) {
     this.time += dt;
-    const t = this.time;
+    this._tick++;
+    const t = this.time, tMs = t * 1000;
     for (const m of this.materials) {
       const s = m.shared;
       s.time.value = t;
-      // two slow scrolls along the wave directions (the engine's g_f2UV / g_f2UV2 offsets)
       const w1 = s.wave1.value, w2 = s.wave2.value;
-      s.scroll.value.set(
-        (Math.cos(w1.w) * w1.x * t * 0.05) % 1, (Math.sin(w1.w) * w1.x * t * 0.05) % 1,
-        (Math.cos(w2.w) * w2.x * t * 0.04) % 1, (Math.sin(w2.w) * w2.x * t * 0.04) % 1);
-      // alpha curve over a 0..999 cycle (cycle length = 16 frames of `time`; the unit is not documented)
-      const cycle = m.frameMs * 16;
-      const a = alphaAt(m.def.alpha, ((t * 1000) % cycle) / cycle * 999);
+      const a = waveScroll(w1.x, w1.w, t), b = waveScroll(w2.x, w2.w, t);
+      s.scroll.value.set(a[0], a[1], b[0], b[1]);
       for (const mat of m.mats) {
-        mat.uniforms.opacity.value = a;
-        if (m.frames.length > 1) mat.uniforms.map.value = m.frames[Math.floor((t * 1000) / m.frameMs) % m.frames.length];
+        const u = mat.uniforms;
+        if (m.mode === 0) {
+          u.waterColor.value.w = alphaAt(m.def.alpha, alphaIndex(t));
+          if (m.frames.length > 1) u.map.value = m.frames[frameAt(tMs, m.frameMs, m.frames.length)];
+        } else if (m.mode === 2 && m.bumpFrames.length > 1) {
+          u.bumpMap.value = m.bumpFrames[frameAt(tMs, WATER_GLOBAL.BUMP_FRAME_MS, m.bumpFrames.length)];
+        }
       }
     }
     const v2 = viewDist * viewDist;
@@ -353,8 +624,11 @@ export class WaterLayer {
       for (const mat of m.mats) mat.dispose();
       // cached textures: free the GPU copies only (re-uploaded on reuse)
       for (const t of m.frames) t.dispose();
-      m.mats[0]?.uniforms.bumpMap.value?.dispose();
+      for (const t of m.bumpFrames || []) t.dispose();
+      m.disort?.dispose();
     }
+    for (const p of this.planes.values()) p.dispose();
+    this.planes.clear();
     this._env?.dispose();
     this.group.removeFromParent();
     this.meshes = []; this.materials = []; this.geometries = [];

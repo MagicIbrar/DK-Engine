@@ -1,4 +1,4 @@
-// DK Command Center backend entry (installed launcher or Test Preview). Started by the desktop window (or by tests in headless mode).
+﻿// DK Command Center backend entry (installed launcher or Test Preview). Started by the desktop window (or by tests in headless mode).
 import fs from 'node:fs';
 import path from 'node:path';
 import {attachShell, send, shellEvents, hasShell, request} from './core/shell.mjs';
@@ -48,8 +48,16 @@ define('app.classic.set', {input: v.object({enabled: v.bool()}), run: async ({en
   else { fs.rmSync(writable(CLASSIC_FLAG), {force: true}); event('info', 'app', 'Client.exe will open DK Command Center.'); }
   return {available: true, enabled};
 }});
-define('app.close', {input: v.object({decision: v.enum(['stop-and-close', 'close', 'cancel'])}), timeoutMs: 170000, run: async ({decision}) => {
+define('app.close', {input: v.object({decision: v.enum(['stop-and-close', 'close', 'cancel', 'minimize-tray'])}), timeoutMs: 170000, run: async ({decision}) => {
   if (decision === 'cancel') { if (hasShell()) await request('close.cancel'); return {closing: false}; }
+  if (decision === 'minimize-tray') {
+    pendingClose = null;
+    if (hasShell()) {
+      await request('close.cancel').catch(() => {});
+      await request('window.minimizeToTray');
+    }
+    return {closing: false, tray: true};
+  }
   if (decision === 'stop-and-close' && world.status === 'running' && world.owned) {
     // The Test Bench client belongs to this window: close it and give its session time to end (the engine refuses to
     // stop while a client is connected and drops a closed client within about a minute).

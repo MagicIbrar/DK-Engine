@@ -1,4 +1,4 @@
-// CHAR-TRADE client rules (pure: no DOM, no game). Windows: index.js. ENGINE-CHOSEN values:
+﻿// CHAR-TRADE client rules (pure: no DOM, no game). Windows: index.js. ENGINE-CHOSEN values:
 // src/config/engine-chosen-char-trade.js.
 import { CHAR_TRADE_ENGINE_CHOSEN as C } from '../../config/engine-chosen-char-trade.js';
 export { C as CHAR_TRADE_ENGINE_CHOSEN };
@@ -10,7 +10,9 @@ export const CHAR_TRADE_SCRIPTS = Object.freeze({
   invite: 'game2/msgbox/ui_chartradeinvite.txt',          // 100:38 + <name> + 556:58 + Accept 2000:24 / Decline 2000:25
 });
 export const STRING_CATE = 556;                            // string/normal/stringtable_chartrade.txt
-export const MENU = Object.freeze({ cate: 240, label: 103, order: 103 });   // pcpop row 240:103 "Character Transfer"
+// Global PcPopWnd row 11 (label 240:11 "Expedition", verbatim Global label) sends RequestCharTrade; 240:103 is not a pcpop row in Global (lane 62).
+export const MENU = Object.freeze({ cate: 240, label: 11, order: 11 });
+export const BUSY_PARTY_PVP = 38;                          // 556:38 "You cannot make a character transfer while performing other activities."
 export const INVITE_TITLE = Object.freeze({ cate: 100, code: 38 });
 export const COMMAND = '/chartrade';
 // lbl_charInfo: 556:16-29 "<LABEL> : <VALUE>" lines, filled from the character summary (server/accounts/char-transfer.mjs)

@@ -1,23 +1,25 @@
-﻿// SkillEngine: the full skill system for every class (docs/formats/skills.md Â§10, Â§13). It replaces the early
+// SkillEngine: the full skill system for every class (docs/formats/skills.md §10, §13). It replaces the early
 // src/game/skills.js SkillSystem as game.skills and keeps its interface (controller / HUD / windows call use(slot),
 // useSlot, useSkill, busy, skillLevel, cooldownFraction, cooldownRemaining, learn, cancel, addStatus, update, clear).
 //
-// CAST PIPELINE (Â§10.3): learned + not passive -> control locks (stun / silence) -> weapon style in `styles` ->
+// CAST PIPELINE (§10.3): learned + not passive -> control locks (stun / silence) -> weapon style in `styles` ->
 // trans-up stage (awakeningCheck) -> NeedType -> cooldown (+ group skills) -> HP / MP / fury -> target by targetMask
 // (4 enemy, 1 area, 16 self, 2 ally, 8 ground point, 32 dead ally, 64 own summon) -> range (walks into range first
 // through the controller) -> costs + cooldown (x SPEED_COOLTIME_MUL, fSkillCoolTimeRate) -> castMs / ready / charge
 // -> the level's combo steps, each exactly durationMs with its SKILL clip (skillActions[actionIndex][style]), its
 // caster effect and the clip's action effect; the step result lands at the clip timing (0.5 when absent; 1-3 ms
-// steps are instant markers). NO_CANCEL steps own the character (busy); ACTION steps may be cancelled by moving.
+// steps are instant markers). NO_CANCEL steps own the character (busy); no step is cancelled by moving (HIT-MOVE-INTERRUPT: Global drops Move/Stand
+// for the whole skill, 0x647b10 / 0x7861c0). A landed hit cuts the skill back to Idle without cooldown (interruptByHit).
 // One skill pressed during another is queued.
 //
-// RESULTS (Â§7): every family of the table - damage (single / area / elemental / +status / knock-back / DoT),
+// RESULTS (§7): every family of the table - damage (single / area / elemental / +status / knock-back / DoT),
 // projectile + ground areas (remotes.js), status (target / self / area enemy / area party / share target), heal
 // (target / self / area / party / shield), summon + totem (summons.js), transform (trans-up look), cleanse, dispel,
 // dash, teleport, recall, stealth, detect, sleep / shock, surrender, cooldown reset / lock, spells (proc buffs),
-// damage share, auto revive, resurrect, servant explode. Solo adaptations (Â§13.10): party = the player and own
-// summons; pvpDamageRate is unused.
+// damage share, auto revive, resurrect, servant explode. Solo adaptations (§13.10): party = the player and own
+// summons; per-skill PCDamageRate (r.pvpDamageRate) is carried onto the hit result for host PvP (pvpSkillAdjust x rate/100).
 import { skillTargetable } from '../../game/monster-rules.js';
+import { globalAttackClass } from '../../game/global-attack-class.js';
 import { resolveAttack, applyDamage, playOnce, heal as healActor, isAlive, rand, combatOptionValue, combatOptionPercent, combatClassRaw, modifyHitDamage, elementResistance } from '../../game/combat.js';
 import { formulaOf } from '../../game/progression.js';
 import { hateValue, addHate as addHateEntry } from '../../game/hate.js';
@@ -29,8 +31,29 @@ import {skillWeaponCompatible} from './skill-weapon.js';
 import { followAura } from './follow-aura.js';
 import { rootMotionCurves, rootKey, sampleRootCurve, rootToWorld } from './root-motion.js';
 import { isPartyRecallSkill, withinRecallRange } from './party-recall.js';
+import { resolveAwakeningGrade } from './trans-up-rules.js';
 
 export const INSTANT_STEP = 0.004; // s: TimeTick 1-3 ms rows are result markers (no clip); shared with network/skill-playback.js
+
+/**
+ * SKILL-CLIP-COLD 2026-10-30: the body clips a phase list plays, at the length each is played ({anim, len}), by the same rule as
+ * SkillEngine._next / RemoteSkillPlayback.phase (cast: its action clip at its cycle length, else the first step's clip;
+ * ready / step: from INSTANT_STEP). Used to warm clips ahead (_warmBodyClips, clip-warmer.js).
+ */
+export function bodyClipRequests(data, skill, phases, style) {
+  const out = [];
+  const first = phases.find(x => x.kind === 'step');
+  for (const ph of phases) {
+    const dur = Math.max(0, num(ph.durationMs) / 1000);
+    let clip = null, len = dur;
+    if (ph.kind === 'cast') {
+      if (ph.act) { clip = data.clipForAction(skill, ph.act, style); len = Math.max(0.05, num(ph.act.durationMs ?? ph.act.timeTick) / 1000 || dur); }
+      else clip = first ? data.clipFor(skill, first.st, style) : null;
+    } else if (dur >= INSTANT_STEP) clip = ph.kind === 'ready' ? data.clipForAction(skill, ph.act, style) : data.clipFor(skill, ph.st, style);
+    if (clip?.anim && len > 0) out.push({ anim: clip.anim, len });
+  }
+  return out;
+}
 const ROOT_SWEEP_STEP = 0.1;       // m: walkability is tested along root motion at this spacing (actor.js knockback uses the same)
 const T_AREA = 1, T_ALLY = 2, T_ENEMY = 4, T_GROUND = 8, T_SELF = 16, T_DEAD = 32, T_SUMMON = 64;
 const KIND_OF = { melee: 'melee', range: 'range', magic: 'magic' };
@@ -46,6 +69,11 @@ const normKey = k => String(k || '').trim().replace(/\\/g, '/').replace(/^\/+/, 
  * time or combo. Shared by caster, server and observer; no duration is guessed.
  * Global executable behaviour is unknown (owner prohibits unpacking it).
  */
+/** Row 20: summed combo TimeTick (ms) of a level, the part Global adds to CoolTick (0x813240 / 0x813180). */
+export function skillComboMs(skill, L) {
+  return (L?.steps || skill?.steps || []).reduce((n, st) => n + Math.max(0, num(st?.durationMs)), 0);
+}
+
 export function skillPhases(skill, L) {
   const phases = [], castMs = Math.max(0, num(L?.castMs ?? skill?.castMs));
   if (castMs > 0) {
@@ -99,7 +127,31 @@ export class SkillEngine {
   get save() { return this.game.save; }
   get hotbar() { return this.save?.hotbar || []; }
   get busy() { return !!this.active && (this.active.noCancel || this.active.phase === 'cast'); }
+  /** HIT-MOVE-INTERRUPT: Global's result builder (0x5ae720 / 0x5ae910) asks Support Provider +0x10 (0x589760) whether the
+   *  defender can react; a SKILL-action defender whose current combo step has ActionType 2 (NO_CANCEL, combo column 1
+   *  parsed by 0x5539f0) is not reactable, so the result becomes type 4 (handler 0x594390: damage, no skill check). */
+  get hitImmune() { return this.active?.stepType === 'NO_CANCEL'; }
   get casting() { return !!this.active; }
+  /** HIT-MOVE-INTERRUPT: the skill owns the body (no Move/Stand input) until Global's skill state reports finished.
+   *  DekaronServer.exe (11.07.29.95): OnAction 0x632d30 hands the PC's own action to 0x647b10, which asks Provider
+   *  IsChangeableTo 0x7d3790; the Skill action state's IsChangeableTo 0x7861c0 admits only Defeat(7)/Dead(8)/Skill(10)/
+   *  Blocking(12)/Blocked(13)/Guarding(14), so STAND(1)/MOVE(2)/MOVETO(3) are dropped (log 0x57d, 0x647ccf) until 0x786040
+   *  (start + summed combo TimeTick = attackHoldUntil). Every phase, ACTION steps included. */
+  get holdsBody() { return !!this.active || num(this.game?.time) < this.attackHoldUntil; }
+  /** Game time (s) from which Global accepts a basic attack again. DekaronServer.exe (11.07.29.95): the PC attack handler
+   *  0x5ac6a0 drops a type-6 Attack when Provider IsChangeableTo 0x7d3790 fails; the Skill action state's IsChangeableTo
+   *  0x7861c0 only lets Defeat/Dead/Skill/Blocking/Blocked/Guarding in until 0x786040 says the skill is finished: skill
+   *  state Idle(0)/Cooling(3), or start + UseFacade vt+0x48 (0x7eacb0 -> Action state 0x813180 = sum of combo +0x44 over
+   *  level StartComboIndex..EndComboIndex) <= time. Loader 0x554e20 (Loader\Article\Skill.cpp loadCombo) stores the skill
+   *  CSV column 4 'TimeTick' at combo +0x44, so the window is the summed TimeTick (step durationMs) of the played combo.
+   *  The engine's prepare/cast phases run before that combo, so the window ends with the last phase. The end is absolute
+   *  (0x786040 compares start + sum to the clock): a body that a coarse tick finished a little early keeps the window
+   *  until that time; a cancelled skill (Idle) has none. */
+  get attackHoldUntil() {
+    const a = this.active;
+    if (!a) return num(this._attackHoldAfter);
+    return num(a.startedAt) + a.phases.reduce((n, ph) => n + Math.max(0, num(ph.durationMs)), 0) / 1000;
+  }
   /** The class skill list (skills.json records, compat fields included). */
   get list() { return this.game.classDef?.skills || []; }
   skillDef(i) { return this.data.skill(i); }
@@ -182,7 +234,7 @@ export class SkillEngine {
     for (const pr of L.prereqs || []) {
       if (this.learnedLevel(pr.skill) < num(pr.level)) return { ...out, reason: 53, prereq: pr };
     }
-    if (num(L.grade) > num(save.grade ?? save.transGrade)) return { ...out, reason: 53, grade: L.grade };
+    if (num(L.grade) > resolveAwakeningGrade(save, this.game)) return { ...out, reason: 53, grade: L.grade };
     if (this.points(pointType) < out.cost) return { ...out, reason: 82 };
     return { ...out, ok: true };
   }
@@ -217,14 +269,14 @@ export class SkillEngine {
       if (!this.meisterPath() || (s.tree.path && s.tree.path !== this.meisterPath())||this.maxLevelFor(s)<1) { this._msg(59); return false; }
       if (cur >= 1) { this._msg(65); return false; }
       const first=this.levelData(s,1);
-      if(!first||num(this.save?.level)<num(first.reqLevel)||(first.prereqs||[]).some(pr=>this.learnedLevel(pr.skill)<num(pr.level))||num(first.grade)>num(this.save?.grade??this.save?.transGrade)){this._msg(53);return false;}
+      if(!first||num(this.save?.level)<num(first.reqLevel)||(first.prereqs||[]).some(pr=>this.learnedLevel(pr.skill)<num(pr.level))||num(first.grade)>resolveAwakeningGrade(this.save,this.game)){this._msg(53);return false;}
       this.setLevel(s.index, 1);
       return true;
     }
     const L = this.levelData(s, cur + 1);
     if (!L || cur + 1 > this.maxLevelFor(s)) { this._msg(30); return false; }
     if (num(this.save?.level) < num(L.reqLevel)) { this._msg(53); return false; }
-    if ((L.prereqs || []).some(pr => this.learnedLevel(pr.skill) < num(pr.level)) || num(L.grade) > num(this.save?.grade ?? this.save?.transGrade)) { this._msg(53); return false; }
+    if ((L.prereqs || []).some(pr => this.learnedLevel(pr.skill) < num(pr.level)) || num(L.grade) > resolveAwakeningGrade(this.save, this.game)) { this._msg(53); return false; }
     if (L.availability && L.availability !== 'all') {
       const path = this.meisterPath();
       if (!(L.availability === 'path A' ? path === 'A' : L.availability === 'path B' ? path === 'B' : !!path)) { this._msg(59); return false; }
@@ -303,12 +355,19 @@ export class SkillEngine {
     const red = Math.min(num(combatClassRaw(p).SPEED_COOLTIME_MUL_MAX) || 25, this.optionValue(p, 'SPEED_COOLTIME_MUL'));
     let cd = num(L?.cooldownMs ?? skill.cooldownMs) / 1000 * num(F.fSkillCoolTimeRate ?? 1);
     cd *= Math.max(0.1, 1 - red / 100);
+    // Row 20 (DekaronServer.exe 11.07.29.95): Action state 0x813240 sets cool +0x14 = level CoolTick (+0x64) + summed combo
+    // TimeTick (+0x44, StartCombo..EndCombo) once, and Cooling 0x812f10 returns to Idle only when start (+4) + cool <= now
+    // (0x813470 likewise: CoolTick + elapsed combo time). The cooldown therefore runs from the use for TimeTick sum + CoolTick.
+    // ENGINE-CHOSEN: rate / SPEED_COOLTIME_MUL scale only the CoolTick part (their Global application site is not traced).
+    cd += skillComboMs(skill, L) / 1000;
     const now = g.time || 0;
-    const set = i => this.cooldowns.set(Number(i), { start: now, end: now + cd });
+    const keys = [];
+    const set = i => { keys.push(Number(i)); this.cooldowns.set(Number(i), { start: now, end: now + cd }); };
     set(skill.index);
     // group skills (share/groupskill/skillgroup.csv): members of a group share the cooldown
     const grp = this.data.groupSkills?.[skill.index];
     if (grp) for (const [k, v] of Object.entries(this.data.groupSkills)) if (v.group === grp.group && v.classIndex === grp.classIndex) set(k);
+    return { keys, start: now };
   }
 
   // ------------------------------------------------------------------------------------------ use
@@ -413,7 +472,7 @@ export class SkillEngine {
       const contact = g.skillTargetPoint?.(target, p) || target;
       if (Math.hypot(p.x - contact.x, p.z - contact.z) > reach) {
         const ctl = g.controller;
-        if (ctl?.approach && this._hostile(target)) { ctl.approach(target, range, () => this.useSkill(skill.index, opts)); return true; }
+        if (ctl?.approach && this._hostile(target)) { ctl.approach(target, range, () => this.useSkill(skill.index, opts), { skillApproach: true }); return true; }
         this._msg(42);
         return false;
       }
@@ -429,7 +488,7 @@ export class SkillEngine {
       p.mp = Math.max(0, num(p.mp) - mpCost);
       if (hpCost > 0) p.hp = Math.max(1, num(p.hp) - hpCost);
       if (furyCost > 0) p.fury = Math.max(0, num(p.fury) - furyCost);
-      this._startCooldown(skill, L);
+      this._pendingCooldown = this._startCooldown(skill, L);
     }
     this.lastUsed.set(skill.index, g.time || 0);
     if (target && target !== p) p.faceTowards?.(target.x, target.z);
@@ -564,17 +623,46 @@ export class SkillEngine {
     const p = this.game.player;
     // Native charwin32 and pcclass ACCELERATE_MAX: Acceleration only reduces
     // skill casting time. It stays distinct from attack/combo speed.
-    const acceleration = Math.max(0, Math.min(num(combatClassRaw(p).ACCELERATE_MAX) || 20, this.optionValue(p, 'STATUS_EX_SPEED_SKILL_MUL')));
-    const castMul = Math.max(0.1, 1 - (this.optionValue(p, 'SPEED_CASTING_MUL') + acceleration) / 100);
-    const phases = skillPhases(skill, L).map(phase => phase.kind === 'cast' ? { ...phase, durationMs: phase.durationMs * castMul } : phase);
+    const phases = this._timedPhases(skill, L);
+    this._warmBodyClips(skill, phases, style);
     this.active = {
       id: ++this._seq, skill, level, L, target, point, style, phases, i: -1, cur: null, noCancel: false,
-      startX: p.x, startZ: p.z, opts, caster: p,
+      startX: p.x, startZ: p.z, opts, caster: p, startedAt: num(this.game.time),
       handles: [], loops: [], cancelled: false, effectGeneration: this._effectGeneration,
-      root: null, rootYaw: null,
+      root: null, rootYaw: null, cooldown: this._pendingCooldown || null,
     };
+    this._pendingCooldown = null;
     this._rootLedger = { id: this.active.id, caster: p, x: 0, z: 0 };
     try { this._next(0); } catch (error) { this._abortPlayback(); throw error; }
+  }
+
+  /** skillPhases with the caster's casting-speed (Acceleration) applied to the cast phase. */
+  _timedPhases(skill, L) {
+    const castMul = this.castMul();
+    return skillPhases(skill, L).map(phase => phase.kind === 'cast' ? { ...phase, durationMs: phase.durationMs * castMul } : phase);
+  }
+
+  /** Cast-phase length multiplier from the caster's casting speed (SPEED_CASTING_MUL + Acceleration, capped by ACCELERATE_MAX). */
+  castMul() {
+    const p = this.game.player;
+    const acceleration = Math.max(0, Math.min(num(combatClassRaw(p).ACCELERATE_MAX) || 20, this.optionValue(p, 'STATUS_EX_SPEED_SKILL_MUL')));
+    return Math.max(0.1, 1 - (this.optionValue(p, 'SPEED_CASTING_MUL') + acceleration) / 100);
+  }
+
+  // SKILL-CLIP-COLD 2026-10-30: every phase's body clip starts loading at cast start, at the length _next will play it.
+  // Skill clips are never preloaded (Player._preloadAnims covers idle/move/attack/hit/die), so a later step's clip was first
+  // requested at its own phase start and, cold, played late or not at all (actor.js _tryCandidates). Cosmetic: never throws.
+  _warmBodyClips(skill, phases, style) {
+    const p = this.game.player;
+    if (typeof p?.warmClip !== 'function') return;
+    try { for (const r of bodyClipRequests(this.data, skill, phases, style)) p.warmClip(r.anim, r.len); } catch { /* warming is cosmetic */ }
+  }
+
+  /** Warm a learned skill's body clips ahead of its first cast (hotbar-prewarm.js). */
+  warmBodyClips(id) {
+    const skill = this.skillDef(id), level = this.skillLevel(id);
+    if (!skill || !(level > 0)) return;
+    try { const L = this.levelData(skill, level); if (L) this._warmBodyClips(skill, this._timedPhases(skill, L), this.equippedStyle()); } catch { /* cosmetic */ }
   }
 
   _next(carry) {
@@ -590,6 +678,7 @@ export class SkillEngine {
     a.phase = ph.kind;
     a.cur = { t: carry, dur, hitAt: null, done: true, ph };
     a.noCancel = true;
+    a.stepType = null;
     const now = g.time || 0;
     if (ph.kind === 'cast') {
       this.castProgress = { skill: a.skill, t: 0, dur };
@@ -614,6 +703,7 @@ export class SkillEngine {
     // combo step
     const st = ph.st;
     a.noCancel = st.type !== 'ACTION';
+    a.stepType = st.type || null;
     const clip = this.data.clipFor(a.skill, st, a.style);
     const timing = clip?.timing > 0 && clip.timing <= 1 ? clip.timing : 0.5;
     a.cur.hitAt = st.result ? (dur < INSTANT_STEP ? 0 : timing * dur) : null;
@@ -636,7 +726,9 @@ export class SkillEngine {
   _playClip(actor, clip, dur, loop = false) {
     const key = normKey(clip.anim);
     try { actor._skillStyles?.set?.(key, Number(clip.style ?? 1)); } catch { /* ignore */ }
-    playOnce(actor, 'skill', { anim: clip.anim, timeLength: dur, loop, variant: clip.clipIndex }, this.game.time || 0, dur);
+    const owner = this.active, phase = owner?.cur;
+    const current = owner && phase ? () => this.active === owner && owner.cur === phase && this.game.player === actor && !actor.dead && !actor.disposed : null;
+    playOnce(actor, 'skill', { anim: clip.anim, timeLength: dur, loop, variant: clip.clipIndex, _skillPhaseCurrent: current }, this.game.time || 0, dur);
   }
 
   // Cosmetic asset failures must not discard the accepted cast's result timeline.
@@ -681,12 +773,13 @@ export class SkillEngine {
 
   _finish() {
     const a = this.active;
+    this._attackHoldAfter = this.attackHoldUntil;
     this.active = null;
     this.castProgress = null;
     const g = this.game;
     if (a.caster?._gpState === 'skill') { a.caster._gpState = null; a.caster._gpHold = 0; }
     try { g.controller?.onSkillEnd?.(a.skill, a.target); } catch (err) { console.warn(err); }
-    g.events?.emit('skill:end', { actor: g.player, skill: a.skill });
+    g.events?.emit('skill:end', { actor: g.player, skill: a.skill, activeId: a.id });
     if (this.queued) {
       const q = this.queued;
       this.queued = null;
@@ -694,10 +787,30 @@ export class SkillEngine {
     }
   }
 
+  /**
+   * HIT-MOVE-INTERRUPT: a landed hit (not a miss / zero-damage result) on this player while a skill runs. Global
+   * 0x5858b0 dispatches every hit result except case 0 (miss / no damage, 0x594720) to a handler (Block 0x595e80,
+   * Guard 0x594a10, Defeat 0x593e20, Knockdown 0x593900, ...) that, when the defender's action type is SKILL (10) and it
+   * has a skill manager, calls the running skill's Provider vt+0x2c (0x818340) with flag 0; the Action state 0x8133b0
+   * then changes to factory state 0 (Idle, 0x8136d0 returns 0) instead of 3 (Cooling, 0x812dc0) and resets the memento
+   * (vt+0xc 0x813970 zeroes +8..+0x23, including the cool time +0x1c). So the skill stops and NO cooldown is left.
+   * Costs already paid stay paid (0x8133b0 refunds nothing). Returns the interrupted skill index, or null.
+   */
+  interruptByHit() {
+    const a = this.active;
+    if (!a || a.caster !== this.game.player) return null;
+    const index = a.skill?.index ?? null;
+    this.cancel();
+    const cd = a.cooldown;
+    if (cd) for (const k of cd.keys) { const c = this.cooldowns.get(k); if (c && c.start === cd.start) this.cooldowns.delete(k); }
+    return index;
+  }
+
   cancel(reason = null) {
     this.effectResources?.cancel();
     const a = this.active;
     this._effectGeneration = (this._effectGeneration || 0) + 1;
+    this._attackHoldAfter = 0;
     this.active = null;
     this.queued = null;
     this.castProgress = null;
@@ -769,8 +882,7 @@ export class SkillEngine {
     const a = this.active;
     if (!a) return;
     if (!p || p.dead || p.disposed || p !== a.caster) { this.cancel('dead'); return; }
-    // ACTION steps: moving cancels the rest of the chain
-    if (!a.noCancel && !a.dashing && Math.hypot(p.x - a.startX, p.z - a.startZ) > 0.35) { this.cancel(); return; }
+    // HIT-MOVE-INTERRUPT: no move-cancel of ACTION steps - Global drops Move/Stand while the skill runs (holdsBody).
     const fl = this.statuses.flags(p);
     if (fl.lock || fl.sleep) { this.cancel(18); return; }
     let budget = dt, guard = 0;
@@ -803,7 +915,30 @@ export class SkillEngine {
     const g = this.game;
     const refSide = this.sideOf(ref) || 'player';
     const want = side === 'enemy' ? (refSide === 'player' ? 'monster' : 'player') : refSide;
-    const pool = want === 'monster' ? (g.spawner?.monsters || []) : [g.player, ...(this.summons?.all() || [])];
+    // Ally pool: self + summons + (online) other players. Party result families set
+    // _partyRecipients so only grouped members qualify — mirrors server/world/skills.mjs.
+    let pool;
+    if (want === 'monster') {
+      pool = g.spawner?.monsters || [];
+    } else {
+      const others = [];
+      const net = g.network;
+      if (net?.players) {
+        const requireParty = !!this._partyRecipients;
+        const party = net.party || g.party?.serverState || g.party?.st;
+        const myId = net.self?.id;
+        const memberIds = new Set((party?.members || []).map(m => (typeof m === 'object' ? m.id : m)));
+        const grouped = !!(party?.active && myId && memberIds.has(myId));
+        for (const u of net.players.values()) {
+          if (!u || u === g.player || u.disposed || u.kind === 'npc') continue;
+          if (requireParty) {
+            if (!grouped || !memberIds.has(u.networkId)) continue;
+          } else if (this._hostile(u)) continue;
+          others.push(u);
+        }
+      }
+      pool = [g.player, ...others, ...(this.summons?.all() || [])];
+    }
     const out = [];
     for (const u of pool) {
       if (!isAlive(u) || u.kind === 'npc') continue;
@@ -837,6 +972,16 @@ export class SkillEngine {
    * extra: {contactEffect, maxUnits}
    */
   applyImpact(ctx, r, unit, point, extra = {}) {
+    const g = this.game, caster = ctx.caster;
+    if (!caster || !r) return;
+    // Party AoE / spell_party / damage_share: unitsNear ally side requires party membership.
+    const previousParty = this._partyRecipients;
+    this._partyRecipients = r?.target === 'party' || ['area_status_party', 'spell_party', 'damage_share'].includes(r?.family);
+    try { return this._applyImpactInner(ctx, r, unit, point, extra); }
+    finally { this._partyRecipients = previousParty; }
+  }
+
+  _applyImpactInner(ctx, r, unit, point, extra = {}) {
     const g = this.game, caster = ctx.caster;
     if (!caster || !r) return;
     const fam = r.family;
@@ -1047,7 +1192,7 @@ export class SkillEngine {
   /** Status landing chance vs the target's abnormal-status resistance (RATING_ANTI_STATUS_ADD / ANTI_ANTI_RATE). */
   _statusChance(caster, t, chance) {
     const res = this.optionValue(t, 'RATING_ANTI_STATUS_ADD') + num(t.def?.antiStatusRate);
-    const ignore = this.optionValue(caster, 'ANTI_ANTI_SUB') + this.optionPercent(caster, 'ANTI_ANTI_RATE');
+    const ignore = this.optionPercent(caster, 'ANTI_ANTI_RATE'); // ANTI_ANTI_SUB absent from Global option tables / decompile strings
     return Math.max(0, Math.min(100, chance - Math.max(0, res - ignore)));
   }
 
@@ -1078,6 +1223,10 @@ export class SkillEngine {
    */
   skillDamage(ctx, t, r) {
     const caster = ctx.caster;
+    // Global server class of the result code (factory 0x58a1xx, MATH-VERIFY row 7c) overrides the cached decode,
+    // so skills.json built before the fix still gets the right damage class / element.
+    const gc = globalAttackClass(r.resultCode);
+    if (gc) { r = { ...r, damageClass: gc.cls, element: gc.element }; }
     const kind = KIND_OF[r.damageClass] || KIND_OF[ctx.skill?.type] || undefined;
     const mult = num(r.damagePct) > 0 ? num(r.damagePct) / 100 : 1;
     const res = resolveAttack(caster, t, { skill: ctx.skill, kind, addDamage: num(r.addDamage), multiplier: mult, data: this.game.data, noMiss: r.family === 'servant_explode', deferFinalModifiers: true });
@@ -1093,6 +1242,9 @@ export class SkillEngine {
       amt += part * bonus - part * resist / 100;
     }
     res.amount = modifyHitDamage(caster, t, amt);
+    // Carry PCDamageRate (combo CSV col / binary U16 @ +0x38) so host pvpSkillAdjust can scale PvP hits.
+    const pvpDamageRate = Number(r.pvpDamageRate) || 0;
+    if (pvpDamageRate > 0) res.pvpDamageRate = pvpDamageRate;
     return res;
   }
 
@@ -1258,7 +1410,7 @@ export class SkillEngine {
       x = nx; z = nz;
     }
     if (x === sx && z === sz) return false;
-    actor.setPosition(x, z);
+    actor.setPosition(x, z, 'skill-root');
     return actor.x !== sx || actor.z !== sz;
   }
 
@@ -1269,10 +1421,11 @@ export class SkillEngine {
     return d && (d.x || d.z) ? d : null;
   }
 
-  /** A NO_CANCEL / ready phase is moving the caster along its root curve (movement reports then belong to the cast). */
+  /** A skill phase is moving the caster along its root curve (movement reports then belong to the cast). Every phase:
+   *  moving no longer cancels ACTION steps (HIT-MOVE-INTERRUPT), so their root curve carries the body too. */
   rootLocked() {
     const a = this.active;
-    return !!(a?.root && a.noCancel);
+    return !!a?.root;
   }
 
   /** Take back the root displacement of cast `id` (a predicted cast the host refused). Returns true when moved back. */
@@ -1305,6 +1458,28 @@ export class SkillEngine {
     player._appearanceRefreshTimer = setTimeout(run, 0);
   }
 
+  /**
+   * Global condition AWK cast ids (skills_effects cate 11 / sound.json effectSound[11]):
+   * each resolves to skill/alo_awk.wav — the faint Trans-Up pop SFX. Used only when the
+   * transform row has no shapeshift status to drive effects.start.
+   */
+  static get _transUpAwkCastId() {
+    return {
+      0: 3043, 1: 3046, 2: 3044, 3: 3048, 4: 3047, 5: 3045, 6: 3049,
+      7: 3043, 9: 3044, 10: 3048, 11: 3047, 12: 3045, 13: 3694,
+    };
+  }
+
+  /** Play Global's Trans-Up AWK cast scene (alo_awk.wav via EffectPlayer._sound). */
+  _playTransUpCastSfx(actor) {
+    if (!actor || !this.fx) return;
+    const ci = num(actor.save?.classIndex ?? actor.classDef?.index);
+    const id = SkillEngine._transUpAwkCastId[ci];
+    if (!id) return;
+    try { this.fx.play(actor, { cate: 11, id, scene: 1, timeMs: 1500 }, { loop: false }); }
+    catch (error) { console.warn('[skills] trans-up cast sfx failed', error); }
+  }
+
   _transform(ctx, r) {
     const p = ctx.caster;
     const skill = this.data.skill(r.transformSkill) || ctx.skill;
@@ -1315,10 +1490,24 @@ export class SkillEngine {
     const ms = num(r.durationMs) || 60000;
     p.transUpStage = Math.max(1, num(row?.transType) || 1);
     p.transUpUntil = (this.game.time || 0) + ms / 1000;
-    this.game.save.transUp = { skill: skill?.index, level: r.transformLevel, until: (this.game._world?.now?.() ?? Date.now()) + ms, stage: p.transUpStage };
+    // Shapeshift index is the awakening status (skills_status): effects.start is
+    // cate-11 *_AWK -> skill/alo_awk.wav (Global). Apply it so every class hears
+    // the faint cast noise and gets keep/end scenes + Trans-Up options.
+    const statusIndex = num(look?.index) || num(row?.args?.[0]) || 0;
+    this.game.save.transUp = {
+      skill: skill?.index, level: r.transformLevel,
+      until: (this.game._world?.now?.() ?? Date.now()) + ms, stage: p.transUpStage,
+      statusIndex: statusIndex || undefined,
+    };
     if (look?.mesh && p.refreshAppearance) {
       p.transformLook = look;
       this._queueAppearanceRefresh(p);
+    }
+    p._transUpStatusIndex = statusIndex || 0;
+    if (statusIndex > 0) {
+      this.statuses.add(p, statusIndex, ms, { source: p, skill, level: r.transformLevel });
+    } else {
+      this._playTransUpCastSfx(p);
     }
     this.game.events?.emit('transup', { actor: p, stage: p.transUpStage, on: true });
   }
@@ -1328,17 +1517,24 @@ export class SkillEngine {
     if (!p?.transUpStage) return;
     if ((this.game.time || 0) < num(p.transUpUntil)) return;
     p.transUpStage = 0;
+    const statusIndex = num(p._transUpStatusIndex) || num(this.game.save.transUp?.statusIndex);
     this.game.save.transUp = null;
+    p._transUpStatusIndex = 0;
     if (p.transformLook) { p.transformLook = null; this._queueAppearanceRefresh(p); }
-    const skill = this.list.find(s => s.transform);
-    const end = skill?.transform?.[0]?.endEffect;
-    if (end) this.fx?.play(p, { id: end, scene: 1, timeMs: 1500 }, {});
+    if (statusIndex > 0) {
+      // Removing the awakening status plays effects.end (Global AWAKE scene).
+      this.statuses.remove(p, s => num(s.statusIndex) === statusIndex, 'expired');
+    } else {
+      const skill = this.list.find(s => s.transform);
+      const end = skill?.transform?.[0]?.endEffect;
+      if (end) this.fx?.play(p, { id: end, scene: 1, timeMs: 1500 }, {});
+    }
     this.game.events?.emit('transup', { actor: p, stage: 0, on: false });
   }
 
   // ------------------------------------------------------------------------------------------ passives
   /**
-   * Passive layer (Â§10.2): the options of learned passive / mastery levels while the equipped weapon style is one of
+   * Passive layer (§10.2): the options of learned passive / mastery levels while the equipped weapon style is one of
    * the skill's styles, plus weaponstatus.csv statuses of those masteries for the style. Returned as status-like
    * entries (never expire) so progression.sumStatus reads them with the buffs.
    */
